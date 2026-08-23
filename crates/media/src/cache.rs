@@ -7,8 +7,8 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use filetime::FileTime;
@@ -51,10 +51,7 @@ impl DiskCache {
         Self::open_with_quota(root, crate::DEFAULT_DISK_CACHE_QUOTA_BYTES).await
     }
 
-    pub async fn open_with_quota(
-        root: impl Into<PathBuf>,
-        quota: u64,
-    ) -> std::io::Result<Self> {
+    pub async fn open_with_quota(root: impl Into<PathBuf>, quota: u64) -> std::io::Result<Self> {
         let root = root.into();
         tokio::task::spawn_blocking(move || {
             std::fs::create_dir_all(&root)?;
@@ -159,10 +156,7 @@ impl DiskCache {
         let lock = self.scan_lock.clone();
         tokio::task::spawn_blocking(move || {
             let _guard = lock.lock().ok();
-            Ok(scan_entries(&root)?
-                .into_iter()
-                .map(|(_, s)| s.size)
-                .sum())
+            Ok(scan_entries(&root)?.into_iter().map(|(_, s)| s.size).sum())
         })
         .await
         .map_err(|e| std::io::Error::other(e.to_string()))?
@@ -202,7 +196,7 @@ impl DiskCache {
             }
             let modified = meta
                 .modified()
-                .map(|t| FileTime::from_system_time(t))
+                .map(FileTime::from_system_time)
                 .unwrap_or(FileTime::zero());
             if modified < cutoff {
                 let _ = std::fs::remove_file(&path);
@@ -211,11 +205,7 @@ impl DiskCache {
     }
 }
 
-fn evict_root(
-    root: PathBuf,
-    lock: Arc<Mutex<()>>,
-    quota: u64,
-) -> std::io::Result<u64> {
+fn evict_root(root: PathBuf, lock: Arc<Mutex<()>>, quota: u64) -> std::io::Result<u64> {
     let _guard = lock.lock().ok();
     let mut entries = scan_entries(&root)?;
     // Coldest first: min(atime, mtime), because noatime mounts make atime
@@ -270,7 +260,9 @@ fn file_name_of(path: &Path) -> String {
 }
 
 pub(crate) fn is_sha_hex(s: &str) -> bool {
-    s.len() == 64 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 pub(crate) fn to_hex(bytes: &[u8]) -> String {
@@ -285,7 +277,6 @@ pub(crate) fn to_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::to_hex;
     use sha2::{Digest, Sha256};
 
     fn sha_hex(data: &[u8]) -> String {
@@ -326,7 +317,9 @@ mod tests {
     #[tokio::test]
     async fn eviction_deletes_coldest_only() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let cache = DiskCache::open_with_quota(dir.path(), 10_000).await.expect("open");
+        let cache = DiskCache::open_with_quota(dir.path(), 10_000)
+            .await
+            .expect("open");
         let names: Vec<String> = (0u8..3)
             .map(|i| sha_hex(format!("blob-{i}").as_bytes()))
             .collect();
@@ -338,8 +331,7 @@ mod tests {
             // Distinct, ordered recency regardless of filesystem timestamp
             // resolution: name[0] oldest, name[2] newest.
             let t = FileTime::from_unix_time(1_000_000 + i as i64 * 1_000, 0);
-            filetime::set_file_times(cache.entry_path(name), t, t)
-                .expect("set times");
+            filetime::set_file_times(cache.entry_path(name), t, t).expect("set times");
         }
         let total = cache.evict_to(250).await.expect("evict");
         assert_eq!(total, 200);

@@ -2,6 +2,10 @@
 //! maps it onto wasabi's service contracts. Protocol types stop here.
 
 pub mod durability;
+pub mod history;
+pub mod lifecycle;
+pub mod normalize;
+pub mod outbox;
 pub mod session;
 
 pub use durability::RepositoryDurabilityHook;

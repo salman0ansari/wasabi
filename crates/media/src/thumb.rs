@@ -106,10 +106,9 @@ impl ThumbnailService {
         }
 
         let path = path.to_owned();
-        let rendered =
-            tokio::task::spawn_blocking(move || render_thumbnail(&path, max_dim))
-                .await
-                .map_err(|e| MediaError::Decode(e.to_string()))??;
+        let rendered = tokio::task::spawn_blocking(move || render_thumbnail(&path, max_dim))
+            .await
+            .map_err(|e| MediaError::Decode(e.to_string()))??;
 
         self.insert(key, Arc::clone(&rendered));
         Ok(rendered)
@@ -117,9 +116,12 @@ impl ThumbnailService {
 
     fn lookup(&self, key: &str) -> Option<Arc<Vec<u8>>> {
         let mut state = lock(&self.inner);
-        let slot = state.map.get_mut(key)?;
+        // Bump the clock before taking the map borrow; recency is what
+        // eviction ranks by.
         state.clock += 1;
-        slot.stamp = state.clock; // touch: recency is what eviction ranks by
+        let stamp = state.clock;
+        let slot = state.map.get_mut(key)?;
+        slot.stamp = stamp;
         Some(Arc::clone(&slot.value))
     }
 
@@ -147,13 +149,14 @@ impl ThumbnailService {
             return;
         }
         state.clock += 1;
+        let stamp = state.clock;
         state.used += bytes;
         state.map.insert(
             key,
             LruSlot {
                 value,
                 bytes,
-                stamp: state.clock,
+                stamp,
             },
         );
     }
@@ -190,6 +193,12 @@ fn encoded_pixel_cost(encoded: &[u8]) -> u64 {
 }
 
 fn render_thumbnail(path: &Path, max_dim: u32) -> Result<Arc<Vec<u8>>, MediaError> {
+    // Format is sniffed from the file header before decode consumes the
+    // reader; DynamicImage does not retain it.
+    let format = image::ImageReader::open(path)
+        .and_then(|r| r.with_guessed_format())
+        .map_err(MediaError::Io)?
+        .format();
     let source = image::ImageReader::open(path)
         .and_then(|r| r.with_guessed_format())
         .map_err(MediaError::Io)?
@@ -198,12 +207,11 @@ fn render_thumbnail(path: &Path, max_dim: u32) -> Result<Arc<Vec<u8>>, MediaErro
 
     let thumb = source.thumbnail(max_dim, max_dim);
     let mut out = Cursor::new(Vec::new());
-    match source.format() {
+    match format {
         // Photographic input re-encodes as JPEG to keep thumbnail payloads
         // small; everything else stays lossless PNG.
         Some(image::ImageFormat::Jpeg) => {
-            let encoder =
-                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80);
+            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80);
             thumb
                 .to_rgb8()
                 .write_with_encoder(encoder)
@@ -247,7 +255,7 @@ mod tests {
         let bytes = service.thumb(&path, 40).await.expect("thumb");
 
         let decoded = image::load_from_memory(&bytes).expect("decode result");
-        assert_eq!(decoded.dimensions(), (40, 20));
+        assert_eq!((decoded.width(), decoded.height()), (40, 20));
     }
 
     #[tokio::test]
@@ -269,9 +277,10 @@ mod tests {
 
         // The coldest entry re-renders on demand after eviction.
         let first_again = service.thumb(&paths[0], 50).await.expect("re-render");
-        let dims = image::load_from_memory(&first_again)
-            .expect("decode")
-            .dimensions();
+        let dims = {
+            let img = image::load_from_memory(&first_again).expect("decode");
+            (img.width(), img.height())
+        };
         assert_eq!(dims, (50, 25));
     }
 

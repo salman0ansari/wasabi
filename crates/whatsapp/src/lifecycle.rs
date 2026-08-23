@@ -78,10 +78,11 @@ pub(crate) fn spawn_event_pump(
     qr_tx: watch::Sender<Option<QrState>>,
     token: CancellationToken,
 ) -> Pump {
+    let pump_token = token.clone();
     let join = tokio::spawn(async move {
         loop {
             let event = tokio::select! {
-                () = token.cancelled() => break,
+                () = pump_token.cancelled() => break,
                 received = events.recv() => match received {
                     Ok(event) => event,
                     // All senders dropped: the client (and with it the whole
@@ -161,9 +162,12 @@ fn apply_event(
             } else {
                 "forced logout"
             };
-            transition_to(state_tx, SessionState::Failed {
-                reason: reason.to_string(),
-            });
+            transition_to(
+                state_tx,
+                SessionState::Failed {
+                    reason: reason.to_string(),
+                },
+            );
         }
         // A rejected pair attempt leaves rotation running; the next
         // PairingQrCode refreshes the watch.
@@ -195,19 +199,28 @@ fn apply_event(
             );
         }
         Event::ConnectFailure(failure) => {
-            transition_to(state_tx, SessionState::Failed {
-                reason: format!("connect failure: {:?}", failure.reason),
-            });
+            transition_to(
+                state_tx,
+                SessionState::Failed {
+                    reason: format!("connect failure: {:?}", failure.reason),
+                },
+            );
         }
         Event::ClientOutdated(_) => {
-            transition_to(state_tx, SessionState::Failed {
-                reason: "client outdated".to_string(),
-            });
+            transition_to(
+                state_tx,
+                SessionState::Failed {
+                    reason: "client outdated".to_string(),
+                },
+            );
         }
         Event::StreamReplaced(_) => {
-            transition_to(state_tx, SessionState::Failed {
-                reason: "stream replaced by another session".to_string(),
-            });
+            transition_to(
+                state_tx,
+                SessionState::Failed {
+                    reason: "stream replaced by another session".to_string(),
+                },
+            );
         }
         _ => {}
     }

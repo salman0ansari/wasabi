@@ -10,14 +10,14 @@ use std::sync::Mutex;
 use sha2::{Digest, Sha256};
 use tokio::sync::{Semaphore, watch};
 use tokio_util::sync::CancellationToken;
+use waproto::whatsapp as wa;
 use whatsapp_rust::client::Client;
-use whatsapp_rust::download::{DownloadParams, Downloadable, DownloadWriter, MediaType};
+use whatsapp_rust::download::{DownloadParams, DownloadWriter, Downloadable, MediaType};
 use whatsapp_rust::wacore::proto_helpers::MessageExt;
 use whatsapp_rust_chat_store::ChatStore;
-use waproto::whatsapp as wa;
 
 use crate::cache::{DiskCache, is_sha_hex, to_hex};
-use crate::{MEDIA_QUEUE_CAPACITY, MAX_CONCURRENT_DOWNLOADS, MediaError};
+use crate::{MAX_CONCURRENT_DOWNLOADS, MEDIA_QUEUE_CAPACITY, MediaError};
 
 /// Maps a received message onto the vendored raw-params downloader.
 ///
@@ -27,70 +27,63 @@ use crate::{MEDIA_QUEUE_CAPACITY, MAX_CONCURRENT_DOWNLOADS, MediaError};
 /// pass it directly to [`MediaManager::download`].
 pub fn media_downloadable(message: &wa::Message) -> Option<DownloadParams> {
     let base = message.get_base_message();
-    let (
-        direct_path,
-        media_key,
-        file_sha256,
-        file_enc_sha256,
-        file_length,
-        media_type,
-    ) = if let Some(m) = base.image_message.as_option() {
-        (
-            m.direct_path.clone()?,
-            m.media_key.clone(),
-            m.file_sha256.clone()?,
-            m.file_enc_sha256.clone(),
-            m.file_length.unwrap_or(0),
-            MediaType::Image,
-        )
-    } else if let Some(m) = base.video_message.as_option() {
-        (
-            m.direct_path.clone()?,
-            m.media_key.clone(),
-            m.file_sha256.clone()?,
-            m.file_enc_sha256.clone(),
-            m.file_length.unwrap_or(0),
-            MediaType::Video,
-        )
-    } else if let Some(m) = base.ptv_message.as_option() {
-        (
-            m.direct_path.clone()?,
-            m.media_key.clone(),
-            m.file_sha256.clone()?,
-            m.file_enc_sha256.clone(),
-            m.file_length.unwrap_or(0),
-            MediaType::Video,
-        )
-    } else if let Some(m) = base.audio_message.as_option() {
-        (
-            m.direct_path.clone()?,
-            m.media_key.clone(),
-            m.file_sha256.clone()?,
-            m.file_enc_sha256.clone(),
-            m.file_length.unwrap_or(0),
-            MediaType::Audio,
-        )
-    } else if let Some(m) = base.document_message.as_option() {
-        (
-            m.direct_path.clone()?,
-            m.media_key.clone(),
-            m.file_sha256.clone()?,
-            m.file_enc_sha256.clone(),
-            m.file_length.unwrap_or(0),
-            MediaType::Document,
-        )
-    } else if let Some(m) = base.sticker_message.as_option() {
-        (
-            m.direct_path.clone()?,
-            m.media_key.clone(),
-            m.file_sha256.clone()?,
-            m.file_enc_sha256.clone(),
-            m.file_length.unwrap_or(0),
-            MediaType::Sticker,
-        )
-    } else {
-        return None;
-    };
+    let (direct_path, media_key, file_sha256, file_enc_sha256, file_length, media_type) =
+        if let Some(m) = base.image_message.as_option() {
+            (
+                m.direct_path.clone()?,
+                m.media_key.clone(),
+                m.file_sha256.clone()?,
+                m.file_enc_sha256.clone(),
+                m.file_length.unwrap_or(0),
+                MediaType::Image,
+            )
+        } else if let Some(m) = base.video_message.as_option() {
+            (
+                m.direct_path.clone()?,
+                m.media_key.clone(),
+                m.file_sha256.clone()?,
+                m.file_enc_sha256.clone(),
+                m.file_length.unwrap_or(0),
+                MediaType::Video,
+            )
+        } else if let Some(m) = base.ptv_message.as_option() {
+            (
+                m.direct_path.clone()?,
+                m.media_key.clone(),
+                m.file_sha256.clone()?,
+                m.file_enc_sha256.clone(),
+                m.file_length.unwrap_or(0),
+                MediaType::Video,
+            )
+        } else if let Some(m) = base.audio_message.as_option() {
+            (
+                m.direct_path.clone()?,
+                m.media_key.clone(),
+                m.file_sha256.clone()?,
+                m.file_enc_sha256.clone(),
+                m.file_length.unwrap_or(0),
+                MediaType::Audio,
+            )
+        } else if let Some(m) = base.document_message.as_option() {
+            (
+                m.direct_path.clone()?,
+                m.media_key.clone(),
+                m.file_sha256.clone()?,
+                m.file_enc_sha256.clone(),
+                m.file_length.unwrap_or(0),
+                MediaType::Document,
+            )
+        } else {
+            let m = base.sticker_message.as_option()?;
+            (
+                m.direct_path.clone()?,
+                m.media_key.clone(),
+                m.file_sha256.clone()?,
+                m.file_enc_sha256.clone(),
+                m.file_length.unwrap_or(0),
+                MediaType::Sticker,
+            )
+        };
 
     Some(DownloadParams {
         direct_path,
@@ -168,7 +161,6 @@ impl Drop for TmpGuard {
     }
 }
 
-type Outcome = Result<PathBuf, MediaError>;
 
 #[derive(Clone)]
 pub struct MediaManager {
@@ -179,7 +171,7 @@ pub struct MediaManager {
     /// surfaces as `Overloaded` instead of an unbounded wait set.
     queue: Arc<Semaphore>,
     running: Arc<Semaphore>,
-    inflight: OpRegistry<Outcome>,
+    inflight: OpRegistry<PathBuf>,
 }
 
 impl std::fmt::Debug for MediaManager {
@@ -239,7 +231,10 @@ impl MediaManager {
 
         // Held across the whole wait so saturation bounds total backlog, not
         // just active network slots.
-        let _admission = self.queue.try_acquire().map_err(|_| MediaError::Overloaded)?;
+        let _admission = self
+            .queue
+            .try_acquire()
+            .map_err(|_| MediaError::Overloaded)?;
 
         let client = self.client.clone();
         let chats = self.chats.clone();
@@ -273,7 +268,7 @@ impl MediaManager {
                         written.map_err(|e| MediaError::Download(e.to_string()))?,
                 };
 
-                let (mut file, digest) = writer.finalize();
+                let (file, digest) = writer.finalize();
                 if let Some(expected) = expected_sha
                     && digest != expected
                 {
@@ -361,7 +356,7 @@ struct RegistryInner<T> {
 
 struct SharedOp<T> {
     token: CancellationToken,
-    tx: watch::Sender<Option<T>>,
+    tx: watch::Sender<Option<Result<T, MediaError>>>,
     state: Mutex<OpState>,
 }
 
@@ -399,6 +394,8 @@ where
         F: FnOnce(CancellationToken) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T, MediaError>> + Send + 'static,
     {
+        // NOTE: returns the shared outcome directly; registry-level failure
+        // paths surface as the same MediaError values.
         let (shared, created) = {
             let mut map = unlock(&self.inner.map);
             // A dead shell means its cohort vanished mid-flight; replace it so
@@ -440,10 +437,8 @@ where
                 // Panic or forced-drop of this task must still wake waiters,
                 // or they would hang on a dead op forever.
                 let mut failsafe = FailSafe {
-                    send: Some({
-                        let tx = op_shared.tx.clone();
-                        move |v: Option<Outcome>| tx.send_replace(v)
-                    }),
+                    tx: Some(op_shared.tx.clone()),
+                    fallback: Err(MediaError::Unavailable),
                     pending: true,
                 };
 
@@ -452,15 +447,15 @@ where
                     _ = op_shared.token.cancelled() => Err(MediaError::Cancelled),
                     result = factory(op_shared.token.child_token()) => result,
                 };
-                if let Some(send) = failsafe.send.take() {
-                    send(Some(outcome));
+                if let Some(tx) = failsafe.tx.take() {
+                    let _ = tx.send_replace(Some(outcome));
                 }
                 failsafe.pending = false;
             });
         }
 
         let mut rx = shared.tx.subscribe();
-        let outcome = loop {
+        let outcome: Result<T, MediaError> = loop {
             if let Some(value) = rx.borrow_and_update().clone() {
                 break value;
             }
@@ -478,7 +473,7 @@ where
         // Release the seat only now, so a cancellation racing completion cannot
         // strand the count above zero and leak a live token.
         {
-            let mut map = unlock(&self.inner.map);
+            let map = unlock(&self.inner.map);
             if map
                 .get(&key)
                 .is_some_and(|current| Arc::ptr_eq(current, &shared))
@@ -506,7 +501,9 @@ where
 // Locks are held only across field updates, never awaits; poisoning cannot
 // carry meaningful state here, so recovery-by-value keeps call sites flat.
 fn unlock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 struct RegGuard<T> {
@@ -528,18 +525,20 @@ impl<T> Drop for RegGuard<T> {
     }
 }
 
-struct FailSafe<F> {
-    send: Option<F>,
+/// Panic/forced-drop safety net: a worker that dies without publishing an
+/// outcome must still wake its waiters, or they park forever on the watch.
+struct FailSafe<T: Clone + Send + 'static> {
+    tx: Option<watch::Sender<Option<Result<T, MediaError>>>>,
+    fallback: Result<T, MediaError>,
     pending: bool,
 }
 
-impl<F> Drop for FailSafe<F>
-where
-    F: FnOnce(Option<Outcome>),
-{
+impl<T: Clone + Send + 'static> Drop for FailSafe<T> {
     fn drop(&mut self) {
-        if self.pending && let Some(send) = self.send.take() {
-            send(Some(Err(MediaError::Unavailable)));
+        if self.pending
+            && let Some(tx) = self.tx.take()
+        {
+            let _ = tx.send_replace(Some(self.fallback.clone()));
         }
     }
 }
@@ -549,6 +548,7 @@ mod tests {
     use super::*;
     use crate::cache::to_hex;
     use sha2::{Digest, Sha256};
+    use std::io::Seek;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
@@ -587,7 +587,7 @@ mod tests {
         );
     }
 
-    type TestOutcome = Result<u64, MediaError>;
+    type TestOutcome = u64;
 
     async fn wait_until(len: impl Fn() -> usize, want: usize) {
         for _ in 0..200 {
@@ -599,13 +599,16 @@ mod tests {
         assert_eq!(len(), want, "registry did not settle in time");
     }
 
-    #[tokio::test]
+    // multi_thread: the handshake below blocks on a std channel, which would
+    // starve a current-thread runtime's spawned workers.
+    #[tokio::test(flavor = "multi_thread")]
     async fn registry_collapses_waiters_into_one_operation() {
         let registry: OpRegistry<TestOutcome> = OpRegistry::new();
         let spawned = Arc::new(AtomicUsize::new(0));
         let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
         let started_tx = Arc::new(started_tx);
-        let (release_tx, release_rx) = tokio::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = tokio::sync::mpsc::channel::<()>(16);
+        let release_rx = Arc::new(tokio::sync::Mutex::new(release_rx));
 
         let mut joins = Vec::new();
         for _ in 0..5 {
@@ -619,7 +622,7 @@ mod tests {
                 move |_token| async move {
                     spawned.fetch_add(1, Ordering::SeqCst);
                     started_tx.send(()).expect("leader alive");
-                    let _ = release_rx.recv().await;
+                    let _ = release_rx.lock().await.recv().await;
                     Ok(42)
                 },
             )));
@@ -640,7 +643,9 @@ mod tests {
     #[tokio::test]
     async fn registry_cancels_op_when_last_waiter_leaves() {
         let registry: OpRegistry<TestOutcome> = OpRegistry::new();
-        let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+        // mpsc(1): oneshot's Sender is neither Clone nor reusable, and the
+        // factory fires the handshake from inside the spawned op.
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::channel::<()>(1);
         let token = CancellationToken::new();
 
         let waiter = {
@@ -650,14 +655,14 @@ mod tests {
                 "doomed".to_owned(),
                 token.clone(),
                 move |op_token| async move {
-                    started_tx.send(()).ok();
+                    let _ = started_tx.send(()).await;
                     op_token.cancelled().await;
                     Err(MediaError::Cancelled)
                 },
             ))
         };
 
-        started_rx.await.expect("started");
+        started_rx.recv().await.expect("started");
         token.cancel();
         assert_eq!(
             waiter.await.expect("task"),

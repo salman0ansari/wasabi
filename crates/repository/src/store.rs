@@ -73,6 +73,12 @@ impl AccountStore {
         self.sqlite.shared()
     }
 
+    /// The underlying protocol/device store, for assembling a Bot backend on
+    /// top of this account's database.
+    pub fn sqlite(&self) -> &Arc<SqliteStore> {
+        &self.sqlite
+    }
+
     pub fn device_id(&self) -> i32 {
         self.sqlite.device_id()
     }

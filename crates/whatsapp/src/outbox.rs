@@ -20,7 +20,9 @@ use whatsapp_rust::client::Client;
 use whatsapp_rust::wacore::proto_helpers::MessageBuilderExt;
 use whatsapp_rust::waproto::whatsapp as wa;
 use whatsapp_rust::{Jid, SendError, SendOptions};
-use whatsapp_rust_chat_store::{ChatStore, ChatStoreError, MessageCursor, MessageStatus};
+use whatsapp_rust_chat_store::{
+    ChatStore, ChatStoreError, MessageCursor, MessageStatus, types::StoredMessage,
+};
 
 /// Confirmation that a message passed the full pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,10 +172,8 @@ impl Outbox {
             return Err(OutboxError::Store(e));
         }
 
-        let options = SendOptions {
-            message_id: Some(id.clone()),
-            ..SendOptions::default()
-        };
+        // Struct literals are barred by #[non_exhaustive]; builder-style it is.
+        let options = SendOptions::default().with_message_id(id.clone());
         match client
             .send_message_with_options(to.clone(), message, options)
             .await
@@ -275,7 +275,9 @@ pub async fn reconcile_stale_pending(
             if token.is_cancelled() {
                 return;
             }
-            let page = match chats.messages(&entry.jid, before.clone(), RECONCILE_PAGE_SIZE).await
+            let page = match chats
+                .messages(&entry.jid, before.clone(), RECONCILE_PAGE_SIZE)
+                .await
             {
                 Ok(page) => page,
                 Err(e) => {
@@ -322,7 +324,10 @@ pub async fn reconcile_stale_pending(
     // Oldest first so conversation order is restored in sequence, not
     // scrambled by whatever order the per-chat scans happened to meet.
     stale.sort_by_key(|m| (m.timestamp, m.seq));
-    info!(count = stale.len(), "outbox: resending stale pending messages");
+    info!(
+        count = stale.len(),
+        "outbox: resending stale pending messages"
+    );
 
     for m in stale {
         if token.is_cancelled() {
@@ -339,10 +344,8 @@ pub async fn reconcile_stale_pending(
             }
             continue;
         };
-        let options = SendOptions {
-            message_id: Some(id.clone()),
-            ..SendOptions::default()
-        };
+        // Struct literals are barred by #[non_exhaustive]; builder-style it is.
+        let options = SendOptions::default().with_message_id(id.clone());
         let send = client.send_message_with_options(m.chat_jid.clone(), body.clone(), options);
         tokio::select! {
             _ = token.cancelled() => {

@@ -1,0 +1,36 @@
+# Standalone workspace: this bench deliberately lives outside the main
+# wasabi workspace so a 1M-row fixture run never shares its lockfile or
+# target dir with product builds.
+[workspace]
+
+[package]
+name = "large-db-bench"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+wasabi-repository = { path = "../../crates/repository" }
+wasabi-domain = { path = "../../crates/domain" }
+
+whatsapp-rust-chat-store = { path = "../../../third_party/whatsapp-rust/storages/chat-store", features = [
+    "search",
+] }
+whatsapp-rust-sqlite-storage = { path = "../../../third_party/whatsapp-rust/storages/sqlite-storage" }
+wacore = { path = "../../../third_party/whatsapp-rust/wacore" }
+# Jid construction for fixtures; wacore does not re-export it.
+wacore-binary = { path = "../../../third_party/whatsapp-rust/wacore/binary" }
+waproto = { path = "../../../third_party/whatsapp-rust/waproto" }
+
+# Only for PRAGMA probes through shared_db(); pinned to the same 2.3 series
+# the vendored tree uses so both resolve to one diesel build.
+diesel = { version = "2.3", default-features = false, features = ["sqlite"] }
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+chrono = "0.4"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[lints.rust]
+unsafe_code = "forbid"

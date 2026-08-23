@@ -1,10 +1,9 @@
 //! Account session: one WhatsApp account's Bot/Client lifecycle owned by the
 //! core domain.
 
-#[path = "lifecycle.rs"]
-pub mod lifecycle;
-
 use std::path::PathBuf;
+
+use crate::lifecycle;
 use std::sync::Arc;
 
 use tokio::sync::watch;
@@ -13,8 +12,8 @@ use tracing::{info, warn};
 
 use wasabi_core::state::SessionState;
 use wasabi_repository::AccountStore;
-use whatsapp_rust::bot::{Bot, BotHandle, EventDelivery};
 use whatsapp_rust::TokioRuntime;
+use whatsapp_rust::bot::{Bot, BotHandle, EventDelivery};
 use whatsapp_rust::types::events::Event;
 use whatsapp_rust_chat_store::ChatStore;
 
@@ -114,8 +113,12 @@ impl AccountSession {
         config: &SessionConfig,
         supervisor_token: CancellationToken,
     ) -> Result<(), lifecycle::LifecycleError> {
-        self.launch(config.clone(), supervisor_token.child_token(), SessionState::Connecting)
-            .await
+        self.launch(
+            config.clone(),
+            supervisor_token.child_token(),
+            SessionState::Connecting,
+        )
+        .await
     }
 
     /// Begin (or join) QR pairing. Single-flight: while a pairing is already
@@ -160,17 +163,14 @@ impl AccountSession {
         }
 
         let backend = lifecycle::protocol_backend(&self.store);
-        let (event_tx, event_rx) = whatsapp_rust::async_channel::bounded::<Arc<Event>>(
-            lifecycle::PUMP_MAILBOX_CAPACITY,
-        );
+        let (event_tx, event_rx) =
+            whatsapp_rust::async_channel::bounded::<Arc<Event>>(lifecycle::PUMP_MAILBOX_CAPACITY);
         let bot = Bot::builder()
             .with_backend_arc(backend)
             // The workspace builds the library without default features, so no
             // runtime slot is pre-filled; supply Tokio explicitly.
             .with_runtime(TokioRuntime)
-            .with_inbound_durability_hook(RepositoryDurabilityHook::new(Arc::clone(
-                &self.chats,
-            )))
+            .with_inbound_durability_hook(RepositoryDurabilityHook::new(Arc::clone(&self.chats)))
             .with_event_delivery(EventDelivery::Ordered {
                 capacity: config.event_mailbox_capacity,
             })
@@ -194,7 +194,7 @@ impl AccountSession {
 
         let handle = bot.spawn();
 
-        let pump = lifecycle::spawn_event_pump(
+        let _pump = lifecycle::spawn_event_pump(
             event_rx,
             self.state_tx.clone(),
             self.qr_tx.clone(),
@@ -251,4 +251,3 @@ impl AccountSession {
         self.stop().await;
     }
 }
-

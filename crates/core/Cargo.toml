@@ -15,6 +15,12 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 wasabi-test-support = { workspace = true }
+wasabi-repository = { workspace = true }
+wasabi-media = { workspace = true }
+waproto = { workspace = true }
+wacore = { workspace = true }
+whatsapp-rust = { workspace = true }
+chrono = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

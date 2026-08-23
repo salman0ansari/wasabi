@@ -1,0 +1,40 @@
+# Standalone soak harness: intentionally OUTSIDE the root workspace so its
+# long-run binary and dependency pinning never affect library builds.
+[workspace]
+
+[package]
+name = "soak-harness"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT"
+publish = false
+
+[dependencies]
+wasabi-core = { path = "../../../crates/core" }
+wasabi-repository = { path = "../../../crates/repository" }
+
+# Vendored upstream pins, mirroring the root workspace's relative-path style
+# and feature selections; never float these independently.
+wacore = { path = "../../../third_party/whatsapp-rust/wacore" }
+waproto = { path = "../../../third_party/whatsapp-rust/waproto" }
+whatsapp-rust = { path = "../../../third_party/whatsapp-rust", default-features = false }
+whatsapp-rust-chat-store = { path = "../../../third_party/whatsapp-rust/storages/chat-store", features = ["search"] }
+
+# Version pins mirror the root workspace table.
+anyhow = "1.0"
+chrono = { version = "0.4", default-features = false, features = ["now", "serde"] }
+tempfile = "3"
+tokio = { version = "1.53.1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "signal",
+    "fs",
+] }
+tracing = { version = "0.1", features = ["attributes"] }
+tracing-subscriber = "0.3"
+
+[lints.rust]
+unsafe_code = "forbid"
