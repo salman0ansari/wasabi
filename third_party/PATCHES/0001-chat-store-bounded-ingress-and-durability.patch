@@ -1,0 +1,408 @@
+# wasabi chat-store patch series (single reviewed change set)
+# Base: whatsapp-rust 1489b7da9a6a7e3cadc4337ee46399da7de25915
+#
+# Contents (see docs/adr/0005-chatstore-adoption.md):
+#   1. Bounded writer ingress (wasabi 0001): unbounded mpsc -> bounded(8192),
+#      IngressFull error, async backpressure variants, depth/drop metrics.
+#   2. Direct inbound apply (wasabi 0002): apply_inbound() commit path for
+#      InboundDurabilityHook hosts.
+#   3. mark_send_failed (wasabi 0003): port of PR #218 local-failure marking.
+#
+# Apply from repo root:  git apply third_party/PATCHES/*.patch
+--- a/third_party/whatsapp-rust/storages/chat-store/src/error.rs	2026-08-22 03:51:38.000000000 +0530
++++ b/third_party/whatsapp-rust/storages/chat-store/src/error.rs	2026-08-23 13:47:45.192621500 +0530
+@@ -15,6 +15,13 @@
+     /// outcome fans out to many flush waiters).
+     #[error("write batch failed: {0}")]
+     WriteBatchFailed(String),
++
++    /// The bounded writer-ingress queue is full (writer stalled or burst too
++    /// large). The write was NOT accepted; retry after backoff. Never a
++    /// correctness hazard by itself — but hosts that cannot tolerate losing
++    /// the enqueue must await the async variants instead of ignoring this.
++    #[error("writer ingress full")]
++    IngressFull,
+ }
+ 
+ pub type Result<T> = std::result::Result<T, ChatStoreError>;
+--- a/third_party/whatsapp-rust/storages/chat-store/src/store.rs	2026-08-22 03:51:38.000000000 +0530
++++ b/third_party/whatsapp-rust/storages/chat-store/src/store.rs	2026-08-23 13:51:18.037619900 +0530
+@@ -7,6 +7,7 @@
+ use std::collections::BTreeSet;
+ use std::str::FromStr;
+ use std::sync::Arc;
++use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+ 
+ use chrono::{DateTime, Utc};
+ use diesel::prelude::*;
+@@ -33,6 +34,15 @@
+ /// offline-drain bursts; the writer loops immediately for the remainder.
+ const BATCH_MAX: usize = 128;
+ 
++/// Capacity of the bounded writer-ingress queue. When SQLite stalls, the
++/// queue fills and producers observe [`ChatStoreError::IngressFull`] (or
++/// backpressure on the async enqueue variants) instead of the queue growing
++/// without bound. Depth and drop counts are observable via
++/// [`ChatStore::ingress_depth`] / [`ChatStore::ingress_dropped`]. Durable
++/// inbound message content should not depend on this queue at all: hosts run
++/// an `InboundDurabilityHook` whose commit path bypasses it.
++const WRITER_QUEUE_CAPACITY: usize = 8192;
++
+ /// Capacity of the invalidation broadcast. Lagging receivers see
+ /// `RecvError::Lagged` and should re-query everything they display.
+ const CHANGE_CHANNEL_CAPACITY: usize = 256;
+@@ -72,6 +82,12 @@
+         timestamp_ms: i64,
+     },
+     Reconcile(Jid),
++    /// Local send failure for one of this client's own still-pending
++    /// messages (wasabi patch 0003, ported from PR #218).
++    SendFailed {
++        chat: Jid,
++        msg_id: String,
++    },
+     // String, not StoreError: one batch outcome fans out to many waiters and
+     // StoreError is not Clone.
+     Flush(oneshot::Sender<std::result::Result<(), String>>),
+@@ -89,13 +105,16 @@
+ pub struct ChatStore {
+     db: SharedSqlite,
+     device_id: i32,
+-    tx: mpsc::UnboundedSender<WriterMsg>,
++    tx: mpsc::Sender<WriterMsg>,
++    /// Events refused by a full ingress queue since open. Monotonic.
++    ingress_dropped: Arc<AtomicU64>,
+     changes: broadcast::Sender<StoreChange>,
+     skip_hook_committed: Arc<std::sync::atomic::AtomicBool>,
+ }
+ 
+ struct ChatStoreHandler {
+-    tx: mpsc::UnboundedSender<WriterMsg>,
++    tx: mpsc::Sender<WriterMsg>,
++    ingress_dropped: Arc<AtomicU64>,
+     skip_hook_committed: Arc<std::sync::atomic::AtomicBool>,
+ }
+ 
+@@ -116,8 +135,23 @@
+         {
+             return;
+         }
+-        // Writer gone (store dropped): nothing to record into, drop silently.
+-        let _ = self.tx.send(WriterMsg::Event(event));
++        // Bounded ingress: when the queue is full the event is refused and
++        // counted rather than buffered without bound. Message content is not
++        // at risk — hosts that require lossless inbound materialization run
++        // an `InboundDurabilityHook` feeding [`ChatStore::apply_inbound`],
++        // which bypasses this queue entirely; what can be dropped here is
++        // re-derivable or self-healing traffic (receipts, metadata updates),
++        // and `ingress_dropped()` makes the overload observable.
++        if let Err(e) = self.tx.try_send(WriterMsg::Event(event)) {
++            match e {
++                mpsc::error::TrySendError::Full(_) => {
++                    self.ingress_dropped.fetch_add(1, AtomicOrdering::Relaxed);
++                }
++                mpsc::error::TrySendError::Closed(_) => {
++                    // Writer gone (store dropped): nothing to record into.
++                }
++            }
++        }
+     }
+ 
+     fn interest(&self) -> EventInterest {
+@@ -157,13 +191,20 @@
+         })
+         .await?;
+ 
+-        let (tx, rx) = mpsc::unbounded_channel();
++        // Bounded ingress (wasabi patch 0001): a full queue refuses new work
++        // with `IngressFull` instead of growing without bound under a stalled
++        // writer. Event-handler drops are counted; durability-critical
++        // message content bypasses this queue via the host's
++        // `InboundDurabilityHook` + [`ChatStore::apply_inbound`].
++        let (tx, rx) = mpsc::channel(WRITER_QUEUE_CAPACITY);
++        let ingress_dropped = Arc::new(AtomicU64::new(0));
+         let (changes, _) = broadcast::channel(CHANGE_CHANNEL_CAPACITY);
+ 
+         let this = Arc::new(Self {
+             db: db.clone(),
+             device_id,
+             tx,
++            ingress_dropped: Arc::clone(&ingress_dropped),
+             changes: changes.clone(),
+             skip_hook_committed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+         });
+@@ -171,6 +212,18 @@
+         Ok(this)
+     }
+ 
++    /// Events refused by a full ingress queue since open. Under healthy
++    /// SQLite this stays at zero; sustained growth is an overload signal,
++    /// not a leak (the queue itself is bounded).
++    pub fn ingress_dropped(&self) -> u64 {
++        self.ingress_dropped.load(AtomicOrdering::Relaxed)
++    }
++
++    /// Current writer-ingress queue depth (0..=`WRITER_QUEUE_CAPACITY`).
++    pub fn ingress_depth(&self) -> usize {
++        WRITER_QUEUE_CAPACITY - self.tx.capacity()
++    }
++
+     /// Declare that this client's inbound durability hook already materializes
+     /// into THIS store, so batches it committed can be skipped here.
+     ///
+@@ -199,6 +252,7 @@
+     pub fn handler(&self) -> Arc<dyn EventHandler> {
+         Arc::new(ChatStoreHandler {
+             tx: self.tx.clone(),
++            ingress_dropped: Arc::clone(&self.ingress_dropped),
+             skip_hook_committed: Arc::clone(&self.skip_hook_committed),
+         })
+     }
+@@ -228,17 +282,40 @@
+         message: &wa::Message,
+         timestamp: DateTime<Utc>,
+     ) -> Result<()> {
++        let msg = Self::outgoing_msg(chat, msg_id, message, timestamp);
++        enqueue_try(&self.tx, msg)
++    }
++
++    /// [`record_outgoing`](Self::record_outgoing) with backpressure: awaits
++    /// ingress capacity instead of failing with `IngressFull`. Use this from
++    /// async contexts where the write must not be refused (durable send
++    /// pipelines).
++    pub async fn record_outgoing_async(
++        &self,
++        chat: &Jid,
++        msg_id: impl Into<String>,
++        message: &wa::Message,
++        timestamp: DateTime<Utc>,
++    ) -> Result<()> {
++        let msg = Self::outgoing_msg(chat, msg_id, message, timestamp);
++        enqueue_await(&self.tx, msg).await
++    }
++
++    fn outgoing_msg(
++        chat: &Jid,
++        msg_id: impl Into<String>,
++        message: &wa::Message,
++        timestamp: DateTime<Utc>,
++    ) -> WriterMsg {
+         let base = wacore::proto_helpers::MessageExt::get_base_message(message);
+-        self.tx
+-            .send(WriterMsg::Outgoing {
+-                chat: chat.clone(),
+-                msg_id: msg_id.into(),
+-                proto: waproto::codec::message_to_vec(message),
+-                kind: message_kind(base),
+-                text: extract_text(base),
+-                timestamp_ms: timestamp.timestamp_millis(),
+-            })
+-            .map_err(|_| ChatStoreError::Store(StoreError::Validation("writer stopped".into())))
++        WriterMsg::Outgoing {
++            chat: chat.clone(),
++            msg_id: msg_id.into(),
++            proto: waproto::codec::message_to_vec(message),
++            kind: message_kind(base),
++            text: extract_text(base),
++            timestamp_ms: timestamp.timestamp_millis(),
++        }
+     }
+ 
+     /// Record an edit this client just sent for one of its own messages.
+@@ -256,16 +333,17 @@
+         timestamp: DateTime<Utc>,
+     ) -> Result<()> {
+         let base = wacore::proto_helpers::MessageExt::get_base_message(new_content);
+-        self.tx
+-            .send(WriterMsg::Edit {
++        enqueue_try(
++            &self.tx,
++            WriterMsg::Edit {
+                 chat: chat.clone(),
+                 target_id: target_id.to_owned(),
+                 proto: waproto::codec::message_to_vec(new_content),
+                 kind: message_kind(base),
+                 text: extract_text(base),
+                 timestamp_ms: timestamp.timestamp_millis(),
+-            })
+-            .map_err(|_| ChatStoreError::Store(StoreError::Validation("writer stopped".into())))
++            },
++        )
+     }
+ 
+     /// Record a sender revoke this client just sent for one of its own
+@@ -280,13 +358,14 @@
+         target_id: &str,
+         timestamp: DateTime<Utc>,
+     ) -> Result<()> {
+-        self.tx
+-            .send(WriterMsg::Revoke {
++        enqueue_try(
++            &self.tx,
++            WriterMsg::Revoke {
+                 chat: chat.clone(),
+                 target_id: target_id.to_owned(),
+                 timestamp_ms: timestamp.timestamp_millis(),
+-            })
+-            .map_err(|_| ChatStoreError::Store(StoreError::Validation("writer stopped".into())))
++            },
++        )
+     }
+ 
+     /// Record a reaction this client just sent. An empty `emoji` removes this
+@@ -308,16 +387,17 @@
+                 "reaction target key missing id".into(),
+             ))
+         })?;
+-        self.tx
+-            .send(WriterMsg::Reaction {
++        enqueue_try(
++            &self.tx,
++            WriterMsg::Reaction {
+                 chat: chat.clone(),
+                 target_id,
+                 target_from_me: target.from_me.unwrap_or(false),
+                 target_participant: target.participant.clone(),
+                 emoji: emoji.to_owned(),
+                 timestamp_ms: timestamp.timestamp_millis(),
+-            })
+-            .map_err(|_| ChatStoreError::Store(StoreError::Validation("writer stopped".into())))
++            },
++        )
+     }
+ 
+     /// Reconcile a 1:1 peer's PN- and LID-keyed rows into a single thread.
+@@ -330,9 +410,7 @@
+     /// one thread (or no LID mapping yet) is a no-op. Goes through the writer
+     /// queue; use [`flush`](Self::flush) to await completion.
+     pub fn reconcile_chat(&self, chat: &Jid) -> Result<()> {
+-        self.tx
+-            .send(WriterMsg::Reconcile(chat.clone()))
+-            .map_err(|_| ChatStoreError::Store(StoreError::Validation("writer stopped".into())))
++        enqueue_try(&self.tx, WriterMsg::Reconcile(chat.clone()))
+     }
+ 
+     /// Wait until every write enqueued before this call is committed. Errors
+@@ -344,9 +422,7 @@
+     /// not).
+     pub async fn flush(&self) -> Result<()> {
+         let (tx, rx) = oneshot::channel();
+-        self.tx
+-            .send(WriterMsg::Flush(tx))
+-            .map_err(|_| ChatStoreError::Store(StoreError::Validation("writer stopped".into())))?;
++        enqueue_await(&self.tx, WriterMsg::Flush(tx)).await?;
+         rx.await
+             .map_err(|_| ChatStoreError::Store(StoreError::Validation("writer stopped".into())))?
+             .map_err(ChatStoreError::WriteBatchFailed)
+@@ -356,6 +432,51 @@
+         self.device_id
+     }
+ 
++    /// Commit an inbound message batch durably RIGHT NOW, bypassing the
++    /// write-behind queue. This is the direct-commit path for a host's
++    /// `InboundDurabilityHook`: it resolves only after the batch is committed,
++    /// so returning `Ok` from the hook means "durable" for ACK-gating
++    /// purposes. Idempotent — replays of the same `(chat, sender, id)` hit
++    /// the same upsert guards as the event path.
++    ///
++    /// The subsequent `Event::Messages` for this batch still flows through
++    /// the queue; hosts feeding THIS store from their hook should call
++    /// [`skip_hook_committed_batches`](Self::skip_hook_committed_batches)(true)
++    /// so the second pass skips.
++    pub async fn apply_inbound(&self, batch: Vec<InboundMessage>) -> Result<()> {
++        if batch.is_empty() {
++            return Ok(());
++        }
++        let device_id = self.device_id;
++        let cs = self
++            .db
++            .run(move |conn| {
++                conn.transaction(|conn| {
++                    let mut cs = ChangeSet::default();
++                    for inbound in &batch {
++                        apply_inbound(conn, device_id, inbound, &mut cs)?;
++                    }
++                    Ok(cs)
++                })
++                .map_err(db_err)
++            })
++            .await?;
++        emit_changes(&self.changes, cs);
++        Ok(())
++    }
++
++    /// Mark one of this client's own messages as locally failed (send error
++    /// before or during network publication). Only lifts nothing — it only
++    /// ever moves a still-`PENDING` row to `ERROR`; a row that already earned
++    /// its server ack is left alone.
++    pub async fn mark_send_failed(&self, chat: &Jid, msg_id: impl Into<String>) -> Result<()> {
++        let msg = WriterMsg::SendFailed {
++            chat: chat.clone(),
++            msg_id: msg_id.into(),
++        };
++        enqueue_await(&self.tx, msg).await
++    }
++
+     pub(crate) fn db(&self) -> &SharedSqlite {
+         &self.db
+     }
+@@ -560,10 +681,32 @@
+     pub(crate) message_chats: BTreeSet<String>,
+ }
+ 
++/// Bounded-ingress enqueue, non-blocking variant (wasabi patch 0001).
++/// `Full` maps to [`ChatStoreError::IngressFull`]; the caller decides whether
++/// to retry. `Closed` keeps the historical "writer stopped" error.
++fn enqueue_try(tx: &mpsc::Sender<WriterMsg>, msg: WriterMsg) -> Result<()> {
++    use mpsc::error::TrySendError;
++    match tx.try_send(msg) {
++        Ok(()) => Ok(()),
++        Err(TrySendError::Full(_)) => Err(ChatStoreError::IngressFull),
++        Err(TrySendError::Closed(_)) => {
++            Err(ChatStoreError::Store(StoreError::Validation("writer stopped".into())))
++        }
++    }
++}
++
++/// Bounded-ingress enqueue with backpressure: awaits capacity instead of
++/// refusing. Only fails when the writer task is gone.
++async fn enqueue_await(tx: &mpsc::Sender<WriterMsg>, msg: WriterMsg) -> Result<()> {
++    tx.send(msg)
++        .await
++        .map_err(|_| ChatStoreError::Store(StoreError::Validation("writer stopped".into())))
++}
++
+ async fn writer_loop(
+     db: SharedSqlite,
+     device_id: i32,
+-    mut rx: mpsc::UnboundedReceiver<WriterMsg>,
++    mut rx: mpsc::Receiver<WriterMsg>,
+     changes: broadcast::Sender<StoreChange>,
+ ) {
+     // Sticky across iterations: a failed batch with no flush waiter of its
+@@ -833,6 +976,25 @@
+             cs.message_chats.insert(chat_str);
+             Ok(())
+         }
++        WriterMsg::SendFailed { chat, msg_id } => {
++            let chat_str = chat.to_string();
++            // Same guard as the nack path: a row past PENDING already got its
++            // positive answer, so a late local failure must not regress it.
++            let updated =
++                diesel::update(message_row(device_id, &chat_str, msg_id).filter(
++                    schema::messages::from_me.eq(true).and(
++                        schema::messages::status.eq(wa::web_message_info::Status::PENDING as i32),
++                    ),
++                ))
++                .set(schema::messages::status.eq(wa::web_message_info::Status::ERROR as i32))
++                .execute(conn)?;
++            // A no-op update (row already acked, or unknown id) must not
++            // broadcast an invalidation and re-hydrate the UI for nothing.
++            if updated > 0 {
++                cs.message_chats.insert(chat_str);
++            }
++            Ok(())
++        }
+         WriterMsg::Flush(_) => Ok(()),
+     }
+ }
