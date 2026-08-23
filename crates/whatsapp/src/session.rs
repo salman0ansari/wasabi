@@ -1,16 +1,24 @@
 //! Account session: one WhatsApp account's Bot/Client lifecycle owned by the
 //! core domain.
 
+#[path = "lifecycle.rs"]
+pub mod lifecycle;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use wasabi_core::state::SessionState;
 use wasabi_repository::AccountStore;
-use whatsapp_rust::bot::BotHandle;
+use whatsapp_rust::bot::{Bot, BotHandle, EventDelivery};
+use whatsapp_rust::TokioRuntime;
+use whatsapp_rust::types::events::Event;
 use whatsapp_rust_chat_store::ChatStore;
+
+use crate::durability::RepositoryDurabilityHook;
 
 /// Assembly-time configuration for one account session.
 #[derive(Clone, Debug)]
@@ -37,7 +45,10 @@ pub struct AccountSession {
     pub store: Arc<AccountStore>,
     pub chats: Arc<ChatStore>,
     state_tx: watch::Sender<SessionState>,
+    qr_tx: watch::Sender<Option<lifecycle::QrState>>,
     bot_handle: tokio::sync::Mutex<Option<BotHandle>>,
+    pump: tokio::sync::Mutex<Option<lifecycle::Pump>>,
+    config: SessionConfig,
     db_path: PathBuf,
 }
 
@@ -50,13 +61,16 @@ impl AccountSession {
     ) -> Result<Arc<Self>, wasabi_repository::OpenError> {
         let store = AccountStore::open(&db_path, tuning).await?;
         let chats = Arc::clone(store.chats());
-        let _ = config; // consumed at connect()
         let (state_tx, _) = watch::channel(SessionState::Stopped);
+        let (qr_tx, _) = watch::channel(None);
         Ok(Arc::new(Self {
             store: Arc::new(store),
             chats,
             state_tx,
+            qr_tx,
             bot_handle: tokio::sync::Mutex::new(None),
+            pump: tokio::sync::Mutex::new(None),
+            config: config.clone(),
             db_path,
         }))
     }
@@ -65,25 +79,145 @@ impl AccountSession {
         &self.db_path
     }
 
+    pub fn config(&self) -> &SessionConfig {
+        &self.config
+    }
+
     pub fn subscribe_state(&self) -> watch::Receiver<SessionState> {
         self.state_tx.subscribe()
     }
 
+    /// Latest pairing QR issued by the server; `None` once it is consumed
+    /// (paired) or dead (rotated out / expired).
+    pub fn subscribe_qr(&self) -> watch::Receiver<Option<lifecycle::QrState>> {
+        self.qr_tx.subscribe()
+    }
+
+    pub fn state(&self) -> SessionState {
+        self.state_tx.borrow().clone()
+    }
+
     fn set_state(&self, next: SessionState) {
-        // Invalid transitions are programming errors; log loudly but never
-        // wedge the pipeline on them mid-flight.
-        let current = self.state_tx.borrow().clone();
-        match current.transition(next.clone()) {
-            Ok(next) => {
-                let _ = self.state_tx.send(next);
-            }
-            Err(e) => warn!(from = %e.from, to = %e.to, "rejected invalid session transition"),
+        lifecycle::transition_to(&self.state_tx, next);
+    }
+
+    async fn is_running(&self) -> bool {
+        self.bot_handle.lock().await.is_some()
+    }
+
+    /// Connect a paired (or pairable) account: assemble the Bot over the
+    /// account database and start its run loop in the background. An already
+    /// running session refuses rather than being replaced — use [`Self::stop`]
+    /// first, or [`Self::start_pairing`] for relink semantics.
+    pub async fn connect(
+        self: &Arc<Self>,
+        config: &SessionConfig,
+        supervisor_token: CancellationToken,
+    ) -> Result<(), lifecycle::LifecycleError> {
+        self.launch(config.clone(), supervisor_token.child_token(), SessionState::Connecting)
+            .await
+    }
+
+    /// Begin (or join) QR pairing. Single-flight: while a pairing is already
+    /// in flight this returns the existing QR feed instead of restarting.
+    /// Any previous run is torn down first — linking anew replaces whatever
+    /// ran before, and each attempt gets a fresh cancellation scope.
+    ///
+    /// The vendored flow needs no explicit connect call here: for an unpaired
+    /// device the server pushes rotating `<pair-device>` refs as soon as the
+    /// run loop connects, which surface as `PairingQrCode` events on the feed
+    /// below (`pair_with_qr_code` is the opposite, primary-side flow).
+    pub async fn start_pairing(
+        self: &Arc<Self>,
+    ) -> Result<watch::Receiver<Option<lifecycle::QrState>>, lifecycle::LifecycleError> {
+        if matches!(self.state(), SessionState::Pairing) && self.is_running().await {
+            return Ok(self.subscribe_qr());
         }
+        // Replacement, not refusal: a stale or failed attempt must not block
+        // the next one.
+        self.stop().await;
+        self.launch(
+            self.config.clone(),
+            CancellationToken::new(),
+            SessionState::Pairing,
+        )
+        .await?;
+        Ok(self.subscribe_qr())
+    }
+
+    /// Assemble and start the bot stack under `run_token`, then announce
+    /// `initial`. Serialized on `bot_handle` so concurrent launches/teardowns
+    /// cannot interleave.
+    async fn launch(
+        &self,
+        config: SessionConfig,
+        run_token: CancellationToken,
+        initial: SessionState,
+    ) -> Result<(), lifecycle::LifecycleError> {
+        let mut guard = self.bot_handle.lock().await;
+        if guard.is_some() {
+            return Err(lifecycle::LifecycleError::AlreadyRunning);
+        }
+
+        let backend = lifecycle::protocol_backend(&self.store);
+        let (event_tx, event_rx) = whatsapp_rust::async_channel::bounded::<Arc<Event>>(
+            lifecycle::PUMP_MAILBOX_CAPACITY,
+        );
+        let bot = Bot::builder()
+            .with_backend_arc(backend)
+            // The workspace builds the library without default features, so no
+            // runtime slot is pre-filled; supply Tokio explicitly.
+            .with_runtime(TokioRuntime)
+            .with_inbound_durability_hook(RepositoryDurabilityHook::new(Arc::clone(
+                &self.chats,
+            )))
+            .with_event_delivery(EventDelivery::Ordered {
+                capacity: config.event_mailbox_capacity,
+            })
+            .on_event(move |event, _client| {
+                let event_tx = event_tx.clone();
+                // Awaited send: when the pump stalls, delivery backs up into
+                // the ordered mailbox whose overflow is counted by the
+                // library instead of growing without bound.
+                async move {
+                    let _ = event_tx.send(event).await;
+                }
+            })
+            .build()
+            .await?;
+
+        // Chat materialization subscribes before the run loop starts so the
+        // earliest events of a connection are not missed.
+        bot.client()
+            .subscribe_handler(self.chats.handler())
+            .detach();
+
+        let handle = bot.spawn();
+
+        let pump = lifecycle::spawn_event_pump(
+            event_rx,
+            self.state_tx.clone(),
+            self.qr_tx.clone(),
+            run_token,
+        );
+        *guard = Some(handle);
+        drop(guard);
+
+        self.set_state(initial);
+        info!("session: bot started");
+        Ok(())
     }
 
     /// Stop the session deterministically: disconnect transport, cancel bot
-    /// loop, flush durable boundaries. Idempotent.
+    /// loop and event pump, flush durable boundaries. Idempotent and safe to
+    /// race with itself.
     pub async fn stop(&self) {
+        // Pump first: it must not fold teardown-time events into the state
+        // machine while shutdown is in progress.
+        if let Some(pump) = self.pump.lock().await.take() {
+            pump.token.cancel();
+            let _ = tokio::time::timeout(lifecycle::PUMP_JOIN_TIMEOUT, pump.join).await;
+        }
         if let Some(bot) = self.bot_handle.lock().await.take() {
             info!("session: shutting down bot");
             bot.shutdown().await;
@@ -91,6 +225,30 @@ impl AccountSession {
         if let Err(e) = self.chats.flush().await {
             warn!("session: final flush failed: {e}");
         }
+        let _ = self.qr_tx.send(None);
+        // Route through the table: Connected has no direct edge to Stopped,
+        // so record the transport loss first when that edge is missing.
+        let current = self.state();
+        if current.transition(SessionState::Stopped).is_err() {
+            self.set_state(SessionState::Disconnected {
+                reason: Some("session stopped".to_string()),
+            });
+        }
         self.set_state(SessionState::Stopped);
     }
+
+    /// Unlink the device from the phone and stop the session. The client's
+    /// logout is infallible by contract (best-effort deregistration IQ plus a
+    /// local teardown), so there is nothing to propagate.
+    pub async fn logout(self: &Arc<Self>) {
+        self.set_state(SessionState::LoggingOut);
+        let client = self.bot_handle.lock().await.as_ref().map(BotHandle::client);
+        if let Some(client) = client {
+            client.logout().await;
+        } else {
+            warn!("session: logout requested with no running bot");
+        }
+        self.stop().await;
+    }
 }
+
