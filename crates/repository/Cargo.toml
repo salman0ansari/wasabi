@@ -1,0 +1,30 @@
+[package]
+name = "wasabi-repository"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+wasabi-domain = { workspace = true }
+whatsapp-rust = { workspace = true, features = [
+    "sqlite-storage",
+    "tokio-transport",
+    "ureq-client",
+    "signal",
+    "tracing",
+    "metrics",
+] }
+whatsapp-rust-chat-store = { workspace = true }
+whatsapp-rust-sqlite-storage = { workspace = true }
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+wasabi-test-support = { workspace = true }
+tempfile = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"

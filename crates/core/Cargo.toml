@@ -1,0 +1,20 @@
+[package]
+name = "wasabi-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+wasabi-domain = { workspace = true }
+wasabi-repository = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
+tokio-util = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+wasabi-test-support = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"

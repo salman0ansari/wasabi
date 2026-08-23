@@ -1,0 +1,51 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/domain",
+    "crates/core",
+    "crates/repository",
+    "crates/whatsapp",
+    "crates/media",
+    "crates/test-support",
+]
+# The GPUI application is an isolated nested workspace: gpui's dependency tree
+# (and its committed lockfile pin) must not infect core builds. See
+# docs/adr/0001-workspace-layout.md and docs/adr/0002-gpui-pinning.md.
+exclude = ["apps/desktop", "third_party"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT"
+
+[workspace.dependencies]
+wasabi-domain = { path = "crates/domain" }
+wasabi-core = { path = "crates/core" }
+wasabi-repository = { path = "crates/repository" }
+wasabi-whatsapp = { path = "crates/whatsapp" }
+wasabi-media = { path = "crates/media" }
+wasabi-test-support = { path = "crates/test-support" }
+
+# Vendored, pinned upstream (docs/adr/0004-upstream-pinning.md).
+# Base rev: 1489b7da9a6a7e3cadc4337ee46399da7de25915 + wasabi patch series
+# (see third_party/PATCHES). Never float; refreshes are explicit re-vendor tasks.
+whatsapp-rust = { path = "third_party/whatsapp-rust", default-features = false }
+whatsapp-rust-chat-store = { path = "third_party/whatsapp-rust/storages/chat-store", features = ["search"] }
+whatsapp-rust-sqlite-storage = { path = "third_party/whatsapp-rust/storages/sqlite-storage" }
+waproto = { path = "third_party/whatsapp-rust/waproto" }
+
+anyhow = "1.0"
+thiserror = "2"
+tokio = { version = "1.53.1", default-features = false }
+tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+futures = { version = "0.3", default-features = false, features = ["std"] }
+tracing = { version = "0.1", default-features = false, features = ["attributes"] }
+chrono = { version = "0.4", default-features = false, features = ["now", "serde"] }
+serde = { version = "1.0", features = ["derive"] }
+parking_lot = "0.12"
+dirs = "6"
+
+# dev
+tempfile = "3"
+proptest = "1"

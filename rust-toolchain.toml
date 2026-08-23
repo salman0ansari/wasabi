@@ -1,0 +1,13 @@
+# Wasabi toolchain.
+#
+# nightly-2026-06-16 is the exact channel the pinned GPUI revision
+# (zed c545fb67d0ce13e335bff76f7c08986000333f2c, see docs/adr/0002-gpui-pinning.md)
+# is developed and CI-tested against; gpui-component 0775df3 was validated on it
+# by upstream PR #218. The vendored whatsapp-rust tree declares the same channel,
+# so one toolchain serves both workspaces.
+#
+# Changing the toolchain is an explicit engineering task: full build, test suite,
+# lifecycle leak tests, and a desktop smoke run on all supported platforms.
+[toolchain]
+channel = "nightly-2026-06-16"
+components = ["rustfmt", "clippy"]

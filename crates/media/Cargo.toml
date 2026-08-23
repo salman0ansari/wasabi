@@ -1,0 +1,18 @@
+[package]
+name = "wasabi-media"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+wasabi-domain = { workspace = true }
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time", "fs"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
