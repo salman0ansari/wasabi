@@ -66,11 +66,16 @@ impl Focusable for MainWindow {
 }
 
 pub fn key_bindings() -> Vec<KeyBinding> {
-    vec![KeyBinding::new(
-        "cmd-k|ctrl-k",
-        FocusSearch,
-        Some(MAIN_KEY_CONTEXT),
-    )]
+    // One binding per platform prefix: the keystroke parser at this rev
+    // rejects the "cmd-k|ctrl-k" compound form.
+    [
+        ("cmd-k", cfg!(target_os = "macos")),
+        ("ctrl-k", !cfg!(target_os = "macos")),
+    ]
+    .into_iter()
+    .filter(|(_, enabled)| *enabled)
+    .map(|(keystroke, _)| KeyBinding::new(keystroke, FocusSearch, Some(MAIN_KEY_CONTEXT)))
+    .collect()
 }
 
 impl MainWindow {

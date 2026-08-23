@@ -161,7 +161,6 @@ impl Drop for TmpGuard {
     }
 }
 
-
 #[derive(Clone)]
 pub struct MediaManager {
     client: Arc<Client>,

@@ -45,6 +45,9 @@ impl SessionState {
                 Connecting,
                 Connected | Reconnecting | Disconnected { .. } | Failed { .. } | Stopped,
             ) => true,
+            // Companion-link flow: the socket connects first, then the server
+            // pushes pairing refs — Pairing is a legitimate post-connect state.
+            (Connecting, Pairing) => true,
             (Connected, Reconnecting | Disconnected { .. } | LoggingOut | Failed { .. }) => true,
             (Reconnecting, Connected | Disconnected { .. } | LoggingOut | Failed { .. }) => true,
             (Disconnected { .. }, Connecting | Pairing | Stopped) => true,

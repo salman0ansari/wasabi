@@ -480,14 +480,15 @@ mod tests {
             // ordering within the page must match page 0's direction.
             let _ = expected;
             if let (Some(first_id), Some(last_id)) = (ordered.first(), ordered.last())
-                && got.len() >= 2 {
-                    let ascending = got[0] < got[got.len() - 1];
-                    let first_dir = first_id < last_id;
-                    assert_eq!(
-                        ascending, first_dir,
-                        "page {page} must continue page 0's direction"
-                    );
-                }
+                && got.len() >= 2
+            {
+                let ascending = got[0] < got[got.len() - 1];
+                let first_dir = first_id < last_id;
+                assert_eq!(
+                    ascending, first_dir,
+                    "page {page} must continue page 0's direction"
+                );
+            }
             assert!(
                 res.rows
                     .iter()
