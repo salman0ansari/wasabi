@@ -1,0 +1,533 @@
+//! Message search over the account store's FTS index, projected into domain
+//! rows with a display snippet per hit. One bounded page per call; the store
+//! owns ranking and scoping.
+
+use std::sync::Arc;
+
+use wasabi_domain as domain;
+use whatsapp_rust::Jid;
+use whatsapp_rust_chat_store::types::StoredMessage;
+use whatsapp_rust_chat_store::{ChatStore, ChatStoreError};
+
+/// Rows per result page.
+pub const PAGE_SIZE: usize = 50;
+
+/// Context kept on each side of the first match when building a snippet.
+const SNIPPET_CONTEXT_CHARS: usize = 48;
+/// Snippet length cap when no query term occurs literally in the text
+/// (prefix matches can land on word forms the term is not a substring of).
+const SNIPPET_FALLBACK_CHARS: usize = 96;
+
+/// Stateless search facade over [`ChatStore`]. Deliberately bare: this layer
+/// is fast and side-effect free, so cancellation and debounce are caller
+/// concerns (the UI owns keystroke pacing), never modeled here.
+pub struct SearchService {
+    chats: Arc<ChatStore>,
+}
+
+impl SearchService {
+    pub fn new(chats: Arc<ChatStore>) -> Self {
+        Self { chats }
+    }
+
+    /// One bounded page of results in whatever rank/recency order the store
+    /// returns (newest-first within ties). `page` is 0-based; `scope`, when
+    /// given, is a chat JID string restricting the search to that thread.
+    pub async fn search(
+        &self,
+        query: &str,
+        scope: Option<String>,
+        page: usize,
+    ) -> Result<SearchResults, domain::ServiceError> {
+        // Whitespace-only input never reaches FTS: the store would reject it
+        // as InvalidSearchQuery, but an empty result is the honest answer.
+        if query.trim().is_empty() {
+            return Ok(SearchResults {
+                rows: Vec::new(),
+                page,
+                has_more: false,
+            });
+        }
+
+        // Fetch everything up to the wanted page END in one query, then slice
+        // in memory: FTS ranking must score the whole match set before any
+        // LIMIT bites, so a fresh LIMIT/OFFSET query per page would redo
+        // identical ranking work just to discard the skipped rows again.
+        let fetch = PAGE_SIZE.saturating_mul(page.saturating_add(1));
+        let fetch_i64 = i64::try_from(fetch).unwrap_or(i64::MAX);
+
+        let hits = match scope {
+            Some(chat) => {
+                let jid = parse_scope_jid(&chat)?;
+                self.chats
+                    .search_messages_in_chat(&jid, query, fetch_i64)
+                    .await
+            }
+            None => self.chats.search_messages(query, fetch_i64).await,
+        }
+        .map_err(map_store_error)?;
+
+        let has_more = hits.len() == fetch;
+        let terms: Vec<String> = query.split_whitespace().map(str::to_string).collect();
+        let skip = page.saturating_mul(PAGE_SIZE);
+        let rows = hits
+            .into_iter()
+            .skip(skip)
+            .map(|m| hit_to_search_hit(m, &terms))
+            .collect();
+
+        Ok(SearchResults {
+            rows,
+            page,
+            has_more,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SearchResults {
+    pub rows: Vec<SearchHit>,
+    pub page: usize,
+    /// True when the store returned exactly the requested bound, meaning at
+    /// least one more row may exist past this page.
+    pub has_more: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct SearchHit {
+    pub row: domain::MessageRow,
+    /// Context snippet around the first match, ±48 chars; the match carries no
+    /// markup — callers style it themselves.
+    pub snippet: String,
+}
+
+fn parse_scope_jid(s: &str) -> Result<Jid, domain::ServiceError> {
+    s.parse::<Jid>().map_err(|e| {
+        domain::ServiceError::new(domain::ErrorKind::InvalidRequest, format!("bad jid: {e}"))
+    })
+}
+
+fn map_store_error(e: ChatStoreError) -> domain::ServiceError {
+    match e {
+        ChatStoreError::InvalidSearchQuery => {
+            domain::ServiceError::new(domain::ErrorKind::InvalidRequest, "invalid search query")
+        }
+        other => domain::ServiceError::new(domain::ErrorKind::Database, other.to_string()),
+    }
+}
+
+fn hit_to_search_hit(m: StoredMessage, terms: &[String]) -> SearchHit {
+    let snippet = build_snippet(m.text.as_deref().unwrap_or(""), terms);
+    SearchHit {
+        row: stored_to_row(m),
+        snippet,
+    }
+}
+
+// Local copy of the facade's StoredMessage → MessageRow projection (store.rs
+// keeps its own private one); duplicating the tiny mapping avoids widening the
+// facade's surface for a single consumer.
+fn stored_to_row(m: StoredMessage) -> domain::MessageRow {
+    use whatsapp_rust_chat_store::types::MessageStatus as UpStatus;
+    let status = match m.status {
+        UpStatus::Error => domain::MessageStatus::Failed,
+        UpStatus::Pending => domain::MessageStatus::Pending,
+        UpStatus::ServerAck => domain::MessageStatus::ServerAck,
+        UpStatus::Delivered | UpStatus::Played => domain::MessageStatus::Delivered,
+        UpStatus::Read => domain::MessageStatus::Read,
+    };
+    let kind = map_kind(&m);
+    domain::MessageRow {
+        id: domain::MessageId::new(m.id),
+        chat: domain::ChatId::new(m.chat_jid.to_string()),
+        direction: if m.from_me {
+            domain::MessageDirection::Outgoing
+        } else {
+            domain::MessageDirection::Incoming
+        },
+        sender: domain::SenderJid {
+            bare: m.sender_jid.to_string(),
+            push_name: None,
+        },
+        timestamp_ms: m.timestamp.timestamp_millis(),
+        seq: domain::LocalCursor(m.seq),
+        kind,
+        status,
+        edited_at_ms: m.edited_at.map(|t| t.timestamp_millis()),
+        revoked: m.revoked,
+        starred: m.starred,
+    }
+}
+
+fn map_kind(m: &StoredMessage) -> domain::MessageKind {
+    use whatsapp_rust_chat_store::types::MessageKind as K;
+    match m.kind {
+        K::Text => domain::MessageKind::Text {
+            body: m.text.clone().unwrap_or_default(),
+        },
+        K::Image => domain::MessageKind::Image {
+            caption: m.text.clone(),
+            mime: None,
+            media_key: None,
+        },
+        K::Video => domain::MessageKind::Video {
+            caption: m.text.clone(),
+            mime: None,
+            media_key: None,
+        },
+        K::Audio => domain::MessageKind::Audio {
+            mime: None,
+            media_key: None,
+        },
+        K::Document => domain::MessageKind::Document {
+            file_name: m.text.clone(),
+            mime: None,
+            media_key: None,
+        },
+        K::Sticker => domain::MessageKind::Sticker {
+            mime: None,
+            media_key: None,
+        },
+        K::Undecryptable | K::Unknown | K::Other(_) => domain::MessageKind::Unknown,
+        _ => {
+            // Reactions live in their own table; remaining kinds have no
+            // product surface yet, but their text still deserves display.
+            match m.text.clone() {
+                Some(text) => domain::MessageKind::System { text },
+                None => domain::MessageKind::Unknown,
+            }
+        }
+    }
+}
+
+/// Snippet around the first case-insensitive occurrence of any query term:
+/// ±48 chars of context, sliced on original-text char boundaries. When no term
+/// occurs literally (possible for prefix matches), the first 96 chars stand in.
+fn build_snippet(text: &str, terms: &[String]) -> String {
+    let orig: Vec<char> = text.chars().collect();
+    let fallback = || orig.iter().take(SNIPPET_FALLBACK_CHARS).collect::<String>();
+    if terms.is_empty() || orig.is_empty() {
+        return fallback();
+    }
+
+    // Lowercasing can change character counts (`ß` → `ss`), so byte or char
+    // offsets into folded text do NOT address the original. Each folded char
+    // remembers the original char index it came from, keeping every slice on
+    // the original's boundaries.
+    let mut folded: Vec<char> = Vec::with_capacity(orig.len());
+    let mut src_of: Vec<usize> = Vec::with_capacity(orig.len());
+    for (at, ch) in orig.iter().enumerate() {
+        for low in ch.to_lowercase() {
+            folded.push(low);
+            src_of.push(at);
+        }
+    }
+
+    let mut best: Option<(usize, usize)> = None; // (folded start, folded len)
+    for term in terms {
+        let needle: Vec<char> = term.chars().flat_map(char::to_lowercase).collect();
+        if needle.is_empty()
+            || needle.len() > folded.len()
+            || best.is_some_and(|(first, _)| first == 0)
+        {
+            // Nothing can precede position 0, so further terms cannot win.
+            continue;
+        }
+        if let Some(start) = folded
+            .windows(needle.len())
+            .position(|window| window.iter().eq(needle.iter()))
+            && best.is_none_or(|(prev, _)| prev > start)
+        {
+            best = Some((start, needle.len()));
+        }
+    }
+
+    let Some((folded_start, folded_len)) = best else {
+        return fallback();
+    };
+    let start_char = src_of[folded_start];
+    let end_char = src_of[folded_start + folded_len - 1] + 1;
+    let from = start_char.saturating_sub(SNIPPET_CONTEXT_CHARS);
+    let to = (end_char + SNIPPET_CONTEXT_CHARS).min(orig.len());
+    orig[from..to].iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use chrono::{TimeZone, Utc};
+    use tempfile::TempDir;
+    use wacore::proto_helpers::MessageBuilderExt;
+    use waproto::whatsapp as wa;
+    use whatsapp_rust_sqlite_storage::{SqliteStore, SqliteStoreConfig};
+
+    const CHAT_A: &str = "559900000001@s.whatsapp.net";
+    const CHAT_B: &str = "559900000002@s.whatsapp.net";
+
+    struct Fixture {
+        // Held for lifetime parity with AccountStore; the shared pool inside
+        // would outlive them anyway, but explicit is cheaper than reasoning.
+        _dir: TempDir,
+        _sqlite: SqliteStore,
+        chats: Arc<ChatStore>,
+        svc: SearchService,
+    }
+
+    async fn fixture(tag: &str) -> Fixture {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(format!("{tag}.sqlite3"));
+        let url = format!("sqlite://{}", path.display());
+        let sqlite = SqliteStore::with_config(&url, SqliteStoreConfig::default())
+            .await
+            .expect("open sqlite store");
+        let chats = ChatStore::new(&sqlite).await.expect("open chat store");
+        let svc = SearchService::new(Arc::clone(&chats));
+        Fixture {
+            dir,
+            sqlite,
+            chats,
+            svc,
+        }
+    }
+
+    fn peer(s: &str) -> Jid {
+        s.parse().expect("valid test jid")
+    }
+
+    async fn seed(chats: &ChatStore, chat: &str, msgs: Vec<(&str, String)>, base_secs: i64) {
+        for (at, (id, text)) in msgs.into_iter().enumerate() {
+            chats
+                .record_outgoing(
+                    &peer(chat),
+                    id,
+                    &wa::Message::text(text),
+                    Utc.timestamp_opt(base_secs + at as i64, 0).unwrap(),
+                )
+                .unwrap();
+        }
+        chats.flush().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn whitespace_query_short_circuits_to_empty_page() {
+        let f = fixture("whitespace").await;
+        seed(
+            &f.chats,
+            CHAT_A,
+            vec![("W1", "needle in a haystack".into())],
+            1_700_000_000,
+        )
+        .await;
+
+        for query in ["", "   ", " \t\n "] {
+            let res = f.svc.search(query, None, 0).await.unwrap();
+            assert!(res.rows.is_empty(), "{query:?} must yield no rows");
+            assert!(!res.has_more);
+            assert_eq!(res.page, 0);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn quote_only_query_is_neutralized_not_rejected() {
+        // The store quotes every token with escaped inner quotes, so a lone `"`
+        // becomes the valid pattern `""""*` and matches nothing. The
+        // InvalidSearchQuery error only exists for whitespace-only queries,
+        // which `search` short-circuits above — hence Ok, not InvalidRequest.
+        let f = fixture("quote").await;
+        let res = f.svc.search("\"", None, 0).await.unwrap();
+        assert!(res.rows.is_empty());
+        assert!(!res.has_more);
+    }
+
+    #[test]
+    fn invalid_search_query_error_maps_to_invalid_request() {
+        let err = map_store_error(ChatStoreError::InvalidSearchQuery);
+        assert_eq!(err.kind, domain::ErrorKind::InvalidRequest);
+
+        let err = map_store_error(ChatStoreError::IngressFull);
+        assert_eq!(err.kind, domain::ErrorKind::Database);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn malformed_scope_jid_maps_to_invalid_request() {
+        let f = fixture("badscope").await;
+        let err = f
+            .svc
+            .search("anything", Some("not-a-jid".into()), 0)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, domain::ErrorKind::InvalidRequest);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn finds_seeded_messages_with_scope_and_snippet() {
+        let f = fixture("scoped").await;
+        seed(
+            &f.chats,
+            CHAT_A,
+            vec![
+                ("A1", "the quick brown fox jumps".into()),
+                ("A2", "something else entirely".into()),
+            ],
+            1_700_000_000,
+        )
+        .await;
+        seed(
+            &f.chats,
+            CHAT_B,
+            vec![("B1", "quick brown turtle".into())],
+            1_700_000_100,
+        )
+        .await;
+
+        let res = f.svc.search("brown", None, 0).await.unwrap();
+        let mut ids: Vec<&str> = res.rows.iter().map(|h| h.row.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["A1", "B1"]);
+        let a1 = res
+            .rows
+            .iter()
+            .find(|h| h.row.id.as_str() == "A1")
+            .expect("A1 among hits");
+        assert_eq!(a1.row.direction, domain::MessageDirection::Outgoing);
+        assert_eq!(a1.row.status, domain::MessageStatus::Pending);
+        assert_eq!(
+            a1.row.timestamp_ms, 1_700_000_000_000,
+            "row timestamp maps from the seeded instant"
+        );
+        assert!(a1.row.seq.0 > 0);
+        assert!(
+            matches!(&a1.row.kind, domain::MessageKind::Text { body } if body.contains("brown")),
+            "text kind carries the body"
+        );
+        assert!(
+            a1.snippet.contains("quick") && a1.snippet.contains("fox"),
+            "snippet keeps ±48 chars of context around the match: {:?}",
+            a1.snippet
+        );
+
+        let scoped = f
+            .svc
+            .search("brown", Some(CHAT_A.to_string()), 0)
+            .await
+            .unwrap();
+        assert_eq!(scoped.rows.len(), 1);
+        assert_eq!(scoped.rows[0].row.id.as_str(), "A1");
+
+        // An unknown-but-valid chat simply has no rows under its key.
+        let empty_scope = f
+            .svc
+            .search("brown", Some("559900000009@s.whatsapp.net".into()), 0)
+            .await
+            .unwrap();
+        assert!(empty_scope.rows.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn paging_over_many_hits_slices_without_duplicates() {
+        const TOTAL: i64 = 120;
+        let f = fixture("paging").await;
+        let msgs: Vec<(String, String)> = (0..TOTAL)
+            .map(|i| (format!("P{i:03}"), format!("hit report number {i:03}")))
+            .collect();
+        let msgs = msgs
+            .iter()
+            .map(|(id, text)| (id.as_str(), text.clone()))
+            .collect();
+        seed(&f.chats, CHAT_A, msgs, 1_700_000_000).await;
+
+        // Query term shorter than three chars ⇒ the store orders by arrival
+        // (rowid DESC) instead of FTS rank, making the expected page contents
+        // exact rather than rank-dependent. Full order: P119 … P000.
+        let total = TOTAL as usize;
+        let expected_page = |page: usize| -> Vec<String> {
+            let start = (page * PAGE_SIZE).min(total);
+            let end = ((page + 1) * PAGE_SIZE).min(total);
+            (start..end)
+                .map(|k| format!("P{:03}", total - 1 - k))
+                .collect()
+        };
+
+        for page in 0..=3usize {
+            let res = f.svc.search("hit", None, page).await.unwrap();
+            let want = expected_page(page);
+            assert_eq!(res.page, page);
+            assert_eq!(res.rows.len(), want.len(), "page {page} size");
+            let got: Vec<String> = res
+                .rows
+                .iter()
+                .map(|h| h.row.id.as_str().to_string())
+                .collect();
+            assert_eq!(got, want, "page {page} contents newest-first");
+            assert!(
+                res.rows
+                    .iter()
+                    .all(|h| matches!(&h.row.kind, domain::MessageKind::Text { body } if body.contains("hit"))),
+                "every hit maps through stored_to_row"
+            );
+            assert_eq!(res.has_more, page < 2, "has_more boundary at page {page}");
+        }
+
+        // Whole result set covered exactly once across pages.
+        let mut seen = std::collections::HashSet::new();
+        for page in 0..=3usize {
+            let res = f.svc.search("hit", None, page).await.unwrap();
+            for h in res.rows {
+                assert!(seen.insert(h.row.id.as_str().to_string()));
+            }
+        }
+        assert_eq!(seen.len(), TOTAL as usize);
+    }
+
+    #[test]
+    fn snippet_marks_first_match_with_bounded_context() {
+        let terms = vec!["needle".to_string()];
+        let s = build_snippet("the needle is here", &terms);
+        assert!(s.contains("needle"));
+        assert!(s.chars().count() <= 2 * SNIPPET_CONTEXT_CHARS + "needle".len());
+
+        // Case-insensitive against the ORIGINAL casing.
+        let s = build_snippet("The BROWN fox", &["brown".to_string()]);
+        assert!(s.starts_with("The "), "context precedes the match: {s:?}");
+        assert!(s.contains("BROWN"));
+
+        // Earliest occurrence across all terms wins, even when the term list
+        // orders the other way around.
+        let text = format!(
+            "{}beta{}alpha{}",
+            "b".repeat(60),
+            "m".repeat(60),
+            "e".repeat(60)
+        );
+        let s = build_snippet(&text, &["alpha".to_string(), "beta".to_string()]);
+        assert!(s.contains("beta"));
+        assert!(!s.contains("alpha"), "earlier match owns the window: {s:?}");
+    }
+
+    #[test]
+    fn snippet_slices_on_char_boundaries_and_falls_back() {
+        // Multibyte filler around the match: slicing must stay panic-free and
+        // bounded even when ±48 chars lands inside emoji runs.
+        let text = format!("{}needle{}", "🦀".repeat(60), "🦀".repeat(60));
+        let s = build_snippet(&text, &["needle".to_string()]);
+        assert!(s.contains("needle"));
+        assert!(s.chars().count() <= 2 * SNIPPET_CONTEXT_CHARS + "needle".len());
+
+        // Folded-length skew (`ß` folds to two chars): offsets still address
+        // the original string's characters.
+        let text = format!("{}ß{}", "x".repeat(80), "y".repeat(80));
+        let s = build_snippet(&text, &["ss".to_string()]);
+        assert!(s.contains('ß'), "match found through folding: {s:?}");
+
+        // No literal occurrence (prefix-match case) → first 96 chars.
+        assert_eq!(
+            build_snippet("plain words here", &["zzz".to_string()]),
+            "plain words here"
+        );
+        let long: String = "a".repeat(200);
+        let fallback = build_snippet(&long, &["zzz".to_string()]);
+        assert_eq!(fallback.chars().count(), SNIPPET_FALLBACK_CHARS);
+        assert!(fallback.chars().all(|c| c == 'a'));
+    }
+}

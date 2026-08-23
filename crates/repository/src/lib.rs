@@ -3,6 +3,7 @@
 //! leak past this crate.
 
 pub mod config;
+pub mod search;
 pub mod store;
 
 pub use config::{StorageLayout, StoreTuning};
