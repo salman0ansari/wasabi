@@ -2,7 +2,7 @@
 //!
 //! `CoreSupervisor` exclusively owns the process Tokio runtime, the
 //! cancellation hierarchy, and the deterministic shutdown sequence
-//! (docs/CONCURRENCY.md). GPUI never touches tokio primitives directly.
+//!. GPUI never touches tokio primitives directly.
 
 pub mod events;
 pub mod runtime;

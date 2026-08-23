@@ -1,8 +1,7 @@
 //! Stable identity types.
 //!
 //! Message identity is the sender-chosen WhatsApp id, unique only within
-//! `(chat, sender)` — never treated as globally unique (charter §16,
-//! durability-hook contract). Chat ids are opaque strings here; PN/LID alias
+//! `(chat, sender)` — never treated as globally unique . Chat ids are opaque strings here; PN/LID alias
 //! resolution stays behind the repository/whatsapp boundary.
 
 use std::fmt;
@@ -54,7 +53,7 @@ impl ChatId {
 
 impl fmt::Debug for ChatId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Redacted shape: never print full jids by default (charter §74).
+        // Redacted shape: never print full jids by default.
         let mut hasher = DefaultHasher::default();
         self.0.hash(&mut hasher);
         write!(f, "ChatId(pn#{:016x})", hasher.finish())

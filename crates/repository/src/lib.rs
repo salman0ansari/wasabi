@@ -1,5 +1,5 @@
 //! Wasabi repository: per-account SQLite ownership and the query facade the
-//! rest of the product depends on (charter §31). ChatStore specifics never
+//! rest of the product depends on. ChatStore specifics never
 //! leak past this crate.
 
 pub mod config;

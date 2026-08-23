@@ -1,7 +1,6 @@
-//! Wasabi media subsystem (Phase 8 implements; budgets and types fixed now
-//! so the rest of the codebase can depend on them).
+//! Wasabi media subsystem.
 //!
-//! Design constants are non-negotiable resource budgets (charter §107);
+//! Design constants are non-negotiable resource budgets;
 //! values are benchmark-tunable, never removable.
 
 /// Concurrent media downloads per account.

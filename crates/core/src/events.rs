@@ -1,12 +1,12 @@
 //! Bounded UI-facing event surfaces.
 //!
 //! - Ephemeral state (connection state, QR, typing, presence, progress)
-//!   travels through last-value-wins watch channels (charter §20).
+//!   travels through last-value-wins watch channels.
 //! - Durable change signals are invalidations only: "something changed —
-//!   re-query" (§17/§18). Rows never ride through events.
+//!   re-query". Rows never ride through events.
 //! - The invalidation channel is a bounded broadcast: a lagging consumer gets
-//!   `Lagged` and MUST refresh its visible projections from durable state
-//!   (INV-18). Stale deltas are never replayed.
+//!   `Lagged` and MUST refresh its visible projections from durable state.
+//!   Stale deltas are never replayed.
 
 use tokio::sync::watch;
 

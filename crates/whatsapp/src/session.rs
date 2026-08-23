@@ -1,6 +1,5 @@
 //! Account session: one WhatsApp account's Bot/Client lifecycle owned by the
-//! core domain (Phase 3 completes pairing/reconnect; this file establishes
-//! assembly, state surfacing, and teardown ownership).
+//! core domain.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,7 +15,7 @@ use whatsapp_rust_chat_store::ChatStore;
 /// Assembly-time configuration for one account session.
 #[derive(Clone, Debug)]
 pub struct SessionConfig {
-    /// Bounded event mailbox (charter §21/§53): ordered delivery with drops
+    /// Bounded event mailbox: ordered delivery with drops
     /// counted by the library. Durable message content bypasses this mailbox
     /// via the durability hook, so a drop here costs only re-derivable or
     /// self-healing signals.
@@ -33,7 +32,7 @@ impl Default for SessionConfig {
 
 /// Everything one live account owns. Dropping it cancels nothing implicitly —
 /// use [`AccountSession::stop`]; the supervisor drives that during shutdown
-/// (INV-16/17).
+///.
 pub struct AccountSession {
     pub store: Arc<AccountStore>,
     pub chats: Arc<ChatStore>,
@@ -51,7 +50,7 @@ impl AccountSession {
     ) -> Result<Arc<Self>, wasabi_repository::OpenError> {
         let store = AccountStore::open(&db_path, tuning).await?;
         let chats = Arc::clone(store.chats());
-        let _ = config; // consumed at connect() in Phase 3
+        let _ = config; // consumed at connect()
         let (state_tx, _) = watch::channel(SessionState::Stopped);
         Ok(Arc::new(Self {
             store: Arc::new(store),

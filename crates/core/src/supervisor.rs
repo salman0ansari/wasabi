@@ -1,11 +1,11 @@
 //! CoreSupervisor: exclusive owner of the process Tokio runtime, the
 //! cancellation hierarchy, and the deterministic shutdown sequence.
 //!
-//! Ownership rules (docs/CONCURRENCY.md §2):
+//! Ownership rules:
 //! - every background task spawns through [`CoreSupervisor::spawn_owned`],
 //!   attaching it to the cancellation tree;
 //! - detached tasks are forbidden outside test-support;
-//! - account-scoped work attaches to an account token (Phase 3).
+//! - account-scoped work attaches to an account token.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -60,7 +60,7 @@ pub struct CoreSupervisor {
 
 impl CoreSupervisor {
     /// Build the runtime and prepare the cancellation hierarchy. Does not
-    /// touch the network or storage yet (deterministic startup §96).
+    /// touch the network or storage yet; startup is deterministic.
     pub fn start(config: SupervisorConfig) -> Result<Self, SupervisorError> {
         let runtime = CoreRuntime::build(config.runtime.clone())?;
         info!(
@@ -144,7 +144,7 @@ impl CoreSupervisor {
         })
     }
 
-    /// Deterministic shutdown (docs/CONCURRENCY.md §4):
+    /// Deterministic shutdown:
     /// 1. stop accepting UI commands
     /// 2. cancel ephemeral/background work (token tree)
     /// 3. durable boundaries were flushed by owners reacting to (1)/(2)

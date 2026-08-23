@@ -1,4 +1,4 @@
-//! Session lifecycle state machine (charter §60).
+//! Session lifecycle state machine.
 //!
 //! Serialized transitions; impossible-state booleans do not exist.
 

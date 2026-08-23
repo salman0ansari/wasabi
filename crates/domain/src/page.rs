@@ -1,4 +1,4 @@
-//! Keyset pagination types (charter §38). OFFSET is banned.
+//! Keyset pagination types. OFFSET is banned.
 
 use crate::ids::ChatId;
 use crate::message::ChatSummary;

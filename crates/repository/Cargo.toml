@@ -25,6 +25,9 @@ chrono = { workspace = true }
 [dev-dependencies]
 wasabi-test-support = { workspace = true }
 tempfile = { workspace = true }
+wacore = { workspace = true }
+waproto = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros", "sync"] }
 
 [lints.rust]
 unsafe_code = "forbid"

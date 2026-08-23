@@ -1,4 +1,4 @@
-//! Structured error taxonomy (charter §65).
+//! Structured error taxonomy.
 //!
 //! UI-facing messages are derived from the kind; diagnostic/source detail
 //! never reaches the user directly.

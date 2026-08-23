@@ -1,5 +1,5 @@
 //! Per-account storage: one shared SQLite database hosting both the protocol
-//! store and the chat materialization store (ADR-0005, docs/STORAGE.md).
+//! store and the chat materialization store.
 //!
 //! This facade is the ONLY storage surface the rest of wasabi sees. ChatStore
 //! types are mapped into domain projections at the edge; GPUI never touches
@@ -65,12 +65,20 @@ impl AccountStore {
         &self.chats
     }
 
+    /// Direct access to the shared connection plumbing (one pool, one
+    /// serialized write path). Exposed for supervisor-level operations that
+    /// must share the account database's writer permit (e.g. maintenance,
+    /// benchmarks) — never for bypassing the store APIs.
+    pub fn shared_db(&self) -> whatsapp_rust_sqlite_storage::SharedSqlite {
+        self.sqlite.shared()
+    }
+
     pub fn device_id(&self) -> i32 {
         self.sqlite.device_id()
     }
 
     /// Subscribe to durable-change invalidations (bounded broadcast,
-    /// capacity 256; lag ⇒ re-query — INV-18).
+    /// capacity 256; lag ⇒ re-query —.
     pub fn subscribe_changes(&self) -> broadcast::Receiver<StoreChange> {
         self.chats.subscribe()
     }
@@ -139,7 +147,7 @@ impl AccountStore {
 impl Drop for AccountStore {
     fn drop(&mut self) {
         // Writer task stops when ChatStore drops; pools close with the last
-        // connection. Nothing to leak (INV-17).
+        // connection. Nothing to leak.
     }
 }
 
@@ -197,7 +205,7 @@ fn stored_to_row(
 }
 
 /// Map the stored kind + text into the UI-facing projection. Media payloads
-/// stay behind handles added in Phase 8; nothing here carries bytes (INV-12).
+/// stay behind handles added; nothing here carries bytes.
 fn map_kind(m: &whatsapp_rust_chat_store::types::StoredMessage) -> domain::MessageKind {
     use whatsapp_rust_chat_store::types::MessageKind as K;
     match m.kind {

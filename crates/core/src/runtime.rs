@@ -1,8 +1,8 @@
-//! Deliberately configured Tokio runtime (charter §8).
+//! Deliberately configured Tokio runtime.
 //!
 //! One runtime per process. Worker counts start conservative and change only
-//! with benchmark evidence (§114). Thread names make leaks visible in
-//! thread-count tests (INV-2).
+//! with benchmark evidence. Thread names make leaks visible in
+//! thread-count tests.
 
 use std::time::Duration;
 
@@ -30,7 +30,7 @@ impl Default for RuntimeConfig {
 
 /// Owned runtime handle. Dropping it after `shutdown` is safe; dropping it
 /// without shutdown would block on in-flight tasks, so `CoreSupervisor` always
-/// shuts down explicitly first (deterministic lifecycle, INV-17).
+/// shuts down explicitly first (deterministic lifecycle,.
 pub struct CoreRuntime {
     rt: Runtime,
     config: RuntimeConfig,
@@ -57,7 +57,7 @@ impl CoreRuntime {
 
     /// Run a future to completion on the runtime from a foreign thread.
     /// Only the supervisor's control paths may use this — never GPUI code
-    /// (INV-1).
+    ///.
     pub fn block_on<F: std::future::Future>(&self, fut: F) -> F::Output {
         self.rt.block_on(fut)
     }

@@ -1,6 +1,6 @@
-//! Phase 1 exit criteria (docs/PHASES.md):
-//! - INV-2: exactly one runtime, named threads
-//! - INV-16/17: repeated start/stop leaves no resource growth;
+//! Supervisor lifecycle guarantees:
+//! - exactly one runtime, named threads
+//! - repeated start/stop leaves no resource growth;
 //!   shutdown is deterministic; command gate closes first.
 
 use std::sync::Arc;
@@ -86,7 +86,7 @@ fn shutdown_closes_command_gate_and_cancels_children() {
 
 #[test]
 fn state_watch_reflects_transitions() {
-    // The watch channel is last-value-wins (charter §20).
+    // The watch channel is last-value-wins.
     let (tx, mut rx) = tokio::sync::watch::channel(SessionState::Stopped);
     tx.send_replace(SessionState::Connecting);
     tx.send_replace(SessionState::Connected);

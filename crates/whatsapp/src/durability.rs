@@ -1,5 +1,5 @@
 //! Inbound durability: persist-before-ACK via the library's
-//! `InboundDurabilityHook` (INV-3/INV-4, docs/DURABILITY.md §1).
+//! `InboundDurabilityHook`.
 //!
 //! The hook runs inside the receive pipeline; awaiting our commit here is the
 //! backpressure that makes "persist before ACK" true. The commit path is

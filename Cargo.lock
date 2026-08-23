@@ -1841,6 +1841,8 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "wacore",
+ "waproto",
  "wasabi-domain",
  "wasabi-test-support",
  "whatsapp-rust",

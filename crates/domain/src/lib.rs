@@ -2,7 +2,7 @@
 //!
 //! Pure, headless, GPUI-free. Everything the UI and the core exchange that is
 //! durable-shaped lives here; protocol types never cross this boundary
-//! (charter §4/§112).
+//!.
 
 pub mod error;
 pub mod ids;

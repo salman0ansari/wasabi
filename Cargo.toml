@@ -31,6 +31,7 @@ wasabi-test-support = { path = "crates/test-support" }
 # Base rev: 1489b7da9a6a7e3cadc4337ee46399da7de25915 + wasabi patch series
 # (see third_party/PATCHES). Never float; refreshes are explicit re-vendor tasks.
 whatsapp-rust = { path = "third_party/whatsapp-rust", default-features = false }
+wacore = { path = "third_party/whatsapp-rust/wacore" }
 whatsapp-rust-chat-store = { path = "third_party/whatsapp-rust/storages/chat-store", features = ["search"] }
 whatsapp-rust-sqlite-storage = { path = "third_party/whatsapp-rust/storages/sqlite-storage" }
 waproto = { path = "third_party/whatsapp-rust/waproto" }

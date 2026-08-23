@@ -1,6 +1,6 @@
-//! Storage layout and tuning knobs (docs/STORAGE.md).
+//! Storage layout and tuning knobs.
 //!
-//! Defaults encode ADR-0006 (synchronous=FULL) and the single-writer policy
+//! Defaults encode (synchronous=FULL) and the single-writer policy
 //! (pool_size=1). Every deviation is an explicit, benchmark-backed decision.
 
 use std::path::{Path, PathBuf};
@@ -33,7 +33,7 @@ impl StorageLayout {
     }
 
     /// Create the directory skeleton with owner-only permissions where the
-    /// platform supports them (charter §75).
+    /// platform supports them.
     pub fn ensure_dirs(&self, account: Option<u64>) -> std::io::Result<()> {
         fs_create_private(&self.root)?;
         fs_create_private(&self.media_cache())?;
@@ -63,7 +63,7 @@ fn fs_create_private(path: &Path) -> std::io::Result<()> {
 /// Tuning applied to the shared per-account database.
 ///
 /// See third_party sqlite-storage `SqliteStoreConfig` docs: `pool_size` drives
-/// both pool size and write serialization — keep at 1 (ADR/§34). Read
+/// both pool size and write serialization — keep at 1: two deferred read-write transactions deadlock on upgrade, and busy_timeout cannot break it. Read
 /// concurrency comes from `read_pool_size` only.
 #[derive(Clone, Debug)]
 pub struct StoreTuning {

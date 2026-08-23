@@ -1,6 +1,6 @@
 //! Message/chat projection models — bounded, UI-shaped views over durable
 //! state. The database is authoritative; these are read projections
-//! (charter §12/§17).
+//!.
 
 use serde::{Deserialize, Serialize};
 
@@ -67,7 +67,7 @@ pub struct MessageRow {
 }
 
 /// Content kind actually rendered today. Media payloads stay behind media
-/// handles — bytes never ride through here (INV-12).
+/// handles — bytes never ride through here.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageKind {
     Text {
