@@ -7,7 +7,20 @@ license.workspace = true
 
 [dependencies]
 wasabi-domain = { workspace = true }
+whatsapp-rust = { workspace = true }
+whatsapp-rust-chat-store = { workspace = true }
+waproto = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt", "macros", "time", "fs"] }
+tokio-util = { workspace = true }
+sha2 = "0.10"
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "webp",
+] }
+# Atime updates drive the eviction clock; relatime mounts alone would leave
+# recently-read entries looking cold after a day.
+filetime = "0.25"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
