@@ -122,18 +122,22 @@ impl MainWindow {
         this.subscriptions.push(on_search_change);
 
         // Deterministic teardown mirrors the supervisor sequence: flush
-        // durable boundaries first, then stop the session.
-        cx.on_app_quit(async move |this, _| {
+        // durable boundaries first, then stop the session. The callback is
+        // sync at this rev; the async body parks on a detached task.
+        let on_quit = cx.on_app_quit(|this, _cx| {
             let bridge = Arc::clone(&this.bridge);
-            let _ = bridge.flush_storage().await;
-            let _ = bridge.stop_session().await;
+            async move {
+                let _ = bridge.flush_storage().await;
+                let _ = bridge.stop_session().await;
+            }
         });
+        this.subscriptions.push(on_quit);
 
         this.spawn_hydration(cx);
         this.spawn_invalidation_loop(cx);
         this.spawn_state_watch(cx);
         this.spawn_qr_watch(cx);
-        window.focus(&this.focus);
+        window.focus(&this.focus, cx);
         this
     }
 
@@ -391,8 +395,7 @@ impl MainWindow {
                                 }
                             }
                         }
-                    })
-                    .ok();
+                    });
             }
         });
     }
@@ -552,7 +555,7 @@ fn titlebar(this: &MainWindow) -> gpui::Div {
                 .gap(px(6.0))
                 .text_size(px(theme::TEXT_SIZE_SM))
                 .text_color(theme::TEXT_SECONDARY)
-                .child(div().size(px(9.0), px(9.0)).rounded_full().bg(status_color))
+                .child(div().size(px(9.0)).rounded_full().bg(status_color))
                 .child(format!("Network ● {}", this.session.status_label()))
                 .child("▾"),
         )
@@ -572,7 +575,7 @@ fn nav_rail() -> gpui::Div {
     let mut rail = div()
         .w(px(theme::NAV_W))
         .h_full()
-        .flex_shrink(px(0.0))
+        .flex_shrink(0.0)
         .flex()
         .flex_col()
         .items_center()
@@ -584,7 +587,7 @@ fn nav_rail() -> gpui::Div {
 
     for (glyph, active) in items {
         let mut item = div()
-            .size(px(46.0), px(46.0))
+            .size(px(46.0))
             .rounded(px(theme::RADIUS_LG))
             .flex()
             .items_center()
@@ -607,7 +610,7 @@ fn nav_rail() -> gpui::Div {
             .gap(px(8.0))
             .child(
                 div()
-                    .size(px(46.0), px(46.0))
+                    .size(px(46.0))
                     .rounded(px(theme::RADIUS_LG))
                     .flex()
                     .items_center()
@@ -619,7 +622,7 @@ fn nav_rail() -> gpui::Div {
             )
             .child(
                 div()
-                    .size(px(38.0), px(38.0))
+                    .size(px(38.0))
                     .rounded_full()
                     .flex()
                     .items_center()
@@ -641,7 +644,7 @@ fn chat_pane(
     div()
         .w(px(theme::CHAT_LIST_W))
         .h_full()
-        .flex_shrink(px(0.0))
+        .flex_shrink(0.0)
         .flex()
         .flex_col()
         .bg(theme::SURFACE)
@@ -718,7 +721,7 @@ fn apply_state(
 fn apply_qr(
     weak: WeakEntity<MainWindow>,
     cx: &mut gpui::AsyncApp,
-    qr: Option<wasabi_whatsapp::session::lifecycle::QrState>,
+    qr: Option<wasabi_whatsapp::lifecycle::QrState>,
 ) -> Result<(), anyhow::Error> {
     weak.update(cx, |this, cx| {
         match qr {
@@ -739,7 +742,7 @@ fn apply_qr(
 /// body re-checks its weak handle anyway.
 pub(crate) fn spawn_main<F>(cx: &mut Context<'_, MainWindow>, f: F)
 where
-    F: std::future::AsyncFnOnce(WeakEntity<MainWindow>, &mut gpui::AsyncApp) + 'static,
+    F: AsyncFnOnce(WeakEntity<MainWindow>, &mut gpui::AsyncApp) + 'static,
 {
     cx.spawn(f).detach();
 }

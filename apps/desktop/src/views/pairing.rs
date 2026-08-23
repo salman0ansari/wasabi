@@ -39,7 +39,7 @@ pub fn pairing_panel(session: &SessionMirror, cx: &mut Context<MainWindow>) -> g
     // QR rendering arrives with the media pipeline; the dashed frame reserves
     // the exact footprint so layout stays stable once codes are drawn.
     let qr_placeholder = gpui::div()
-        .size(px(220.0), px(220.0))
+        .size(px(220.0))
         .rounded(px(theme::RADIUS_MD))
         .border_1()
         .border_dashed()

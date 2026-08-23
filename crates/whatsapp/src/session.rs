@@ -82,6 +82,20 @@ impl AccountSession {
         &self.config
     }
 
+    pub fn store(&self) -> &Arc<wasabi_repository::AccountStore> {
+        &self.store
+    }
+
+    pub fn chats(&self) -> &Arc<whatsapp_rust_chat_store::ChatStore> {
+        &self.chats
+    }
+
+    /// Live protocol client while a Bot run loop is active; `None` between
+    /// sessions (callers queue or surface "not connected").
+    pub async fn client(&self) -> Option<std::sync::Arc<whatsapp_rust::client::Client>> {
+        self.bot_handle.lock().await.as_ref().map(BotHandle::client)
+    }
+
     pub fn subscribe_state(&self) -> watch::Receiver<SessionState> {
         self.state_tx.subscribe()
     }

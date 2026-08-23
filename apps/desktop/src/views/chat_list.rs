@@ -145,9 +145,9 @@ fn chat_row(
         }))
         .child(
             gpui::div()
-                .size(px(46.0), px(46.0))
+                .size(px(46.0))
                 .rounded_full()
-                .flex_shrink(px(0.0))
+                .flex_shrink(0.0)
                 .flex()
                 .items_center()
                 .justify_center()

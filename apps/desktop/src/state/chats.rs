@@ -2,8 +2,9 @@
 
 use wasabi_domain::{ChatPageCursor, ChatSummary};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ChatFilter {
+    #[default]
     All,
     Unread,
     Favorites,

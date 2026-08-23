@@ -1,13 +1,14 @@
 //! Right-hand chat info panel: identity summary, media grid and
 //! participants skeletons ahead of richer store projections.
 
+use gpui::prelude::*;
 use gpui::{Context, px};
 
 use crate::state::chats;
 use crate::theme;
 use crate::views::root::MainWindow;
 
-pub fn info_panel(this: &mut MainWindow, _cx: &mut Context<MainWindow>) -> gpui::Div {
+pub fn info_panel(this: &mut MainWindow, _cx: &mut Context<MainWindow>) -> impl IntoElement {
     let selected = this
         .chats
         .selected
@@ -29,7 +30,7 @@ pub fn info_panel(this: &mut MainWindow, _cx: &mut Context<MainWindow>) -> gpui:
     let initial = name.chars().next().unwrap_or('#').to_string();
 
     let avatar = gpui::div()
-        .size(px(72.0), px(72.0))
+        .size(px(72.0))
         .rounded_full()
         .flex()
         .items_center()
@@ -82,7 +83,7 @@ pub fn info_panel(this: &mut MainWindow, _cx: &mut Context<MainWindow>) -> gpui:
             .py(px(8.0))
             .child(
                 gpui::div()
-                    .size(px(36.0), px(36.0))
+                    .size(px(36.0))
                     .rounded_full()
                     .bg(theme::SKELETON),
             )
@@ -108,6 +109,7 @@ pub fn info_panel(this: &mut MainWindow, _cx: &mut Context<MainWindow>) -> gpui:
     };
 
     gpui::div()
+        .id("right-panel-scroll")
         .w(px(theme::RIGHT_PANEL_W))
         .h_full()
         .flex_shrink_0()

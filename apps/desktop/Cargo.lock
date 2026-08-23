@@ -7984,6 +7984,7 @@ dependencies = [
  "wasabi-domain",
  "wasabi-repository",
  "wasabi-whatsapp",
+ "whatsapp-rust",
 ]
 
 [[package]]

@@ -15,7 +15,7 @@ pub fn build_input(window: &mut Window, cx: &mut Context<MainWindow>) -> gpui::E
 
 pub fn composer_bar(
     this: &mut MainWindow,
-    window: &mut Window,
+    _window: &mut Window,
     cx: &mut Context<MainWindow>,
 ) -> gpui::Div {
     let can_send = this.session.can_send() && this.chats.selected.is_some();

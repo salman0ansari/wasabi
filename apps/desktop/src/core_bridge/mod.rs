@@ -19,9 +19,10 @@ use tokio_util::sync::CancellationToken;
 use wasabi_core::events::{Invalidation, InvalidationPublisher};
 use wasabi_core::state::SessionState;
 use wasabi_domain::{ChatSummary, MessagePage, PageCursor};
-use wasabi_repository::{AccountStore, ServiceError};
+use wasabi_domain::ServiceError;
+use wasabi_repository::AccountStore;
 use wasabi_whatsapp::outbox::Outbox;
-use wasabi_whatsapp::session::lifecycle::QrState;
+use wasabi_whatsapp::lifecycle::QrState;
 use wasabi_whatsapp::session::{AccountSession, SessionConfig};
 
 /// Maximum queued outgoing texts while no transport seam is attached.
@@ -262,7 +263,7 @@ impl CoreBridge {
         if !self.commands_accepted() {
             return Err("shutting down".to_string());
         }
-        if let Some(rx) = self.dispatch(chat, text.clone()) {
+        if let Some(rx) = self.dispatch(chat.clone(), text.clone()) {
             return rx.await.map_err(|_| "transport dropped".to_string())?;
         }
         self.enqueue_pending(chat, text)?;

@@ -11,6 +11,13 @@ wasabi-domain = { path = "../../crates/domain" }
 wasabi-core = { path = "../../crates/core" }
 wasabi-repository = { path = "../../crates/repository" }
 wasabi-whatsapp = { path = "../../crates/whatsapp" }
+whatsapp-rust = { path = "../../third_party/whatsapp-rust", default-features = false, features = [
+    "sqlite-storage",
+    "tokio-transport",
+    "tokio-runtime",
+    "ureq-client",
+    "signal",
+] }
 gpui = { git = "https://github.com/zed-industries/zed", package = "gpui" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", package = "gpui_platform", features = ["font-kit", "x11"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component.git", rev = "0775df394083c1ed74f36f846b78868d1267398f" }
