@@ -1,0 +1,25 @@
+# Build artifacts
+/target/
+apps/desktop/target/
+third_party/target/
+
+# Cargo lockfiles: root + nested workspaces commit theirs.
+# (Cargo.lock files are tracked; do not ignore them.)
+
+# Local runtime data
+/data/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Logs
+/logs/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+docs/*
+design-reference.png
