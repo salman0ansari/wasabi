@@ -127,6 +127,10 @@ pub fn chat_list(
     _window: &mut Window,
     cx: &mut Context<MainWindow>,
 ) -> gpui::Div {
+    if !this.chats.query.trim().is_empty() {
+        return search_results_list(this, cx);
+    }
+
     let rows = this.chats.visible_cache.len();
     let item_count = rows + usize::from(this.chats.next_after.is_some());
     let item_sizes: Rc<Vec<gpui::Size<gpui::Pixels>>> =
@@ -165,6 +169,217 @@ pub fn chat_list(
         );
     }
     pane
+}
+
+fn search_results_list(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
+    const HEADER_H: f32 = 34.0;
+
+    let local_count = this.chats.visible_cache.len();
+    let message_count = this.chats.search_messages.len();
+    let chat_header_count = usize::from(local_count > 0);
+    let message_header = chat_header_count + local_count;
+    let footer_count = usize::from(message_count == 0 || this.chats.search_has_more);
+    let item_count = message_header + 1 + message_count + footer_count;
+    let mut sizes = Vec::with_capacity(item_count);
+    if local_count > 0 {
+        sizes.push(size(px(theme::CHAT_LIST_W), px(HEADER_H)));
+        sizes.extend(std::iter::repeat_n(
+            size(px(theme::CHAT_LIST_W), px(theme::CHAT_ROW_H)),
+            local_count,
+        ));
+    }
+    sizes.push(size(px(theme::CHAT_LIST_W), px(HEADER_H)));
+    sizes.extend(std::iter::repeat_n(
+        size(px(theme::CHAT_LIST_W), px(theme::CHAT_ROW_H)),
+        message_count + footer_count,
+    ));
+
+    let view = cx.entity().clone();
+    gpui::div().flex_1().min_h(px(0.0)).child(
+        v_virtual_list(
+            view,
+            "search-results",
+            Rc::new(sizes),
+            move |this, range, _, cx| {
+                range
+                    .map(|ix| {
+                        if local_count > 0 && ix == 0 {
+                            return section_header("Chats", None).into_any_element();
+                        }
+                        if local_count > 0 && ix <= local_count {
+                            return chat_row(this, cx, ix - 1).into_any_element();
+                        }
+                        if ix == message_header {
+                            let status = this.chats.search_loading.then_some("Searching…");
+                            return section_header("Messages", status).into_any_element();
+                        }
+                        let message_index = ix.saturating_sub(message_header + 1);
+                        if let Some(hit) = this.chats.search_messages.get(message_index).cloned() {
+                            return message_search_row(this, cx, message_index, hit)
+                                .into_any_element();
+                        }
+                        if this.chats.search_has_more {
+                            return load_more_search_row(this, cx).into_any_element();
+                        }
+                        if this.chats.search_loading {
+                            return search_status_row("Searching messages…").into_any_element();
+                        }
+                        let status = this
+                            .chats
+                            .search_error
+                            .clone()
+                            .unwrap_or_else(|| "No matching messages".to_string());
+                        search_status_row(status).into_any_element()
+                    })
+                    .collect::<Vec<_>>()
+            },
+        )
+        .track_scroll(&this.chat_scroll),
+    )
+}
+
+fn load_more_search_row(
+    this: &mut MainWindow,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Stateful<gpui::Div> {
+    let loading = this.chats.search_loading;
+    gpui::div()
+        .id("load-more-search")
+        .h(px(theme::CHAT_ROW_H))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(theme::TEXT_SIZE))
+        .text_color(theme::accent_text())
+        .when(!loading, |row| {
+            row.cursor_pointer()
+                .hover(|style| style.bg(theme::row_hover()))
+                .on_click(cx.listener(|this, _, _, cx| this.load_more_search(cx)))
+        })
+        .child(if loading {
+            "Loading more results…"
+        } else {
+            "Load more messages"
+        })
+}
+
+fn section_header(label: &'static str, status: Option<&'static str>) -> gpui::Div {
+    gpui::div()
+        .h(px(34.0))
+        .flex()
+        .items_center()
+        .justify_between()
+        .px(px(12.0))
+        .bg(theme::canvas())
+        .text_size(px(theme::TEXT_SIZE_SM))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(theme::text_secondary())
+        .child(label)
+        .children(status.map(|status| {
+            gpui::div()
+                .font_weight(gpui::FontWeight::NORMAL)
+                .child(status)
+        }))
+}
+
+fn message_search_row(
+    this: &mut MainWindow,
+    cx: &mut Context<MainWindow>,
+    index: usize,
+    hit: wasabi_domain::MessageSearchHit,
+) -> gpui::Stateful<gpui::Div> {
+    let chat_id = hit.row.chat.as_str().to_string();
+    let name = this
+        .chats
+        .chats
+        .iter()
+        .find(|chat| chat.id == hit.row.chat)
+        .map(chats::fallback_name)
+        .unwrap_or_else(|| {
+            chat_id
+                .split('@')
+                .next()
+                .unwrap_or(chat_id.as_str())
+                .to_string()
+        });
+    let initial = name
+        .chars()
+        .next()
+        .unwrap_or('?')
+        .to_uppercase()
+        .to_string();
+    let time = messages::relative_time(hit.row.timestamp_ms);
+    let text_scale = this.settings.text_scale;
+    gpui::div()
+        .id(("message-search-hit", index))
+        .h(px(theme::CHAT_ROW_H))
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .px(px(10.0))
+        .cursor_pointer()
+        .hover(|style| style.bg(theme::row_hover()))
+        .on_click(cx.listener(move |this, _, _, cx| this.select_chat(chat_id.clone(), cx)))
+        .child(
+            gpui::div()
+                .size(px(42.0))
+                .rounded_full()
+                .flex_shrink(0.0)
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(theme::sender_color(&name))
+                .text_color(theme::text_on_accent())
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(initial),
+        )
+        .child(
+            gpui::div()
+                .flex_1()
+                .min_w(px(0.0))
+                .flex()
+                .flex_col()
+                .gap(px(3.0))
+                .child(
+                    gpui::div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(
+                            gpui::div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .truncate()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(theme::text_primary())
+                                .child(name),
+                        )
+                        .child(
+                            gpui::div()
+                                .text_size(px(theme::TEXT_SIZE_SM))
+                                .text_color(theme::text_secondary())
+                                .child(time),
+                        ),
+                )
+                .child(
+                    gpui::div()
+                        .truncate()
+                        .text_size(px(theme::scaled_text(theme::TEXT_SIZE, text_scale)))
+                        .text_color(theme::text_secondary())
+                        .child(hit.snippet),
+                ),
+        )
+}
+
+fn search_status_row(text: impl Into<String>) -> gpui::Div {
+    gpui::div()
+        .h(px(theme::CHAT_ROW_H))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(theme::TEXT_SIZE))
+        .text_color(theme::text_secondary())
+        .child(text.into())
 }
 
 fn load_more_row(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Stateful<gpui::Div> {

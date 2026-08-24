@@ -1,6 +1,8 @@
 //! Chat list page model: one loaded keyset page plus client-side filtering.
 
-use wasabi_domain::{ChatPage, ChatPageCursor, ChatScope, ChatSummary};
+use wasabi_domain::{
+    ChatPage, ChatPageCursor, ChatScope, ChatSummary, MessageSearchHit, SearchPage,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ChatFilter {
@@ -40,6 +42,11 @@ pub struct ChatListModel {
     pub scope: ChatScope,
     pub filter: ChatFilter,
     pub query: String,
+    pub search_messages: Vec<MessageSearchHit>,
+    pub search_page: usize,
+    pub search_loading: bool,
+    pub search_has_more: bool,
+    pub search_error: Option<String>,
     pub selected: Option<String>,
     pub error: Option<String>,
 }
@@ -76,6 +83,43 @@ impl ChatListModel {
         self.next_after = page.next_after;
         self.loading_more = false;
         self.error = None;
+    }
+
+    pub fn clear_search(&mut self) {
+        self.search_messages.clear();
+        self.search_page = 0;
+        self.search_loading = false;
+        self.search_has_more = false;
+        self.search_error = None;
+    }
+
+    pub fn set_search_page(&mut self, page: SearchPage) {
+        self.search_messages = page.messages;
+        self.search_page = page.page;
+        self.search_loading = false;
+        self.search_has_more = page.has_more;
+        self.search_error = None;
+    }
+
+    pub fn append_search_page(&mut self, page: SearchPage) {
+        for hit in page.messages {
+            if !self
+                .search_messages
+                .iter()
+                .any(|existing| existing.row.id == hit.row.id)
+            {
+                self.search_messages.push(hit);
+            }
+        }
+        self.search_page = page.page;
+        self.search_loading = false;
+        self.search_has_more = page.has_more;
+        self.search_error = None;
+    }
+
+    pub fn set_search_error(&mut self, error: String) {
+        self.search_loading = false;
+        self.search_error = Some(error);
     }
 
     /// Keyset cursor reconstructed from the last row of the loaded page.

@@ -18,8 +18,8 @@ use tokio_util::sync::CancellationToken;
 use wasabi_core::events::{Invalidation, InvalidationPublisher};
 use wasabi_core::state::SessionState;
 use wasabi_domain::{
-    ChatPage, ChatScope, ErrorKind, MessageId, MessagePage, PageCursor, SendContent, SendReceipt,
-    SendRequest, ServiceError,
+    ChatPage, ChatScope, ErrorKind, MessageId, MessagePage, PageCursor, SearchPage, SendContent,
+    SendReceipt, SendRequest, ServiceError,
 };
 use wasabi_repository::AccountStore;
 use wasabi_whatsapp::lifecycle::QrState;
@@ -201,6 +201,22 @@ impl CoreBridge {
         self.run_on_core(async move {
             store
                 .message_page(&chat, before, limit)
+                .await
+                .map_err(service_message)
+        })
+        .await
+    }
+
+    pub async fn search_messages(
+        &self,
+        query: String,
+        chat_scope: Option<String>,
+        page: usize,
+    ) -> Result<SearchPage, String> {
+        let store = self.store_snapshot()?;
+        self.run_on_core(async move {
+            wasabi_repository::search::SearchService::new(Arc::clone(store.chats()))
+                .search(&query, chat_scope, page)
                 .await
                 .map_err(service_message)
         })

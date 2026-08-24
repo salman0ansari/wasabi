@@ -29,6 +29,7 @@ gpui::actions!(wasabi_desktop, [FocusSearch, OpenSettings, CloseInfo]);
 pub const MAIN_KEY_CONTEXT: &str = "Main";
 const CHAT_PAGE_LIMIT: usize = 100;
 const MESSAGE_PAGE_LIMIT: usize = 60;
+const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
 /// Countdown label refresh interval.
 const COUNTDOWN_TICK: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -74,6 +75,7 @@ pub struct MainWindow {
     /// Whether the last frame showed the newest end of the timeline.
     pub(crate) near_bottom: bool,
     chats_gen: AtomicU64,
+    search_gen: AtomicU64,
     messages_gen: AtomicU64,
     qr_ticker_gen: AtomicU64,
     pairing_request_gen: AtomicU64,
@@ -144,6 +146,7 @@ impl MainWindow {
             first_visible: 0,
             near_bottom: true,
             chats_gen: AtomicU64::new(0),
+            search_gen: AtomicU64::new(0),
             messages_gen: AtomicU64::new(0),
             qr_ticker_gen: AtomicU64::new(0),
             pairing_request_gen: AtomicU64::new(0),
@@ -159,6 +162,7 @@ impl MainWindow {
                 if matches!(event, InputEvent::Change) {
                     this.chats.query = search_input.read(cx).value().to_string();
                     this.refresh_visible();
+                    this.queue_search(cx);
                     cx.notify();
                 }
             }
@@ -199,6 +203,72 @@ impl MainWindow {
 
     pub(crate) fn show_active_chats(&mut self, cx: &mut Context<Self>) {
         self.switch_chat_scope(ChatScope::Active, cx);
+    }
+
+    fn queue_search(&mut self, cx: &mut Context<Self>) {
+        let generation = self.search_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        let query = self.chats.query.trim().to_string();
+        if query.is_empty() {
+            self.chats.clear_search();
+            cx.notify();
+            return;
+        }
+        self.chats.clear_search();
+        self.chats.search_loading = true;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            cx.background_executor().timer(SEARCH_DEBOUNCE).await;
+            let current = this
+                .update(cx, |this, _| {
+                    this.search_gen.load(Ordering::Acquire) == generation
+                })
+                .unwrap_or(false);
+            if !current {
+                return;
+            }
+            let result = bridge.search_messages(query, None, 0).await;
+            this.update(cx, |this, cx| {
+                if this.search_gen.load(Ordering::Acquire) != generation {
+                    return;
+                }
+                match result {
+                    Ok(page) => this.chats.set_search_page(page),
+                    Err(error) => this.chats.set_search_error(error),
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+    }
+
+    pub(crate) fn load_more_search(&mut self, cx: &mut Context<Self>) {
+        if self.chats.search_loading || !self.chats.search_has_more {
+            return;
+        }
+        let generation = self.search_gen.load(Ordering::Acquire);
+        let query = self.chats.query.trim().to_string();
+        if query.is_empty() {
+            return;
+        }
+        let page = self.chats.search_page.saturating_add(1);
+        self.chats.search_loading = true;
+        self.chats.search_error = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.search_messages(query, None, page).await;
+            this.update(cx, |this, cx| {
+                if this.search_gen.load(Ordering::Acquire) != generation {
+                    return;
+                }
+                match result {
+                    Ok(page) => this.chats.append_search_page(page),
+                    Err(error) => this.chats.set_search_error(error),
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
     }
 
     fn switch_chat_scope(&mut self, scope: ChatScope, cx: &mut Context<Self>) {

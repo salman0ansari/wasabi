@@ -38,12 +38,12 @@ impl SearchService {
         query: &str,
         scope: Option<String>,
         page: usize,
-    ) -> Result<SearchResults, domain::ServiceError> {
+    ) -> Result<domain::SearchPage, domain::ServiceError> {
         // Whitespace-only input never reaches FTS: the store would reject it
         // as InvalidSearchQuery, but an empty result is the honest answer.
         if query.trim().is_empty() {
-            return Ok(SearchResults {
-                rows: Vec::new(),
+            return Ok(domain::SearchPage {
+                messages: Vec::new(),
                 page,
                 has_more: false,
             });
@@ -53,7 +53,10 @@ impl SearchService {
         // in memory: FTS ranking must score the whole match set before any
         // LIMIT bites, so a fresh LIMIT/OFFSET query per page would redo
         // identical ranking work just to discard the skipped rows again.
-        let fetch = PAGE_SIZE.saturating_mul(page.saturating_add(1));
+        // Ask for one sentinel row beyond the requested page. Equality with
+        // the page boundary cannot distinguish "exactly full" from "more".
+        let page_end = PAGE_SIZE.saturating_mul(page.saturating_add(1));
+        let fetch = page_end.saturating_add(1);
         let fetch_i64 = i64::try_from(fetch).unwrap_or(i64::MAX);
 
         let hits = match scope {
@@ -67,38 +70,22 @@ impl SearchService {
         }
         .map_err(map_store_error)?;
 
-        let has_more = hits.len() == fetch;
+        let has_more = hits.len() > page_end;
         let terms: Vec<String> = query.split_whitespace().map(str::to_string).collect();
         let skip = page.saturating_mul(PAGE_SIZE);
-        let rows = hits
+        let messages = hits
             .into_iter()
             .skip(skip)
+            .take(PAGE_SIZE)
             .map(|m| hit_to_search_hit(m, &terms))
             .collect();
 
-        Ok(SearchResults {
-            rows,
+        Ok(domain::SearchPage {
+            messages,
             page,
             has_more,
         })
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct SearchResults {
-    pub rows: Vec<SearchHit>,
-    pub page: usize,
-    /// True when the store returned exactly the requested bound, meaning at
-    /// least one more row may exist past this page.
-    pub has_more: bool,
-}
-
-#[derive(Clone, Debug)]
-pub struct SearchHit {
-    pub row: domain::MessageRow,
-    /// Context snippet around the first match, ±48 chars; the match carries no
-    /// markup — callers style it themselves.
-    pub snippet: String,
 }
 
 fn parse_scope_jid(s: &str) -> Result<Jid, domain::ServiceError> {
@@ -116,9 +103,9 @@ fn map_store_error(e: ChatStoreError) -> domain::ServiceError {
     }
 }
 
-fn hit_to_search_hit(m: StoredMessage, terms: &[String]) -> SearchHit {
+fn hit_to_search_hit(m: StoredMessage, terms: &[String]) -> domain::MessageSearchHit {
     let snippet = build_snippet(m.text.as_deref().unwrap_or(""), terms);
-    SearchHit {
+    domain::MessageSearchHit {
         row: stored_to_row(m),
         snippet,
     }
@@ -322,7 +309,7 @@ mod tests {
 
         for query in ["", "   ", " \t\n "] {
             let res = f.svc.search(query, None, 0).await.unwrap();
-            assert!(res.rows.is_empty(), "{query:?} must yield no rows");
+            assert!(res.messages.is_empty(), "{query:?} must yield no rows");
             assert!(!res.has_more);
             assert_eq!(res.page, 0);
         }
@@ -336,7 +323,7 @@ mod tests {
         // which `search` short-circuits above — hence Ok, not InvalidRequest.
         let f = fixture("quote").await;
         let res = f.svc.search("\"", None, 0).await.unwrap();
-        assert!(res.rows.is_empty());
+        assert!(res.messages.is_empty());
         assert!(!res.has_more);
     }
 
@@ -382,11 +369,11 @@ mod tests {
         .await;
 
         let res = f.svc.search("brown", None, 0).await.unwrap();
-        let mut ids: Vec<&str> = res.rows.iter().map(|h| h.row.id.as_str()).collect();
+        let mut ids: Vec<&str> = res.messages.iter().map(|h| h.row.id.as_str()).collect();
         ids.sort_unstable();
         assert_eq!(ids, ["A1", "B1"]);
         let a1 = res
-            .rows
+            .messages
             .iter()
             .find(|h| h.row.id.as_str() == "A1")
             .expect("A1 among hits");
@@ -412,8 +399,8 @@ mod tests {
             .search("brown", Some(CHAT_A.to_string()), 0)
             .await
             .unwrap();
-        assert_eq!(scoped.rows.len(), 1);
-        assert_eq!(scoped.rows[0].row.id.as_str(), "A1");
+        assert_eq!(scoped.messages.len(), 1);
+        assert_eq!(scoped.messages[0].row.id.as_str(), "A1");
 
         // An unknown-but-valid chat simply has no rows under its key.
         let empty_scope = f
@@ -421,7 +408,7 @@ mod tests {
             .search("brown", Some("559900000009@s.whatsapp.net".into()), 0)
             .await
             .unwrap();
-        assert!(empty_scope.rows.is_empty());
+        assert!(empty_scope.messages.is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -443,9 +430,9 @@ mod tests {
         // has_more boundaries — not a specific direction.
         let total = TOTAL as usize;
         let first = f.svc.search("hit", None, 0).await.unwrap();
-        assert_eq!(first.rows.len(), PAGE_SIZE.min(total));
+        assert_eq!(first.messages.len(), PAGE_SIZE.min(total));
         let ordered: Vec<String> = first
-            .rows
+            .messages
             .iter()
             .map(|h| h.row.id.as_str().to_string())
             .collect();
@@ -454,9 +441,9 @@ mod tests {
             let res = f.svc.search("hit", None, page).await.unwrap();
             assert_eq!(res.page, page);
             let want_len = total.saturating_sub(page * PAGE_SIZE).min(PAGE_SIZE);
-            assert_eq!(res.rows.len(), want_len, "page {page} size");
+            assert_eq!(res.messages.len(), want_len, "page {page} size");
             let got: Vec<String> = res
-                .rows
+                .messages
                 .iter()
                 .map(|h| h.row.id.as_str().to_string())
                 .collect();
@@ -490,7 +477,7 @@ mod tests {
                 );
             }
             assert!(
-                res.rows
+                res.messages
                     .iter()
                     .all(|h| matches!(&h.row.kind, domain::MessageKind::Text { body } if body.contains("hit"))),
                 "every hit maps through stored_to_row"
@@ -502,11 +489,33 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for page in 0..=3usize {
             let res = f.svc.search("hit", None, page).await.unwrap();
-            for h in res.rows {
+            for h in res.messages {
                 assert!(seen.insert(h.row.id.as_str().to_string()));
             }
         }
         assert_eq!(seen.len(), TOTAL as usize);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn exactly_full_page_does_not_claim_another_page() {
+        let f = fixture("exact-page").await;
+        let messages: Vec<(String, String)> = (0..PAGE_SIZE)
+            .map(|index| {
+                (
+                    format!("E{index:03}"),
+                    format!("exact boundary hit {index:03}"),
+                )
+            })
+            .collect();
+        let messages = messages
+            .iter()
+            .map(|(id, text)| (id.as_str(), text.clone()))
+            .collect();
+        seed(&f.chats, CHAT_A, messages, 1_700_000_000).await;
+
+        let page = f.svc.search("exact", None, 0).await.unwrap();
+        assert_eq!(page.messages.len(), PAGE_SIZE);
+        assert!(!page.has_more);
     }
 
     #[test]
