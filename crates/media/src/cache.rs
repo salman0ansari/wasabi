@@ -191,7 +191,8 @@ impl DiskCache {
         for entry in entries.flatten() {
             let path = entry.path();
             let Ok(meta) = entry.metadata() else { continue };
-            if !meta.is_file() || is_sha_hex(&file_name_of(&path)) {
+            let name = file_name_of(&path);
+            if !meta.is_file() || is_sha_hex(&name) || !name.ends_with(".tmp") {
                 continue;
             }
             let modified = meta
@@ -352,10 +353,17 @@ mod tests {
         filetime::set_file_times(&stale_tmp, old, old).expect("age it");
         let fresh_tmp = dir.path().join("cafebabe-1.tmp");
         std::fs::write(&fresh_tmp, b"partial").expect("write");
+        let durable_stage = dir.path().join("outgoing-owned.stage");
+        std::fs::write(&durable_stage, b"payload").expect("write");
+        filetime::set_file_times(&durable_stage, old, old).expect("age durable stage");
 
         DiskCache::open(dir.path()).await.expect("open");
 
         assert!(!stale_tmp.exists(), "24h-old staging swept");
         assert!(fresh_tmp.exists(), "young staging preserved");
+        assert!(
+            durable_stage.exists(),
+            "durable outgoing stages are repository-owned"
+        );
     }
 }

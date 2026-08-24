@@ -23,6 +23,16 @@ use crate::{
     MEDIA_QUEUE_CAPACITY, MediaError,
 };
 
+/// Result of copying a user-selected source into Wasabi-owned durable staging.
+/// The filesystem path remains behind the backend boundary; the composer sees
+/// only `attachment`.
+#[derive(Clone, Debug)]
+pub struct StagedUpload {
+    pub attachment: wasabi_domain::StagedAttachment,
+    pub durable_path: PathBuf,
+    pub payload: wasabi_domain::TransferPayload,
+}
+
 /// Maps a received message onto the upstream raw-params downloader.
 ///
 /// Returns `None` for media that cannot round-trip through CDN params alone —
@@ -237,6 +247,80 @@ impl MediaManager {
         self.cache.lookup_touch(&to_hex(&sha))
     }
 
+    /// Copy a selected file into restart-safe Wasabi ownership. No original
+    /// path or bytes are exposed by the returned composer projection.
+    pub async fn stage_upload(
+        &self,
+        source: PathBuf,
+        transfer: wasabi_domain::TransferId,
+        cancel: CancellationToken,
+    ) -> Result<StagedUpload, MediaError> {
+        if transfer.as_str().is_empty() {
+            return Err(MediaError::InvalidInput(
+                "transfer identity is empty".to_string(),
+            ));
+        }
+        let (kind, mime_type) = attachment_type(&source);
+        let display_name = source
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "Attachment".to_string());
+        let key = to_hex(&Sha256::digest(transfer.as_str().as_bytes()));
+        let durable_path = self.cache.root().join(format!("outgoing-{key}.stage"));
+        if tokio::fs::try_exists(&durable_path).await? {
+            return Err(MediaError::InvalidInput(
+                "transfer identity already has a staged file".to_string(),
+            ));
+        }
+        let destination = durable_path.clone();
+        let worker_cancel = cancel.clone();
+        let copy = tokio::task::spawn_blocking(move || {
+            copy_staged_file(&source, &destination, &worker_cancel)
+        });
+        let bytes_total = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(MediaError::Cancelled),
+            result = copy => result.map_err(|error| MediaError::Io(std::io::Error::other(error.to_string())))??,
+        };
+        let attachment = wasabi_domain::StagedAttachment {
+            transfer,
+            kind,
+            display_name: display_name.clone(),
+            mime_type: mime_type.clone(),
+            bytes_total,
+        };
+        Ok(StagedUpload {
+            attachment,
+            durable_path,
+            payload: wasabi_domain::TransferPayload {
+                kind,
+                display_name,
+                mime_type,
+                caption: None,
+            },
+        })
+    }
+
+    /// Remove only a Wasabi-owned outgoing stage; arbitrary paths are refused.
+    pub async fn discard_staged_upload(&self, path: PathBuf) -> Result<(), MediaError> {
+        let owned = path.parent() == Some(self.cache.root())
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("outgoing-") && name.ends_with(".stage"));
+        if !owned {
+            return Err(MediaError::InvalidInput(
+                "refusing to remove a non-staging path".to_string(),
+            ));
+        }
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(MediaError::Io(error)),
+        }
+    }
+
     /// Downloads (or joins an identical in-flight download of) `media`,
     /// publishing it in the disk cache under its verified SHA-256.
     ///
@@ -410,6 +494,87 @@ impl MediaManager {
         };
         drop(guard);
         Ok(response)
+    }
+}
+
+fn copy_staged_file(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+    cancel: &CancellationToken,
+) -> Result<u64, MediaError> {
+    use std::io::{Read as _, Write as _};
+
+    let outcome = (|| {
+        let source = std::fs::File::open(source)?;
+        if !source.metadata()?.is_file() {
+            return Err(MediaError::InvalidInput(
+                "attachment source is not a regular file".to_string(),
+            ));
+        }
+        let mut source = source;
+        let mut staged = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination)?;
+        let mut copied = 0u64;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            if cancel.is_cancelled() {
+                return Err(MediaError::Cancelled);
+            }
+            let read = source.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            copied = copied.saturating_add(read as u64);
+            if copied > MAX_OUTGOING_ATTACHMENT_BYTES {
+                return Err(MediaError::InvalidInput(
+                    "attachment exceeds the configured maximum".to_string(),
+                ));
+            }
+            staged.write_all(&buffer[..read])?;
+        }
+        if copied == 0 {
+            return Err(MediaError::InvalidInput(
+                "attachment source is empty".to_string(),
+            ));
+        }
+        staged.sync_all()?;
+        Ok(copied)
+    })();
+    if outcome.is_err() {
+        let _ = std::fs::remove_file(destination);
+    }
+    outcome
+}
+
+fn attachment_type(path: &std::path::Path) -> (wasabi_domain::AttachmentKind, String) {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    use wasabi_domain::AttachmentKind;
+    match extension.as_str() {
+        "jpg" | "jpeg" => (AttachmentKind::Image, "image/jpeg".to_string()),
+        "png" => (AttachmentKind::Image, "image/png".to_string()),
+        "webp" => (AttachmentKind::Image, "image/webp".to_string()),
+        "gif" => (AttachmentKind::Image, "image/gif".to_string()),
+        "mp4" | "m4v" => (AttachmentKind::Video, "video/mp4".to_string()),
+        "mov" => (AttachmentKind::Video, "video/quicktime".to_string()),
+        "webm" => (AttachmentKind::Video, "video/webm".to_string()),
+        "mp3" => (AttachmentKind::Audio, "audio/mpeg".to_string()),
+        "m4a" => (AttachmentKind::Audio, "audio/mp4".to_string()),
+        "ogg" | "opus" => (AttachmentKind::Audio, "audio/ogg".to_string()),
+        "wav" => (AttachmentKind::Audio, "audio/wav".to_string()),
+        "pdf" => (AttachmentKind::Document, "application/pdf".to_string()),
+        "txt" => (AttachmentKind::Document, "text/plain".to_string()),
+        "csv" => (AttachmentKind::Document, "text/csv".to_string()),
+        "zip" => (AttachmentKind::Document, "application/zip".to_string()),
+        _ => (
+            AttachmentKind::Document,
+            "application/octet-stream".to_string(),
+        ),
     }
 }
 
@@ -775,6 +940,46 @@ mod tests {
         assert_eq!(
             attachment_media_type(wasabi_domain::AttachmentKind::Document),
             MediaType::Document
+        );
+    }
+
+    #[test]
+    fn durable_staging_copies_exact_bytes_and_cleans_cancelled_output() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.pdf");
+        let staged = dir.path().join("outgoing.stage");
+        let bytes = vec![0x33; 128 * 1024 + 3];
+        std::fs::write(&source, &bytes).expect("seed source");
+        let copied =
+            copy_staged_file(&source, &staged, &CancellationToken::new()).expect("stage source");
+        assert_eq!(copied, bytes.len() as u64);
+        assert_eq!(std::fs::read(&staged).expect("read stage"), bytes);
+
+        let cancelled_path = dir.path().join("cancelled.stage");
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert_eq!(
+            copy_staged_file(&source, &cancelled_path, &cancelled),
+            Err(MediaError::Cancelled)
+        );
+        assert!(!cancelled_path.exists());
+    }
+
+    #[test]
+    fn attachment_type_is_specific_but_unknown_files_stay_documents() {
+        assert_eq!(
+            attachment_type(std::path::Path::new("photo.JPEG")),
+            (
+                wasabi_domain::AttachmentKind::Image,
+                "image/jpeg".to_string()
+            )
+        );
+        assert_eq!(
+            attachment_type(std::path::Path::new("archive.unknown")),
+            (
+                wasabi_domain::AttachmentKind::Document,
+                "application/octet-stream".to_string()
+            )
         );
     }
 
