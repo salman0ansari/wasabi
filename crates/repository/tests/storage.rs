@@ -60,8 +60,11 @@ async fn open_empty_db_yields_empty_pages() {
     let dir = TestDir::new("empty");
     let store = open(&dir).await;
 
-    let chats = store.chat_page(false, None, 50).await.unwrap();
-    assert!(chats.is_empty());
+    let chats = store
+        .chat_page(domain::ChatScope::Active, None, 50)
+        .await
+        .unwrap();
+    assert!(chats.rows.is_empty());
 
     let page = store.message_page(PEER1, None, 10).await.unwrap();
     assert!(page.rows.is_empty());
@@ -96,8 +99,11 @@ async fn outgoing_roundtrip_via_flush_barrier() {
         row.kind
     );
 
-    let chats = store.chat_page(false, None, 50).await.unwrap();
-    assert_eq!(chats.len(), 1);
+    let chats = store
+        .chat_page(domain::ChatScope::Active, None, 50)
+        .await
+        .unwrap();
+    assert_eq!(chats.rows.len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -119,9 +125,15 @@ async fn event_delivery_is_idempotent_under_replay() {
     let page = store.message_page(PEER2, None, 10).await.unwrap();
     assert_eq!(page.rows.len(), 1, "replay must not duplicate the row");
 
-    let chats = store.chat_page(false, None, 50).await.unwrap();
-    assert_eq!(chats.len(), 1);
-    assert_eq!(chats[0].unread_count, 1, "replay must not double-badge");
+    let chats = store
+        .chat_page(domain::ChatScope::Active, None, 50)
+        .await
+        .unwrap();
+    assert_eq!(chats.rows.len(), 1);
+    assert_eq!(
+        chats.rows[0].unread_count, 1,
+        "replay must not double-badge"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -191,8 +203,7 @@ async fn store_change_invalidation_emitted_after_commit() {
     assert!(
         matches!(
             change,
-            wasabi_repository::StoreChange::Chats
-                | wasabi_repository::StoreChange::Messages { .. }
+            wasabi_repository::StoreChange::Chats | wasabi_repository::StoreChange::Messages { .. }
         ),
         "unexpected change: {change:?}"
     );

@@ -3,6 +3,15 @@
 use crate::ids::ChatId;
 use crate::message::ChatSummary;
 
+/// Durable chat-list partition requested by a product surface.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ChatScope {
+    #[default]
+    Active,
+    Archived,
+    All,
+}
+
 /// Cursor for the chat list: mirrors the upstream two-pass
 /// `(pinned_at, last_message_ts, jid)` ordering.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -16,5 +16,5 @@ pub use message::{
     ChatSummary, MessageDirection, MessageKind, MessagePage, MessageRow, MessageStatus, PageCursor,
     SenderJid,
 };
-pub use page::{ChatPage, ChatPageCursor};
+pub use page::{ChatPage, ChatPageCursor, ChatScope};
 pub use send::{SendContent, SendReceipt, SendRequest};

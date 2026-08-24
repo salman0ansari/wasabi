@@ -37,6 +37,31 @@ pub fn search_bar(this: &mut MainWindow) -> gpui::Div {
 }
 
 pub fn filter_bar(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
+    if this.chats.scope == wasabi_domain::ChatScope::Archived {
+        return gpui::div().child(
+            gpui::div()
+                .id("archived-back")
+                .h(px(48.0))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .px(px(12.0))
+                .border_b_1()
+                .border_color(theme::border())
+                .cursor_pointer()
+                .hover(|style| style.bg(theme::row_hover()))
+                .on_click(cx.listener(|this, _, _, cx| this.show_active_chats(cx)))
+                .child(Icon::new(IconName::ArrowLeft).size(px(17.0)))
+                .child(
+                    gpui::div()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme::text_primary())
+                        .child("Archived"),
+                ),
+        );
+    }
+
     let chips = ChatFilter::ALL.map(|filter| {
         let active = this.chats.filter == filter;
         let mut chip = gpui::div()
@@ -64,15 +89,37 @@ pub fn filter_bar(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::
     });
 
     gpui::div()
+        .flex_shrink_0()
         .flex()
-        .items_center()
-        .gap(px(6.0))
-        .px(px(10.0))
-        .py(px(8.0))
-        .bg(theme::surface())
-        .border_b_1()
-        .border_color(theme::border())
-        .children(chips)
+        .flex_col()
+        .child(
+            gpui::div()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .px(px(10.0))
+                .py(px(8.0))
+                .bg(theme::surface())
+                .children(chips),
+        )
+        .child(
+            gpui::div()
+                .id("archived-chats")
+                .h(px(42.0))
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .px(px(14.0))
+                .border_t_1()
+                .border_b_1()
+                .border_color(theme::border())
+                .cursor_pointer()
+                .text_color(theme::text_secondary())
+                .hover(|style| style.bg(theme::row_hover()))
+                .on_click(cx.listener(|this, _, _, cx| this.show_archived(cx)))
+                .child(Icon::new(IconName::Inbox).size(px(17.0)))
+                .child("Archived"),
+        )
 }
 
 pub fn chat_list(
@@ -81,10 +128,12 @@ pub fn chat_list(
     cx: &mut Context<MainWindow>,
 ) -> gpui::Div {
     let rows = this.chats.visible_cache.len();
-    let item_sizes: Rc<Vec<gpui::Size<gpui::Pixels>>> = Rc::new(vec![
-        size(px(theme::CHAT_LIST_W), px(theme::CHAT_ROW_H));
-        rows
-    ]);
+    let item_count = rows + usize::from(this.chats.next_after.is_some());
+    let item_sizes: Rc<Vec<gpui::Size<gpui::Pixels>>> =
+        Rc::new(vec![
+            size(px(theme::CHAT_LIST_W), px(theme::CHAT_ROW_H));
+            item_count
+        ]);
 
     let view = cx.entity().clone();
     let mut pane = gpui::div().flex_1().min_h(px(0.0)).relative();
@@ -93,16 +142,51 @@ pub fn chat_list(
     } else if let Some(err) = &this.chats.error {
         pane = pane.child(centered_label(err));
     } else if rows == 0 {
-        pane = pane.child(centered_label("No conversations yet"));
+        let empty = if this.chats.scope == wasabi_domain::ChatScope::Archived {
+            "No archived conversations"
+        } else {
+            "No conversations yet"
+        };
+        pane = pane.child(centered_label(empty));
     } else {
         pane = pane.child(
             v_virtual_list(view, "chat-list", item_sizes, |this, range, _, cx| {
-                range.map(|ix| chat_row(this, cx, ix)).collect::<Vec<_>>()
+                range
+                    .map(|ix| {
+                        if ix == this.chats.visible_cache.len() {
+                            load_more_row(this, cx).into_any_element()
+                        } else {
+                            chat_row(this, cx, ix).into_any_element()
+                        }
+                    })
+                    .collect::<Vec<_>>()
             })
             .track_scroll(&this.chat_scroll),
         );
     }
     pane
+}
+
+fn load_more_row(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Stateful<gpui::Div> {
+    let loading = this.chats.loading_more;
+    gpui::div()
+        .id("load-more-chats")
+        .h(px(theme::CHAT_ROW_H))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(theme::TEXT_SIZE))
+        .text_color(theme::accent_text())
+        .when(!loading, |row| {
+            row.cursor_pointer()
+                .hover(|style| style.bg(theme::row_hover()))
+                .on_click(cx.listener(|this, _, _, cx| this.load_more_chats(cx)))
+        })
+        .child(if loading {
+            "Loading…"
+        } else {
+            "Load more chats"
+        })
 }
 
 fn chat_row(
@@ -212,7 +296,10 @@ fn chat_row(
                         .when(pinned, |el| {
                             el.child(
                                 gpui::div()
-                                    .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+                                    .text_size(px(theme::scaled_text(
+                                        theme::TEXT_SIZE_SM,
+                                        text_scale,
+                                    )))
                                     .text_color(theme::accent_text())
                                     .child(Icon::new(IconName::Star).size(px(13.0))),
                             )

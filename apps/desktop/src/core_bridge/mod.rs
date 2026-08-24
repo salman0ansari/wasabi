@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use wasabi_core::events::{Invalidation, InvalidationPublisher};
 use wasabi_core::state::SessionState;
 use wasabi_domain::{
-    ChatSummary, ErrorKind, MessageId, MessagePage, PageCursor, SendContent, SendReceipt,
+    ChatPage, ChatScope, ErrorKind, MessageId, MessagePage, PageCursor, SendContent, SendReceipt,
     SendRequest, ServiceError,
 };
 use wasabi_repository::AccountStore;
@@ -176,14 +176,14 @@ impl CoreBridge {
 
     pub async fn load_chat_page(
         &self,
-        include_archived: bool,
+        scope: ChatScope,
         after: Option<wasabi_domain::page::ChatPageCursor>,
         limit: usize,
-    ) -> Result<Vec<ChatSummary>, String> {
+    ) -> Result<ChatPage, String> {
         let store = self.store_snapshot()?;
         self.run_on_core(async move {
             store
-                .chat_page(include_archived, after, limit)
+                .chat_page(scope, after, limit)
                 .await
                 .map_err(service_message)
         })

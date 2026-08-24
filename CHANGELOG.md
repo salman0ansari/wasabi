@@ -6,6 +6,7 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 
 ### Added
 
+- Cursor-based chat-list pagination with explicit load-more feedback and a real archived-conversations destination.
 - Typed, immutable send requests that capture their destination chat before asynchronous work begins.
 - Reproducible Linux desktop footprint benchmark and same-machine blank Electron baseline.
 - Customer-facing project documentation and verified native screenshots.

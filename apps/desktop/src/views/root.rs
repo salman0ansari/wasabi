@@ -22,6 +22,7 @@ use crate::state::chats::ChatFilter;
 use crate::state::{ChatListModel, DeviceSettings, MessageWindowModel, SessionMirror, SettingsSection};
 use crate::theme;
 use crate::views::{chat_list, composer, conversation, pairing, right_panel, settings};
+use wasabi_domain::ChatScope;
 
 gpui::actions!(wasabi_desktop, [FocusSearch, OpenSettings, CloseInfo]);
 
@@ -190,6 +191,28 @@ impl MainWindow {
         self.chats.filter = filter;
         self.refresh_visible();
         cx.notify();
+    }
+
+    pub(crate) fn show_archived(&mut self, cx: &mut Context<Self>) {
+        self.switch_chat_scope(ChatScope::Archived, cx);
+    }
+
+    pub(crate) fn show_active_chats(&mut self, cx: &mut Context<Self>) {
+        self.switch_chat_scope(ChatScope::Active, cx);
+    }
+
+    fn switch_chat_scope(&mut self, scope: ChatScope, cx: &mut Context<Self>) {
+        if self.chats.scope == scope {
+            return;
+        }
+        self.chats.scope = scope;
+        self.chats.filter = ChatFilter::All;
+        self.chats.chats.clear();
+        self.chats.visible_cache.clear();
+        self.chats.selected = None;
+        self.chats.loading = true;
+        self.show_right_panel = false;
+        self.refresh_chats(cx);
     }
 
     fn select_nav(&mut self, destination: NavDestination, cx: &mut Context<Self>) {
@@ -399,20 +422,18 @@ impl MainWindow {
     pub(crate) fn refresh_chats(&mut self, cx: &mut Context<Self>) {
         let generation = self.next_chats_gen();
         self.chats.loading = true;
+        let scope = self.chats.scope;
 
         let bridge = Arc::clone(&self.bridge);
         spawn_main(cx, async move |this, cx| {
-            let page = bridge.load_chat_page(false, None, CHAT_PAGE_LIMIT).await;
-            let has_more = page
-                .as_ref()
-                .is_ok_and(|rows| rows.len() == CHAT_PAGE_LIMIT);
+            let page = bridge.load_chat_page(scope, None, CHAT_PAGE_LIMIT).await;
             this.update(cx, |this, cx| {
                 if this.chats_gen.load(Ordering::Acquire) != generation {
                     return;
                 }
                 match page {
                     Ok(rows) => {
-                        this.chats.set_page(rows, has_more);
+                        this.chats.set_page(rows);
                         this.refresh_visible();
                     }
                     Err(err) => this.chats.set_error(err),
@@ -421,6 +442,41 @@ impl MainWindow {
             })
             .ok();
         });
+    }
+
+    pub(crate) fn load_more_chats(&mut self, cx: &mut Context<Self>) {
+        if self.chats.loading_more {
+            return;
+        }
+        let Some(after) = self.chats.next_cursor() else {
+            return;
+        };
+        self.chats.loading_more = true;
+        let generation = self.current_chats_gen();
+        let scope = self.chats.scope;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let page = bridge
+                .load_chat_page(scope, Some(after), CHAT_PAGE_LIMIT)
+                .await;
+            this.update(cx, |this, cx| {
+                if this.chats_gen.load(Ordering::Acquire) != generation
+                    || this.chats.scope != scope
+                {
+                    return;
+                }
+                match page {
+                    Ok(page) => {
+                        this.chats.append_page(page);
+                        this.refresh_visible();
+                    }
+                    Err(error) => this.chats.set_error(error),
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
     }
 
     pub(crate) fn refresh_current_messages(&mut self, cx: &mut Context<Self>) {
@@ -463,19 +519,18 @@ impl MainWindow {
     fn spawn_hydration(&mut self, cx: &mut Context<Self>) {
         let bridge = Arc::clone(&self.bridge);
         spawn_main(cx, async move |this, cx| {
-            let page = bridge.load_chat_page(false, None, CHAT_PAGE_LIMIT).await;
-            let has_more = page
-                .as_ref()
-                .is_ok_and(|rows| rows.len() == CHAT_PAGE_LIMIT);
+            let page = bridge
+                .load_chat_page(ChatScope::Active, None, CHAT_PAGE_LIMIT)
+                .await;
             let first_chat = page
                 .as_ref()
                 .ok()
-                .and_then(|rows| rows.first().map(|c| c.id.as_str().to_string()));
+                .and_then(|page| page.rows.first().map(|c| c.id.as_str().to_string()));
 
             this.update(cx, |this, cx| {
                 match &page {
-                    Ok(rows) => {
-                        this.chats.set_page(rows.clone(), has_more);
+                    Ok(page) => {
+                        this.chats.set_page(page.clone());
                         this.refresh_visible();
                     }
                     Err(err) => this.chats.set_error(err.clone()),
@@ -608,6 +663,10 @@ impl MainWindow {
 
     fn next_chats_gen(&self) -> u64 {
         self.chats_gen.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    fn current_chats_gen(&self) -> u64 {
+        self.chats_gen.load(Ordering::Acquire)
     }
 
     fn next_messages_gen(&self) -> u64 {

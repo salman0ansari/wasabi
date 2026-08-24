@@ -128,21 +128,97 @@ impl AccountStore {
     /// One keyset page of the chat list.
     pub async fn chat_page(
         &self,
-        include_archived: bool,
+        scope: domain::ChatScope,
         after: Option<domain::page::ChatPageCursor>,
         limit: usize,
-    ) -> Result<Vec<domain::ChatSummary>, domain::ServiceError> {
-        let after: Option<ChatCursor> = after.map(|c| ChatCursor {
-            pinned_at_ms: c.pinned_at_ms,
-            last_message_ts: c.last_activity_ms,
-            jid: c.chat.as_str().to_string(),
-        });
-        let rows = self
+    ) -> Result<domain::ChatPage, domain::ServiceError> {
+        if limit == 0 {
+            return Ok(domain::ChatPage {
+                rows: Vec::new(),
+                next_after: None,
+            });
+        }
+
+        match scope {
+            domain::ChatScope::Active => self.unfiltered_chat_page(false, after, limit).await,
+            domain::ChatScope::All => self.unfiltered_chat_page(true, after, limit).await,
+            domain::ChatScope::Archived => self.archived_chat_page(after, limit).await,
+        }
+    }
+
+    async fn unfiltered_chat_page(
+        &self,
+        include_archived: bool,
+        after: Option<domain::ChatPageCursor>,
+        limit: usize,
+    ) -> Result<domain::ChatPage, domain::ServiceError> {
+        let upstream_after = after.map(domain_cursor_to_upstream);
+        let fetch = limit.saturating_add(1);
+        let mut rows = self
             .chats
-            .chats_page(include_archived, after, limit as i64)
+            .chats_page(include_archived, upstream_after, fetch as i64)
             .await
-            .map_err(|e| domain::ServiceError::new(domain::ErrorKind::Database, e.to_string()))?;
-        Ok(rows.into_iter().map(chat_entry_to_summary).collect())
+            .map_err(database_error)?
+            .into_iter()
+            .map(chat_entry_to_summary)
+            .collect::<Vec<_>>();
+        let has_more = rows.len() > limit;
+        rows.truncate(limit);
+        let next_after =
+            has_more.then(|| chat_summary_cursor(rows.last().expect("non-empty page")));
+        Ok(domain::ChatPage { rows, next_after })
+    }
+
+    /// The upstream store exposes active-only or active+archived scans. Walk
+    /// that ordered keyset in bounded chunks and retain only archived rows so
+    /// the product receives an honest archived-only destination without
+    /// OFFSET pagination or a divergent SQL schema.
+    async fn archived_chat_page(
+        &self,
+        after: Option<domain::ChatPageCursor>,
+        limit: usize,
+    ) -> Result<domain::ChatPage, domain::ServiceError> {
+        const SCAN_CHUNK: usize = 128;
+
+        let mut scan_after = after;
+        let mut archived = Vec::with_capacity(limit.saturating_add(1));
+        loop {
+            let raw = self
+                .chats
+                .chats_page(
+                    true,
+                    scan_after.clone().map(domain_cursor_to_upstream),
+                    SCAN_CHUNK as i64,
+                )
+                .await
+                .map_err(database_error)?;
+            let scanned = raw.len();
+            if scanned == 0 {
+                break;
+            }
+            for entry in raw {
+                let summary = chat_entry_to_summary(entry);
+                scan_after = Some(chat_summary_cursor(&summary));
+                if summary.archived {
+                    archived.push(summary);
+                    if archived.len() > limit {
+                        break;
+                    }
+                }
+            }
+            if archived.len() > limit || scanned < SCAN_CHUNK {
+                break;
+            }
+        }
+
+        let has_more = archived.len() > limit;
+        archived.truncate(limit);
+        let next_after =
+            has_more.then(|| chat_summary_cursor(archived.last().expect("non-empty page")));
+        Ok(domain::ChatPage {
+            rows: archived,
+            next_after,
+        })
     }
 
     /// One keyset page of messages for a chat, newest→oldest.
@@ -175,6 +251,26 @@ impl AccountStore {
             next_before,
         })
     }
+}
+
+fn domain_cursor_to_upstream(cursor: domain::ChatPageCursor) -> ChatCursor {
+    ChatCursor {
+        pinned_at_ms: cursor.pinned_at_ms,
+        last_message_ts: cursor.last_activity_ms,
+        jid: cursor.chat.as_str().to_string(),
+    }
+}
+
+fn chat_summary_cursor(chat: &domain::ChatSummary) -> domain::ChatPageCursor {
+    domain::ChatPageCursor {
+        pinned_at_ms: chat.pinned_at_ms,
+        last_activity_ms: chat.last_activity_ms,
+        chat: chat.id.clone(),
+    }
+}
+
+fn database_error(error: whatsapp_rust_chat_store::ChatStoreError) -> domain::ServiceError {
+    domain::ServiceError::new(domain::ErrorKind::Database, error.to_string())
 }
 
 impl Drop for AccountStore {

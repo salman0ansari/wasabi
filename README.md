@@ -42,7 +42,7 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 
 - Link an account using a rotating QR code.
 - Reopen cached chats immediately while reconnecting in the background.
-- Browse active chats using All, Unread, Favorites, and Groups filters.
+- Browse cursor-paginated active chats using All, Unread, Favorites, and Groups filters, with a separate Archived destination.
 - Search the loaded chat list by contact name or recent message preview.
 - Read paginated message history and send text messages.
 - Use light, dark, or Linux system appearance.

@@ -95,10 +95,12 @@ async fn deep_chat_cursor(store: &AccountStore) -> anyhow::Result<domain::page::
     let mut cursors: Vec<domain::page::ChatPageCursor> = Vec::new();
     let mut after: Option<domain::page::ChatPageCursor> = None;
     loop {
-        let page = store.chat_page(false, after.take(), CHAT_PAGE).await?;
-        let Some(last) = page.last() else { break };
+        let page = store
+            .chat_page(domain::ChatScope::Active, after.take(), CHAT_PAGE)
+            .await?;
+        let Some(last) = page.rows.last() else { break };
         cursors.push(cursor_of(last));
-        if page.len() < CHAT_PAGE {
+        if page.next_after.is_none() {
             break;
         }
         after = cursors.last().cloned();
@@ -155,10 +157,11 @@ async fn run_bench(db: &Path) -> anyhow::Result<()> {
 
     // Cursor discovery happens once, untimed.
     let first_page = store
-        .chat_page(false, None, CHAT_PAGE)
+        .chat_page(domain::ChatScope::Active, None, CHAT_PAGE)
         .await
         .context("chat page 0")?;
     let newest = first_page
+        .rows
         .iter()
         .max_by_key(|c| c.last_activity_ms)
         .context("empty database; run gen mode first")?
@@ -179,11 +182,11 @@ async fn run_bench(db: &Path) -> anyhow::Result<()> {
 
     let stats = vec![
         bench_op("chat_page", "chat_page(None, 100)", || {
-            store.chat_page(false, None, CHAT_PAGE)
+            store.chat_page(domain::ChatScope::Active, None, CHAT_PAGE)
         })
         .await?,
         bench_op("chat_page_deep", "chat_page(deep@80%, 100)", || {
-            store.chat_page(false, Some(deep.clone()), CHAT_PAGE)
+            store.chat_page(domain::ChatScope::Active, Some(deep.clone()), CHAT_PAGE)
         })
         .await?,
         bench_op("message_page", "message_page(newest, None, 50)", || {
