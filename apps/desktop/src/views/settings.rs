@@ -464,7 +464,7 @@ fn chats(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElemen
                 .child(format!("{scale}%"))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.settings.text_scale = scale;
-                    this.messages.clear_layout_estimates();
+                    this.msg_scroll.remeasure();
                     this.save_settings(cx);
                 })),
         );

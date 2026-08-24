@@ -11,13 +11,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui::prelude::*;
 use gpui::{
-    AnyWindowHandle, Context, FocusHandle, Focusable, Global, KeyBinding, ScrollStrategy,
-    PathPromptOptions, Subscription, WeakEntity, Window, div, px,
+    AnyWindowHandle, Context, FocusHandle, Focusable, Global, KeyBinding, ListAlignment,
+    ListState, PathPromptOptions, Subscription, WeakEntity, Window, div, px,
 };
-use gpui_component::VirtualListScrollHandle;
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::tooltip::Tooltip;
-use gpui_component::{Icon, IconName};
+use gpui_component::{Icon, IconName, VirtualListScrollHandle};
 
 use crate::core_bridge::DesktopBackend;
 use crate::state::chats::ChatFilter;
@@ -147,11 +146,12 @@ pub struct MainWindow {
     pub(crate) search_input: gpui::Entity<InputState>,
     pub(crate) phone_pair_input: gpui::Entity<InputState>,
     pub(crate) chat_scroll: VirtualListScrollHandle,
-    pub(crate) msg_scroll: VirtualListScrollHandle,
+    pub(crate) msg_scroll: ListState,
     /// First visible timeline index observed on the last frame.
     pub(crate) first_visible: usize,
     /// Whether the last frame showed the newest end of the timeline.
     pub(crate) near_bottom: bool,
+    pub(crate) pending_new_messages: usize,
     window_handle: AnyWindowHandle,
     window_active: bool,
     notification_started_at_ms: i64,
@@ -250,9 +250,10 @@ impl MainWindow {
             search_input,
             phone_pair_input,
             chat_scroll: VirtualListScrollHandle::new(),
-            msg_scroll: VirtualListScrollHandle::new(),
+            msg_scroll: ListState::new(0, ListAlignment::Bottom, px(800.0)),
             first_visible: 0,
             near_bottom: true,
+            pending_new_messages: 0,
             window_handle: window.window_handle(),
             window_active: window.is_window_active(),
             notification_started_at_ms: chrono::Utc::now().timestamp_millis(),
@@ -274,6 +275,21 @@ impl MainWindow {
             phone_pair_request_gen: AtomicU64::new(0),
             subscriptions: Vec::new(),
         };
+        let message_list = this.msg_scroll.clone();
+        let main_window = cx.entity().downgrade();
+        this.msg_scroll
+            .set_scroll_handler(move |event, _window, cx| {
+                let first_visible = event.visible_range.start;
+                let near_bottom = event.is_following_tail
+                    || event.visible_range.end >= message_list.item_count().saturating_sub(2);
+                let main_window = main_window.clone();
+                cx.defer(move |cx| {
+                    let _ = main_window.update(cx, |this, _cx| {
+                        this.first_visible = first_visible;
+                        this.near_bottom = near_bottom;
+                    });
+                });
+            });
         // Storage normally opens before the window appears; reflect a
         // not-yet-ready store as loading regardless of startup speed.
         this.chats.loading = !this.bridge.store_ready();
@@ -340,14 +356,16 @@ impl MainWindow {
         this.subscriptions.push(on_quit);
 
         #[cfg(debug_assertions)]
-        let preview_mode = std::env::var("WASABI_UI_PREVIEW").ok();
-        #[cfg(not(debug_assertions))]
-        let preview_mode: Option<String> = None;
-
-        if let Some(preview_mode) = preview_mode {
-            #[cfg(debug_assertions)]
+        let previewing = if let Ok(preview_mode) = std::env::var("WASABI_UI_PREVIEW") {
             this.install_preview(&preview_mode);
+            true
         } else {
+            false
+        };
+        #[cfg(not(debug_assertions))]
+        let previewing = false;
+
+        if !previewing {
             this.spawn_hydration(cx);
             this.spawn_invalidation_loop(cx);
             this.spawn_state_watch(cx);
@@ -373,16 +391,20 @@ impl MainWindow {
         self.chats.chats = vec![preview.summary];
         self.messages.chat_id = Some(preview.chat.as_str().to_string());
         self.messages.anchor_newest(&preview.page);
-        self.staged_attachments.insert(
-            preview.chat.as_str().to_string(),
-            wasabi_domain::StagedAttachment {
-                transfer: wasabi_domain::TransferId::new("preview-transfer"),
-                kind: wasabi_domain::AttachmentKind::Document,
-                display_name: "Wasabi product brief.pdf".to_string(),
-                mime_type: "application/pdf".to_string(),
-                bytes_total: 2_621_440,
-            },
-        );
+        self.msg_scroll.reset(self.messages.items.len());
+        self.msg_scroll.scroll_to_end();
+        if mode == "media" {
+            self.staged_attachments.insert(
+                preview.chat.as_str().to_string(),
+                wasabi_domain::StagedAttachment {
+                    transfer: wasabi_domain::TransferId::new("preview-transfer"),
+                    kind: wasabi_domain::AttachmentKind::Document,
+                    display_name: "Wasabi product brief.pdf".to_string(),
+                    mime_type: "application/pdf".to_string(),
+                    bytes_total: 2_621_440,
+                },
+            );
+        }
         self.typing.insert(
             preview.chat.as_str().to_string(),
             TypingDisplay {
@@ -391,6 +413,14 @@ impl MainWindow {
                 generation: 1,
             },
         );
+        if mode == "timeline-large" {
+            self.settings.text_scale = 150;
+            self.msg_scroll.remeasure();
+        }
+        if mode == "timeline-pending" {
+            self.pending_new_messages = 3;
+            self.near_bottom = false;
+        }
         if matches!(mode, "settings" | "settings-dark" | "account") {
             self.nav_destination = NavDestination::Settings;
             self.settings_section = if mode == "account" {
@@ -551,12 +581,14 @@ impl MainWindow {
         self.details_gen.fetch_add(1, Ordering::AcqRel);
         self.chats.selected = Some(chat_id.clone());
         self.messages.reset_for_chat(&chat_id);
+        self.msg_scroll.reset(0);
         self.show_right_panel = false;
         self.message_overlay = None;
         self.conversation_details = None;
         self.details_loading = false;
         self.details_error = None;
         self.first_visible = 0;
+        self.pending_new_messages = 0;
         // An anchored search result starts in the middle of its context; do
         // not prefetch toward newest until the first rendered range actually
         // reaches that edge.
@@ -616,13 +648,15 @@ impl MainWindow {
                 match result {
                     Ok(LoadedConversation::Newest(page)) => {
                         this.messages.anchor_newest(&page);
-                        this.msg_scroll.scroll_to_bottom();
+                        this.msg_scroll.reset(this.messages.items.len());
+                        this.msg_scroll.scroll_to_end();
                     }
                     Ok(LoadedConversation::Context(context)) => {
                         let anchor = context.anchor.clone();
                         this.messages.anchor_context(&context);
+                        this.msg_scroll.reset(this.messages.items.len());
                         if let Some(index) = this.messages.timeline_index_for_message(&anchor) {
-                            this.msg_scroll.scroll_to_item(index, ScrollStrategy::Center);
+                            this.msg_scroll.scroll_to_reveal_item(index);
                         }
                     }
                     Err(err) => this.messages.set_error(err),
@@ -1638,6 +1672,30 @@ impl MainWindow {
         self.chats.visible_cache = self.chats.visible();
     }
 
+    fn sync_message_list(&mut self, before: Vec<crate::state::messages::TimelineKey>) {
+        let after = self.messages.timeline_keys();
+        if self.msg_scroll.item_count() != before.len() {
+            self.msg_scroll.reset(after.len());
+            return;
+        }
+
+        let offset = self.msg_scroll.logical_scroll_top();
+        let anchor = before.get(offset.item_ix).cloned();
+        let (old_range, replacement_count) = timeline_splice(&before, &after);
+        if !old_range.is_empty() || replacement_count > 0 {
+            self.msg_scroll.splice(old_range, replacement_count);
+        }
+
+        if let Some(anchor) = anchor
+            && let Some(item_ix) = after.iter().position(|item| item == &anchor)
+        {
+            self.msg_scroll.scroll_to(gpui::ListOffset {
+                item_ix,
+                offset_in_item: offset.offset_in_item,
+            });
+        }
+    }
+
     // ---- History paging ----------------------------------------------------
 
     /// Called from the render path when the visible range approaches the top
@@ -1663,15 +1721,9 @@ impl MainWindow {
                 }
                 match page {
                     Ok(page) => {
-                        let items_before = this.messages.items.len();
-                        let added_rows = this.messages.prepend_older(&page);
-                        let inserted_items = this.messages.items.len().saturating_sub(items_before);
-                        if added_rows > 0 && inserted_items > 0 {
-                            // Anchor on the first newly inserted item so the
-                            // reading position stays put across the prepend.
-                            this.msg_scroll
-                                .scroll_to_item(inserted_items, gpui::ScrollStrategy::Top);
-                        }
+                        let before = this.messages.timeline_keys();
+                        this.messages.prepend_older(&page);
+                        this.sync_message_list(before);
                     }
                     Err(err) => this.messages.set_error(err),
                 }
@@ -1679,6 +1731,16 @@ impl MainWindow {
             })
             .ok();
         });
+    }
+
+    pub(crate) fn jump_to_newest_messages(&mut self, cx: &mut Context<Self>) {
+        if self.pending_new_messages == 0 && !self.messages.has_more_newer {
+            self.msg_scroll.scroll_to_end();
+            return;
+        }
+        self.pending_new_messages = 0;
+        self.near_bottom = true;
+        self.refresh_current_messages(cx);
     }
 
     /// Load the next bounded page toward the newest end of an anchored
@@ -1703,7 +1765,9 @@ impl MainWindow {
                 }
                 match context {
                     Ok(context) => {
+                        let before = this.messages.timeline_keys();
                         this.messages.append_newer_context(&context);
+                        this.sync_message_list(before);
                     }
                     Err(error) => {
                         this.messages.loading_newer = false;
@@ -1797,12 +1861,18 @@ impl MainWindow {
                 }
                 match &page {
                     Ok(page) => {
+                        let before = this.messages.timeline_keys();
                         if this.near_bottom || this.messages.rows.is_empty() {
                             this.messages.anchor_newest(page);
-                            this.msg_scroll.scroll_to_bottom();
+                            this.sync_message_list(before);
+                            this.msg_scroll.scroll_to_end();
+                            this.pending_new_messages = 0;
                         } else {
                             // Mid-history: fold newer rows in place.
-                            this.messages.merge_newer(page);
+                            let unseen = this.messages.merge_newer(page);
+                            this.sync_message_list(before);
+                            this.pending_new_messages =
+                                this.pending_new_messages.max(unseen);
                         }
                     }
                     Err(err) => this.messages.set_error(err.clone()),
@@ -2402,6 +2472,26 @@ fn typing_refresh_due(last_sent: Option<std::time::Instant>, now: std::time::Ins
     last_sent.is_none_or(|last| now.duration_since(last) >= TYPING_REFRESH_AFTER)
 }
 
+fn timeline_splice<T: PartialEq>(before: &[T], after: &[T]) -> (std::ops::Range<usize>, usize) {
+    let prefix = before
+        .iter()
+        .zip(after.iter())
+        .take_while(|(left, right)| left == right)
+        .count();
+    let suffix_limit = before.len().min(after.len()).saturating_sub(prefix);
+    let suffix = before
+        .iter()
+        .rev()
+        .zip(after.iter().rev())
+        .take(suffix_limit)
+        .take_while(|(left, right)| left == right)
+        .count();
+    (
+        prefix..before.len().saturating_sub(suffix),
+        after.len().saturating_sub(prefix + suffix),
+    )
+}
+
 // ---- Watch appliers --------------------------------------------------------
 
 /// Apply one session-state update plus derived side effects.
@@ -2494,7 +2584,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{TYPING_REFRESH_AFTER, TypingDisplay, typing_refresh_due};
+    use super::{TYPING_REFRESH_AFTER, TypingDisplay, timeline_splice, typing_refresh_due};
 
     #[test]
     fn composing_updates_are_throttled_until_refresh_interval() {
@@ -2522,5 +2612,15 @@ mod tests {
             generation: 1,
         };
         assert_eq!(group.label(true), "alex is recording audio…");
+    }
+
+    #[test]
+    fn timeline_splices_only_changed_identity_range() {
+        assert_eq!(timeline_splice(&["date", "m2"], &["date", "m1", "m2"]), (1..1, 1));
+        assert_eq!(
+            timeline_splice(&["date", "m1", "m2"], &["date", "m2", "m3"]),
+            (1..3, 2)
+        );
+        assert_eq!(timeline_splice(&["date", "m1"], &["date", "m1"]), (2..2, 0));
     }
 }

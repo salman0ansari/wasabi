@@ -155,7 +155,6 @@ pub const NAV_W: f32 = 56.0;
 pub const CHAT_LIST_W: f32 = 382.0;
 pub const RIGHT_PANEL_W: f32 = 380.0;
 pub const CHAT_ROW_H: f32 = 74.0;
-pub const DATE_CHIP_H: f32 = 34.0;
 pub const BUBBLE_MAX_W: f32 = 560.0;
 
 // Corner radii

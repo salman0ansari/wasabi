@@ -20,7 +20,16 @@ Wasabi is being built around a few straightforward principles:
 
 ### Chats
 
+Message bubbles use GPUI's measured variable-height list. Long paragraphs,
+explicit newlines, multilingual text, emoji, media cards, window resizing, and
+150% text scaling reflow from their rendered size without overlapping.
+
 ![Wasabi chat workspace](docs/screenshots/chat-workspace-light.png)
+
+Incoming messages never evict or jump the history currently being read. A
+compact affordance lets the user move to the newest anchored page explicitly.
+
+![Wasabi new-message affordance](docs/screenshots/new-messages-affordance.png)
 
 ### Attachments
 
@@ -66,6 +75,8 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 - Browse cursor-paginated active chats using All, Unread, device-local Favorites, and Groups filters, with a separate Archived destination.
 - Search loaded chats and the complete local message FTS index with cancellable, paginated results that open the exact message in context.
 - Read paginated message history and send text, image, video, audio, and document messages with optional supported captions.
+- Read actually measured multiline and multilingual bubbles that reflow across supported window sizes and text scaling without overlap.
+- Keep the current history anchor when older pages prepend or new messages arrive, with an explicit jump-to-newest affordance.
 - Stage outgoing files durably, recover interrupted composer attachments after restart, cancel them safely, and stream encryption/upload without buffering entire files in memory.
 - Download received media on demand into a bounded, content-addressed, SHA-256-verified cache.
 - Copy and react to messages, or star/unstar them with optimistic rollback if synchronization fails.
@@ -85,7 +96,7 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 
 ## Native footprint
 
-On the current Linux reference machine, five fresh-profile launches of Wasabi `0.2.0-alpha.1` opened the window in a mean 138.6 ms and settled at 232.7 MiB proportional set size (PSS). A blank Electron 41 window on the same machine took 523.8 ms and settled at 331.7 MiB PSS. Wasabi used one process versus Electron's six. Startup medians were 132 ms and 346 ms respectively; every raw sample is retained.
+On the current Linux reference machine, five fresh-profile launches of Wasabi `0.2.0-alpha.1` opened the window in a mean 228.0 ms and settled at 223.5 MiB proportional set size (PSS). A blank Electron 41 window on the same machine took 458.6 ms and settled at 320.8 MiB PSS. Wasabi used one process versus Electron's six. Startup medians were 134 ms and 352 ms respectively; every raw sample, including the first cold-launch outliers, is retained.
 
 This is a reproducible runtime-baseline comparison, not a fabricated measurement of the official WhatsApp app. There is no official Linux desktop binary to measure locally, and Meta's current Windows and Mac apps should not be described as the old Electron client. Read the complete methodology, raw results, package-size context, limitations, and rerun instructions in [`benchmarks/desktop`](benchmarks/desktop/README.md).
 

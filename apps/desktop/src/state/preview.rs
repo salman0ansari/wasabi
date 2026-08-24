@@ -43,7 +43,7 @@ pub(crate) fn media_preview() -> MediaPreview {
                 bare: "preview@s.whatsapp.net".to_string(),
                 push_name: Some("Avery Chen".to_string()),
             },
-            timestamp_ms: now - (4 - seq) * 60_000,
+            timestamp_ms: now - (6 - seq) * 60_000,
             seq: LocalCursor(seq),
             kind,
             status: MessageStatus::Read,
@@ -71,6 +71,24 @@ pub(crate) fn media_preview() -> MediaPreview {
         page: MessagePage {
             // Repository page order is newest to oldest.
             rows: vec![
+                row(
+                    "PREVIEW-MULTILINGUAL",
+                    6,
+                    MessageDirection::Incoming,
+                    MessageKind::Text {
+                        body: "مرحبا — यह संदेश वास्तविक आकार में मापा जाता है।\n日本語と emoji 🎉 stay readable without overlapping the next bubble."
+                            .to_string(),
+                    },
+                ),
+                row(
+                    "PREVIEW-MULTILINE",
+                    5,
+                    MessageDirection::Outgoing,
+                    MessageKind::Text {
+                        body: "This is a deliberately long desktop message. It wraps from the rendered width instead of a character-count guess.\n\nResizing the window or changing text size asks GPUI to measure the bubble again while the current reading position stays anchored."
+                            .to_string(),
+                    },
+                ),
                 row(
                     "PREVIEW-DOC",
                     4,

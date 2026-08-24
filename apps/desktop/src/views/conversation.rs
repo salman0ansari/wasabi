@@ -1,11 +1,8 @@
 //! Conversation pane: header, date-chipped timeline of variable-height
 //! bubbles, and the scroll/anchor plumbing for history paging.
 
-use std::rc::Rc;
-
 use gpui::prelude::*;
-use gpui::{Context, px};
-use gpui_component::v_virtual_list;
+use gpui::{Context, ListSizingBehavior, list, px};
 use gpui_component::{Icon, IconName};
 
 use crate::state::chats;
@@ -172,8 +169,10 @@ fn timeline(
     cx: &mut Context<MainWindow>,
 ) -> gpui::Stateful<gpui::Div> {
     let items_len = this.messages.items.len();
-    let item_sizes: Rc<Vec<gpui::Size<gpui::Pixels>>> =
-        Rc::new(this.messages.sizes.iter().map(|h| size_bare(*h)).collect());
+    let pending_new_messages = this.pending_new_messages;
+    if this.msg_scroll.item_count() != items_len {
+        this.msg_scroll.reset(items_len);
+    }
 
     // Load older history when the user approaches the top of the window.
     if this.messages.has_more_older
@@ -218,15 +217,38 @@ fn timeline(
                 .child(err.clone())
                 .into_any_element()
         } else {
-            v_virtual_list(view, "timeline-list", item_sizes, |this, range, _, cx| {
-                this.first_visible = range.start;
-                this.near_bottom = range.end >= this.messages.items.len().saturating_sub(2);
-                range
-                    .map(|ix| timeline_row(this, ix, cx))
-                    .collect::<Vec<_>>()
+            list(this.msg_scroll.clone(), move |ix, _window, cx| {
+                view.update(cx, |this, cx| timeline_row(this, ix, cx))
             })
-            .track_scroll(&this.msg_scroll)
+            .with_sizing_behavior(ListSizingBehavior::Auto)
+            .size_full()
             .into_any_element()
+        })
+        .when(pending_new_messages > 0, |timeline| {
+            timeline.child(
+                gpui::div()
+                    .id("jump-to-newest")
+                    .absolute()
+                    .right_4()
+                    .bottom_4()
+                    .cursor_pointer()
+                    .rounded_full()
+                    .px(px(14.0))
+                    .py(px(8.0))
+                    .bg(theme::accent())
+                    .text_color(theme::text_on_accent())
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_size(px(theme::TEXT_SIZE_SM))
+                    .hover(|style| style.bg(theme::accent_text()))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.jump_to_newest_messages(cx)
+                    }))
+                    .child(if pending_new_messages == 1 {
+                        "1 new message".to_string()
+                    } else {
+                        format!("{pending_new_messages} new messages")
+                    }),
+            )
         })
 }
 
@@ -237,6 +259,7 @@ fn timeline_row(
 ) -> gpui::AnyElement {
     match this.messages.items.get(ix) {
         Some(TimelineItem::Date(label)) => gpui::div()
+            .w_full()
             .flex()
             .justify_center()
             .py(px(8.0))
@@ -288,7 +311,7 @@ fn bubble(
     let outgoing = row.direction == MessageDirection::Outgoing;
 
     if matches!(row.kind, MessageKind::System { .. }) {
-        return gpui::div().flex().justify_center().py(px(6.0)).child(
+        return gpui::div().w_full().flex().justify_center().py(px(6.0)).child(
             gpui::div()
                 .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
                 .text_color(theme::text_secondary())
@@ -316,7 +339,7 @@ fn bubble(
         messages::relative_time(row.timestamp_ms)
     };
 
-    let mut content = gpui::div().flex().flex_col().gap(px(2.0));
+    let mut content = gpui::div().min_w(px(0.0)).flex().flex_col().gap(px(2.0));
     if show_sender {
         content = content.child(
             gpui::div()
@@ -378,8 +401,9 @@ fn bubble(
         gpui::div().flex().justify_start()
     };
 
-    alignment.px(px(12.0)).py(px(2.0)).child(
+    alignment.w_full().px(px(12.0)).py(px(2.0)).child(
         gpui::div()
+            .min_w(px(0.0))
             .max_w(px(theme::BUBBLE_MAX_W))
             .rounded(px(theme::RADIUS_MD))
             .px(px(10.0))
@@ -900,10 +924,6 @@ fn sheet_button(
 }
 
 /// Width is ignored by the vertical list; only heights matter.
-fn size_bare(h: f32) -> gpui::Size<gpui::Pixels> {
-    gpui::size(px(1.0), px(h))
-}
-
 #[cfg(test)]
 mod tests {
     use super::format_bytes;

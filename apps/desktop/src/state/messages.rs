@@ -3,9 +3,10 @@
 //! At most [`WINDOW_MAX`] rows live in memory, anchored at the newest end on
 //! selection. Scrolling up prepends keyset pages and trims the tail once the
 //! window overflows. Render order (date separators interleaved) and row
-//! height estimates are prepared eagerly so `render` stays a pure read.
+//! stable item identities are prepared eagerly so GPUI can measure actual
+//! rendered heights without losing the scroll anchor.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use wasabi_domain::{
     ChatSummary, MessageContext, MessageDirection, MessageKind, MessagePage, MessageRow,
@@ -16,14 +17,6 @@ use crate::state::chats::{fallback_name, is_group};
 
 /// Hard cap of the in-memory window around the viewport.
 pub const WINDOW_MAX: usize = 200;
-// Conservative until GPUI text measurement is cached by width bucket. A
-// slightly taller virtual row is preferable to content collisions.
-const CHARS_PER_LINE: f32 = 42.0;
-const LINE_H: f32 = 22.0;
-const BUBBLE_BASE_H: f32 = 54.0;
-const VISUAL_MEDIA_BASE_H: f32 = 226.0;
-const COMPACT_MEDIA_BASE_H: f32 = 112.0;
-
 /// Prepared render order: date chips between day groups, messages by index
 /// into [`MessageWindowModel::rows`].
 #[derive(Clone, Debug, PartialEq)]
@@ -32,14 +25,20 @@ pub enum TimelineItem {
     Message(usize),
 }
 
+/// Stable identity parallel to [`TimelineItem`]. Row indices are intentionally
+/// excluded so a prepend can preserve the exact visible message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TimelineKey {
+    Date(String),
+    Message(wasabi_domain::MessageId, i64),
+}
+
 #[derive(Default)]
 pub struct MessageWindowModel {
     pub chat_id: Option<String>,
     /// Oldest first; the store pages newest-first and is reversed here.
     pub rows: Vec<MessageRow>,
     pub items: Vec<TimelineItem>,
-    /// Pixel heights parallel to `items`.
-    pub sizes: Vec<f32>,
     pub has_more_older: bool,
     /// True once the newest tail was trimmed to keep the window bounded.
     #[allow(dead_code)]
@@ -50,17 +49,11 @@ pub struct MessageWindowModel {
     pub error: Option<String>,
     /// Search/action target receiving a temporary accent outline.
     pub highlighted: Option<wasabi_domain::MessageId>,
-    estimates: HashMap<wasabi_domain::MessageId, f32>,
 }
 
 impl MessageWindowModel {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    pub fn clear_layout_estimates(&mut self) {
-        self.estimates.clear();
-        self.rebuild();
     }
 
     /// Drop everything and prepare for a fresh anchored load.
@@ -189,24 +182,32 @@ impl MessageWindowModel {
         added
     }
 
-    /// Append newer rows (invalidation refresh while scrolled up).
-    pub fn merge_newer(&mut self, page: &MessagePage) {
+    /// Append newer rows without evicting the history currently being read.
+    /// Returns the total unseen count; rows beyond the bounded window remain
+    /// available through an anchored newest reload.
+    pub fn merge_newer(&mut self, page: &MessagePage) -> usize {
         // A refresh page can overlap the current window at any position, not
         // only at its last row. Merge by stable identity before sorting so a
         // mid-history refresh never creates duplicate bubbles.
         let mut seen = self.rows.iter().map(row_key).collect::<HashSet<_>>();
-        for row in page.rows.iter().rev() {
-            if seen.insert(row_key(row)) {
-                self.rows.push(row.clone());
-            }
-        }
+        let newest = self.rows.last().map(|row| (row.timestamp_ms, row.seq.0));
+        let newer = page
+            .rows
+            .iter()
+            .rev()
+            .filter(|row| {
+                newest.is_none_or(|newest| (row.timestamp_ms, row.seq.0) > newest)
+                    && seen.insert(row_key(row))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let unseen = newer.len();
+        let available = WINDOW_MAX.saturating_sub(self.rows.len());
+        self.rows.extend(newer.into_iter().take(available));
         self.rows.sort_by_key(|row| (row.timestamp_ms, row.seq.0));
-        if self.rows.len() > WINDOW_MAX {
-            let drop = self.rows.len() - WINDOW_MAX;
-            self.rows.drain(..drop);
-            self.has_more_older = true;
-        }
+        self.has_more_newer = unseen > available;
         self.rebuild();
+        unseen
     }
 
     pub fn set_error(&mut self, message: String) {
@@ -224,12 +225,12 @@ impl MessageWindowModel {
         })
     }
 
-    /// Recompute the render order and heights. Called on every mutation.
+    /// Recompute the render order. Actual heights are measured and cached by
+    /// GPUI's native variable-height list.
     pub fn rebuild(&mut self) {
         use chrono::TimeZone;
 
         let mut items = Vec::with_capacity(self.rows.len() + 8);
-        let mut sizes = Vec::with_capacity(self.rows.len() + 8);
         let now_local = chrono::Local::now().date_naive();
 
         let mut prev_day: Option<chrono::NaiveDate> = None;
@@ -244,15 +245,23 @@ impl MessageWindowModel {
                     Some(d) => chip_label(d, now_local),
                     None => String::new(),
                 };
-                sizes.push(crate::theme::DATE_CHIP_H);
                 items.push(TimelineItem::Date(label));
             }
-            // Split field borrows: rows read, estimates written in place.
-            sizes.push(height_of(&mut self.estimates, row));
             items.push(TimelineItem::Message(ix));
         }
         self.items = items;
-        self.sizes = sizes;
+    }
+
+    pub fn timeline_keys(&self) -> Vec<TimelineKey> {
+        self.items
+            .iter()
+            .filter_map(|item| match item {
+                TimelineItem::Date(label) => Some(TimelineKey::Date(label.clone())),
+                TimelineItem::Message(index) => self.rows.get(*index).map(|row| {
+                    TimelineKey::Message(row.id.clone(), row.seq.0)
+                }),
+            })
+            .collect()
     }
 }
 
@@ -261,21 +270,6 @@ impl MessageWindowModel {
 /// projection key when pages overlap.
 fn row_key(row: &MessageRow) -> (wasabi_domain::MessageId, i64) {
     (row.id.clone(), row.seq.0)
-}
-
-/// Cached chars-per-line height heuristic keyed by message id.
-fn height_of(estimates: &mut HashMap<wasabi_domain::MessageId, f32>, row: &MessageRow) -> f32 {
-    *estimates.entry(row.id.clone()).or_insert_with(|| {
-        let text_len = body_text(row).chars().count() as f32;
-        let base = match row.kind {
-            MessageKind::Image { .. }
-            | MessageKind::Video { .. }
-            | MessageKind::Sticker { .. } => VISUAL_MEDIA_BASE_H,
-            MessageKind::Audio { .. } | MessageKind::Document { .. } => COMPACT_MEDIA_BASE_H,
-            _ => BUBBLE_BASE_H,
-        };
-        base + (text_len / CHARS_PER_LINE).ceil().max(1.0) * LINE_H
-    })
 }
 
 /// Day-chip label relative to today.
@@ -468,5 +462,30 @@ mod tests {
             ["M1", "M2", "M3", "M4", "M5"]
         );
         assert!(!model.has_more_newer);
+    }
+
+    #[test]
+    fn incoming_rows_never_evict_history_while_reading() {
+        let mut model = MessageWindowModel::new();
+        model.anchor_newest(&MessagePage {
+            rows: (1..=WINDOW_MAX)
+                .rev()
+                .map(|order| row(&format!("M{order}"), order as i64))
+                .collect(),
+            next_before: None,
+        });
+        let oldest = model.rows.first().unwrap().id.clone();
+        let newest = model.rows.last().unwrap().id.clone();
+
+        let unseen = model.merge_newer(&MessagePage {
+            rows: vec![row("NEW", WINDOW_MAX as i64 + 1)],
+            next_before: None,
+        });
+
+        assert_eq!(unseen, 1);
+        assert_eq!(model.rows.len(), WINDOW_MAX);
+        assert_eq!(model.rows.first().unwrap().id, oldest);
+        assert_eq!(model.rows.last().unwrap().id, newest);
+        assert!(model.has_more_newer);
     }
 }

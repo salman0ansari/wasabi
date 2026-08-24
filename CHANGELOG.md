@@ -6,6 +6,13 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 
 ### Added
 
+- The conversation timeline now uses GPUI's native measured variable-height
+  list, so multiline, multilingual, emoji, media, resized, and scaled content
+  is laid out from actual rendered geometry instead of character estimates.
+- Stable date/message item identities preserve the same visible message and
+  pixel offset across prepends, bounded-window churn, and remeasurement.
+- Incoming messages no longer evict history while it is being read; a compact
+  new-message affordance moves to the newest anchored page on demand.
 - Account settings now provide a protocol-backed logout flow with an explicit
   cancel-first confirmation, preserve cached local account data, clear live UI
   state, and return the desktop to secure pairing.
