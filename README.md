@@ -36,6 +36,11 @@ requires confirmation before clearing downloaded media.
 
 ![Wasabi Storage settings in the light theme](docs/screenshots/settings-storage-light.png)
 
+Logging out unlinks only this desktop and explicitly preserves cached local
+account data unless the user chooses a separate removal flow.
+
+![Wasabi logout confirmation](docs/screenshots/account-logout-confirm-light.png)
+
 ### Dark theme
 
 ![Wasabi Storage settings in the dark theme](docs/screenshots/settings-storage-dark.png)
@@ -71,6 +76,7 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 - Use light, dark, or Linux system appearance.
 - Configure text size, Enter-to-send, notifications, download location, and an actively enforced media-cache quota.
 - Inspect current media-cache usage and clear downloaded media through an explicit confirmation flow.
+- Log out of the linked companion through a confirmation that distinguishes unlinking from local-data removal.
 - Receive standard Linux desktop notifications that respect mute, focus, sound, and preview-privacy settings; clicking one focuses its conversation.
 - Persist device settings independently from the linked account.
 - Enable standards-based XDG autostart.

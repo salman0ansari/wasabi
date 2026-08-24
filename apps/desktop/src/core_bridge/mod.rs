@@ -52,6 +52,7 @@ pub trait DesktopBackend: Send + Sync {
     ) -> Result<PhonePairCode, String>;
     async fn cancel_phone_pairing(&self) -> Result<(), String>;
     async fn stop_session(&self) -> Result<(), String>;
+    async fn logout(&self) -> Result<(), ServiceError>;
     async fn flush_storage(&self) -> Result<(), String>;
     async fn media_cache_usage(&self) -> Result<u64, ServiceError>;
     async fn set_media_cache_quota(&self, bytes: u64) -> Result<u64, ServiceError>;
@@ -302,6 +303,20 @@ impl CoreBridge {
         let session = self.session_snapshot()?;
         self.run_on_core(async move {
             session.stop().await;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn logout(&self) -> Result<(), ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let session = self
+            .session_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::NotPaired, detail))?;
+        self.run_on_core_service(async move {
+            session.logout().await;
             Ok(())
         })
         .await
@@ -1412,6 +1427,10 @@ impl DesktopBackend for CoreBridge {
 
     async fn stop_session(&self) -> Result<(), String> {
         CoreBridge::stop_session(self).await
+    }
+
+    async fn logout(&self) -> Result<(), ServiceError> {
+        CoreBridge::logout(self).await
     }
 
     async fn flush_storage(&self) -> Result<(), String> {

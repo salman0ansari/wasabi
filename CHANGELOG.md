@@ -6,6 +6,11 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 
 ### Added
 
+- Account settings now provide a protocol-backed logout flow with an explicit
+  cancel-first confirmation, preserve cached local account data, clear live UI
+  state, and return the desktop to secure pairing.
+- Every icon-only navigation-rail control now has a hover tooltip, AccessKit
+  label, and accurate selected state without adding visible rail names.
 - Storage settings now report live media-cache usage, enforce persisted
   256 MiB/1 GiB/4 GiB quotas, open the native Linux directory picker, and
   clear downloaded media through an explicit confirmation flow.

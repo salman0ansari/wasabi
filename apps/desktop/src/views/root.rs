@@ -16,6 +16,7 @@ use gpui::{
 };
 use gpui_component::VirtualListScrollHandle;
 use gpui_component::input::{InputEvent, InputState};
+use gpui_component::tooltip::Tooltip;
 use gpui_component::{Icon, IconName};
 
 use crate::core_bridge::DesktopBackend;
@@ -53,6 +54,7 @@ pub(crate) enum MessageOverlay {
 #[derive(Clone, Copy)]
 pub(crate) enum SettingsOverlay {
     ClearMediaCache,
+    Logout,
 }
 
 #[derive(Clone)]
@@ -133,6 +135,7 @@ pub struct MainWindow {
     pub(crate) settings_feedback: Option<SettingsFeedback>,
     pub(crate) media_cache_usage_bytes: Option<u64>,
     pub(crate) media_cache_loading: bool,
+    pub(crate) logout_in_progress: bool,
     pub(crate) send_error: Option<String>,
     pub(crate) message_overlay: Option<MessageOverlay>,
     pub(crate) media_downloads:
@@ -236,6 +239,7 @@ impl MainWindow {
             settings_feedback: None,
             media_cache_usage_bytes: None,
             media_cache_loading: false,
+            logout_in_progress: false,
             send_error: None,
             message_overlay: None,
             media_downloads: HashMap::new(),
@@ -387,9 +391,13 @@ impl MainWindow {
                 generation: 1,
             },
         );
-        if matches!(mode, "settings" | "settings-dark") {
+        if matches!(mode, "settings" | "settings-dark" | "account") {
             self.nav_destination = NavDestination::Settings;
-            self.settings_section = SettingsSection::Storage;
+            self.settings_section = if mode == "account" {
+                SettingsSection::Account
+            } else {
+                SettingsSection::Storage
+            };
             self.media_cache_usage_bytes = Some(187 * 1024 * 1024);
         }
     }
@@ -1537,6 +1545,13 @@ impl MainWindow {
         cx.notify();
     }
 
+    pub(crate) fn confirm_logout(&mut self, cx: &mut Context<Self>) {
+        if !self.logout_in_progress {
+            self.settings_overlay = Some(SettingsOverlay::Logout);
+            cx.notify();
+        }
+    }
+
     pub(crate) fn close_settings_overlay(&mut self, cx: &mut Context<Self>) {
         self.settings_overlay = None;
         cx.notify();
@@ -1563,6 +1578,50 @@ impl MainWindow {
                     }
                     Err(error) => {
                         tracing::warn!(kind = %error.kind, "media cache clear failed");
+                        this.settings_feedback = Some(SettingsFeedback::Error(
+                            error.ui_message().to_string(),
+                        ));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn run_confirmed_settings_action(&mut self, cx: &mut Context<Self>) {
+        match self.settings_overlay.take() {
+            Some(SettingsOverlay::ClearMediaCache) => self.run_clear_media_cache(cx),
+            Some(SettingsOverlay::Logout) => self.run_logout(cx),
+            None => {}
+        }
+    }
+
+    fn run_logout(&mut self, cx: &mut Context<Self>) {
+        if self.logout_in_progress {
+            return;
+        }
+        self.logout_in_progress = true;
+        self.settings_feedback = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.logout().await;
+            this.update(cx, |this, cx| {
+                this.logout_in_progress = false;
+                match result {
+                    Ok(()) => {
+                        this.session = SessionMirror::new();
+                        this.nav_destination = NavDestination::Chats;
+                        this.show_right_panel = false;
+                        this.message_overlay = None;
+                        this.settings_overlay = None;
+                        this.typing.clear();
+                        this.notification_seen.clear();
+                        this.notification_seen_order.clear();
+                    }
+                    Err(error) => {
+                        tracing::warn!(kind = %error.kind, "account logout failed");
                         this.settings_feedback = Some(SettingsFeedback::Error(
                             error.ui_message().to_string(),
                         ));
@@ -2102,7 +2161,7 @@ impl Render for MainWindow {
 }
 
 fn nav_rail(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
-    let items = [(IconName::Inbox, NavDestination::Chats)];
+    let items = [(IconName::Inbox, NavDestination::Chats, "Chats")];
 
     let mut rail = div()
         .w(px(theme::NAV_W))
@@ -2117,7 +2176,7 @@ fn nav_rail(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
         .border_r_1()
         .border_color(theme::border());
 
-    for (index, (icon, destination)) in items.into_iter().enumerate() {
+    for (index, (icon, destination, label)) in items.into_iter().enumerate() {
         let active = this.nav_destination == destination;
         let mut item = div()
             .id(("nav-item", index))
@@ -2127,7 +2186,9 @@ fn nav_rail(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
             .flex()
             .items_center()
             .justify_center()
-            .text_size(px(18.0));
+            .text_size(px(18.0))
+            .aria_label(label)
+            .tooltip(move |window, cx| Tooltip::new(label).build(window, cx));
         if active {
             item = item.bg(theme::row_selected()).text_color(theme::accent_text());
         } else {
@@ -2141,6 +2202,7 @@ fn nav_rail(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
         rail = rail.child(item.child(Icon::new(icon).size(px(20.0))));
     }
 
+    let settings_active = this.nav_destination == NavDestination::Settings;
     rail = rail.child(
         div()
             .flex_1()
@@ -2157,7 +2219,14 @@ fn nav_rail(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
                     .items_center()
                     .justify_center()
                     .text_size(px(18.0))
-                    .text_color(theme::text_secondary())
+                    .aria_label("Settings")
+                    .tooltip(|window, cx| Tooltip::new("Settings").build(window, cx))
+                    .when(settings_active, |item| {
+                        item.bg(theme::row_selected()).text_color(theme::accent_text())
+                    })
+                    .when(!settings_active, |item| {
+                        item.text_color(theme::text_secondary())
+                    })
                     .hover(|s| s.bg(theme::row_hover()))
                     .cursor_pointer()
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -2176,6 +2245,8 @@ fn nav_rail(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
                     .bg(theme::accent_text())
                     .text_color(theme::text_on_accent())
                     .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .aria_label("Account")
+                    .tooltip(|window, cx| Tooltip::new("Account").build(window, cx))
                     .cursor_pointer()
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.select_nav(NavDestination::Settings, cx);

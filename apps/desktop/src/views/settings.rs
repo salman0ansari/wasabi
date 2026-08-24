@@ -347,12 +347,25 @@ fn general(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElem
         .into_any_element()
 }
 
-fn account(this: &mut MainWindow, _cx: &mut Context<MainWindow>) -> gpui::AnyElement {
+fn account(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElement {
     card("LINKED ACCOUNT")
         .child(value_row("Connection", this.session.status_label()))
         .child(value_row(
             "Local data",
             "Cached chats remain on this computer when offline",
+        ))
+        .child(action_row(
+            "setting-logout",
+            if this.logout_in_progress {
+                "Logging out…"
+            } else {
+                "Log out of this desktop"
+            },
+            "Unlinks this companion. Cached account data remains on this computer.",
+            "Log out…",
+            true,
+            cx,
+            |this, cx| this.confirm_logout(cx),
         ))
         .into_any_element()
 }
@@ -613,13 +626,7 @@ fn settings_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui
     let Some(overlay) = this.settings_overlay else {
         return gpui::div();
     };
-    let (title, detail, confirm) = match overlay {
-        SettingsOverlay::ClearMediaCache => (
-            "Clear downloaded media?",
-            "Cached photos, videos, audio, and documents will be removed from this computer. Messages remain available and media can be downloaded again.",
-            "Clear cache",
-        ),
-    };
+    let (title, detail, confirm) = settings_overlay_copy(overlay);
     gpui::div()
         .absolute()
         .size_full()
@@ -663,11 +670,28 @@ fn settings_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui
                         )
                         .child(
                             overlay_button("confirm-settings-action", confirm, true).on_click(
-                                cx.listener(|this, _, _, cx| this.run_clear_media_cache(cx)),
+                                cx.listener(|this, _, _, cx| {
+                                    this.run_confirmed_settings_action(cx)
+                                }),
                             ),
                         ),
                 ),
         )
+}
+
+fn settings_overlay_copy(overlay: SettingsOverlay) -> (&'static str, &'static str, &'static str) {
+    match overlay {
+        SettingsOverlay::ClearMediaCache => (
+            "Clear downloaded media?",
+            "Cached photos, videos, audio, and documents will be removed from this computer. Messages remain available and media can be downloaded again.",
+            "Clear cache",
+        ),
+        SettingsOverlay::Logout => (
+            "Log out of this desktop?",
+            "This companion will be unlinked from WhatsApp. Cached chats and account data remain on this computer unless you remove them separately.",
+            "Log out",
+        ),
+    }
 }
 
 fn overlay_button(
@@ -699,12 +723,21 @@ fn overlay_button(
 
 #[cfg(test)]
 mod tests {
-    use super::format_bytes;
+    use super::{format_bytes, settings_overlay_copy};
+    use crate::views::root::SettingsOverlay;
 
     #[test]
     fn cache_usage_is_human_readable() {
         assert_eq!(format_bytes(0), "0.0 MB");
         assert_eq!(format_bytes(512 * 1024 * 1024), "512.0 MB");
         assert_eq!(format_bytes(1536 * 1024 * 1024), "1.5 GB");
+    }
+
+    #[test]
+    fn logout_confirmation_is_explicit_about_local_data() {
+        let (title, detail, confirm) = settings_overlay_copy(SettingsOverlay::Logout);
+        assert!(title.contains("desktop"));
+        assert!(detail.contains("remain on this computer"));
+        assert_eq!(confirm, "Log out");
     }
 }
