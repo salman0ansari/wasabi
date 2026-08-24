@@ -7,7 +7,7 @@ use gpui::{Context, Window, px, size};
 use gpui_component::v_virtual_list;
 use gpui_component::{Icon, IconName};
 
-use crate::state::chats::{self, ChatFilter};
+use crate::state::chats::{self, ChatFilter, ChatSortMode};
 use crate::state::messages;
 use crate::theme;
 use crate::views::root::MainWindow;
@@ -39,6 +39,29 @@ pub fn filter_bar(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::
         chip.child(filter.label())
     });
 
+    let sort_mode = this.chats.sort_mode;
+    let mut sort_button = gpui::div()
+        .id("chat-sort")
+        .size(px(28.0))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .text_color(theme::ACCENT_TEXT)
+        .bg(theme::CHIP_IDLE)
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.chats.toggle_sort();
+            cx.notify();
+        }));
+    if sort_mode == ChatSortMode::Name {
+        sort_button = sort_button
+            .bg(theme::ACCENT)
+            .text_color(theme::TEXT_ON_ACCENT);
+    } else {
+        sort_button = sort_button.hover(|s| s.bg(theme::ROW_HOVER));
+    }
+
     gpui::div()
         .flex()
         .items_center()
@@ -50,15 +73,13 @@ pub fn filter_bar(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::
         .border_color(theme::BORDER)
         .children(chips)
         .child(
-            gpui::div()
-                .size(px(28.0))
-                .rounded_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(theme::TEXT_SECONDARY)
-                .hover(|s| s.bg(theme::ROW_HOVER))
-                .child(Icon::new(IconName::SortAscending).size(px(16.0))),
+            sort_button.child(
+                Icon::new(match sort_mode {
+                    ChatSortMode::Recent => IconName::SortDescending,
+                    ChatSortMode::Name => IconName::SortAscending,
+                })
+                .size(px(16.0)),
+            ),
         )
 }
 

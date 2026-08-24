@@ -1,5 +1,7 @@
 //! Chat list page model: one loaded keyset page plus client-side filtering.
 
+use std::cmp::Ordering;
+
 use wasabi_domain::{ChatPageCursor, ChatSummary};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -29,6 +31,29 @@ impl ChatFilter {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ChatSortMode {
+    #[default]
+    Recent,
+    Name,
+}
+
+impl ChatSortMode {
+    pub const fn toggle(self) -> Self {
+        match self {
+            ChatSortMode::Recent => ChatSortMode::Name,
+            ChatSortMode::Name => ChatSortMode::Recent,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            ChatSortMode::Recent => "Recent",
+            ChatSortMode::Name => "Name",
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct ChatListModel {
     pub chats: Vec<ChatSummary>,
@@ -40,6 +65,7 @@ pub struct ChatListModel {
     pub has_more: bool,
     pub filter: ChatFilter,
     pub query: String,
+    pub sort_mode: ChatSortMode,
     pub selected: Option<String>,
     pub error: Option<String>,
 }
@@ -68,6 +94,11 @@ impl ChatListModel {
         self.error = Some(message);
     }
 
+    pub fn toggle_sort(&mut self) {
+        self.sort_mode = self.sort_mode.toggle();
+        self.visible_cache = self.visible();
+    }
+
     /// Keyset cursor reconstructed from the last row of the loaded page.
     /// Kept for chat-list "load more" paging once the list grows beyond one
     /// page; unused by the first shell.
@@ -82,15 +113,39 @@ impl ChatListModel {
     }
 
     /// Indexes into `chats` of rows surviving the active filter chip and
-    /// search query, in store order (newest first).
+    /// search query, ordered by the active sort mode.
     pub fn visible(&self) -> Vec<usize> {
         let query = self.query.to_lowercase();
-        self.chats
+        let mut visible = self
+            .chats
             .iter()
             .enumerate()
             .filter(|(_, c)| matches_filter(c, self.filter, &query))
             .map(|(ix, _)| ix)
-            .collect()
+            .collect::<Vec<_>>();
+        visible.sort_by(|left, right| {
+            compare_chats(&self.chats[*left], &self.chats[*right], self.sort_mode)
+        });
+        visible
+    }
+}
+
+fn compare_chats(left: &ChatSummary, right: &ChatSummary, mode: ChatSortMode) -> Ordering {
+    match mode {
+        ChatSortMode::Recent => right
+            .pinned_at_ms
+            .cmp(&left.pinned_at_ms)
+            .then_with(|| right.last_activity_ms.cmp(&left.last_activity_ms))
+            .then_with(|| left.id.as_str().cmp(right.id.as_str())),
+        ChatSortMode::Name => {
+            let left_name = fallback_name(left);
+            let right_name = fallback_name(right);
+            left_name
+                .to_lowercase()
+                .cmp(&right_name.to_lowercase())
+                .then_with(|| left_name.cmp(&right_name))
+                .then_with(|| left.id.as_str().cmp(right.id.as_str()))
+        }
     }
 }
 
@@ -130,4 +185,77 @@ pub fn fallback_name(chat: &ChatSummary) -> String {
         .clone()
         .unwrap_or_else(|| chat.id.as_str().to_string());
     raw.split('@').next().unwrap_or(&raw).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use wasabi_domain::{ChatId, ChatSummary};
+
+    use super::{ChatFilter, ChatListModel, ChatSortMode};
+
+    fn chat(
+        id: &str,
+        name: Option<&str>,
+        last_activity_ms: i64,
+        unread_count: i64,
+        pinned_at_ms: Option<i64>,
+    ) -> ChatSummary {
+        ChatSummary {
+            id: ChatId::new(id),
+            display_name: name.map(str::to_string),
+            last_activity_ms,
+            last_message_preview: None,
+            unread_count,
+            pinned_at_ms,
+            muted_until_ms: None,
+            archived: false,
+        }
+    }
+
+    #[test]
+    fn visible_uses_deterministic_recent_and_name_orders() {
+        let mut model = ChatListModel::new();
+        model.set_page(
+            vec![
+                chat("z@c.us", Some("Zed"), 300, 0, None),
+                chat("a@c.us", Some("Alice"), 100, 0, None),
+                chat("p@c.us", Some("Pinned"), 1, 0, Some(10)),
+                chat("b@c.us", Some("alice"), 200, 0, None),
+            ],
+            false,
+        );
+
+        assert_eq!(model.visible(), vec![2, 0, 3, 1]);
+
+        model.toggle_sort();
+        assert_eq!(model.sort_mode, ChatSortMode::Name);
+        assert_eq!(model.visible(), vec![1, 3, 2, 0]);
+
+        model.toggle_sort();
+        assert_eq!(model.sort_mode, ChatSortMode::Recent);
+        assert_eq!(model.visible_cache, vec![2, 0, 3, 1]);
+    }
+
+    #[test]
+    fn sorting_happens_after_filter_and_query_without_losing_selection() {
+        let mut model = ChatListModel::new();
+        model.set_page(
+            vec![
+                chat("group-a@g.us", Some("Zeta group"), 100, 1, None),
+                chat("direct-a@c.us", Some("Alice"), 300, 0, None),
+                chat("group-b@g.us", Some("Alpha group"), 200, 2, None),
+            ],
+            false,
+        );
+        model.selected = Some("group-a@g.us".to_string());
+        model.filter = ChatFilter::Groups;
+        model.query = "group".to_string();
+
+        assert_eq!(model.visible(), vec![2, 0]);
+
+        model.toggle_sort();
+        assert_eq!(model.visible_cache, vec![2, 0]);
+        assert_eq!(model.selected.as_deref(), Some("group-a@g.us"));
+        assert_eq!(model.visible(), vec![2, 0]);
+    }
 }
