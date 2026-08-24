@@ -250,12 +250,16 @@ impl MainWindow {
         self.composer_input
             .update(cx, |state, cx| state.set_value("", window, cx));
 
+        let request = wasabi_domain::SendRequest::text(
+            wasabi_domain::ChatId::new(chat_id),
+            text,
+        );
         let bridge = Arc::clone(&self.bridge);
         spawn_main(cx, async move |this, cx| {
-            if let Err(err) = bridge.send_text(chat_id, text).await {
+            if let Err(err) = bridge.send(request).await {
                 tracing::warn!(error = %err, "send failed");
                 this.update(cx, |this, cx| {
-                    this.send_error = Some(err);
+                    this.send_error = Some(err.ui_message().to_string());
                     cx.notify();
                 })
                 .ok();
@@ -863,7 +867,6 @@ fn apply_state(
     cx: &mut gpui::AsyncApp,
     state: wasabi_core::state::SessionState,
 ) -> Result<(), anyhow::Error> {
-    let connected = state.is_connected();
     weak.update(cx, |this, cx| {
         if state.is_connected() {
             this.session.connected_once = true;
@@ -885,12 +888,6 @@ fn apply_state(
             this.session.pairing_error = None;
         }
         this.session.state = state;
-        if connected && this.bridge.has_pending_sends() {
-            let bridge = Arc::clone(&this.bridge);
-            spawn_main(cx, async move |_, _| {
-                bridge.flush_pending().await;
-            });
-        }
         cx.notify();
     })
 }

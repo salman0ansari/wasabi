@@ -8,6 +8,7 @@ pub mod error;
 pub mod ids;
 pub mod message;
 pub mod page;
+pub mod send;
 
 pub use error::{ErrorKind, ServiceError};
 pub use ids::{AccountId, ChatId, LocalCursor, MessageId};
@@ -16,3 +17,4 @@ pub use message::{
     SenderJid,
 };
 pub use page::{ChatPage, ChatPageCursor};
+pub use send::{SendContent, SendReceipt, SendRequest};

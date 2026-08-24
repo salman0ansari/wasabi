@@ -54,7 +54,6 @@ fn main() -> anyhow::Result<()> {
     bridge.set_root_token(supervisor.root_cancellation());
     match opened {
         Ok(session) => {
-            attach_text_sender(&bridge, &supervisor, &session);
             bridge.install_session(session);
         }
         Err(err) => tracing::error!(error = %err, "account session failed to open"),
@@ -125,40 +124,6 @@ async fn open_session(layout: &StorageLayout) -> Result<Arc<AccountSession>, any
     AccountSession::open(layout.account_db(account.get()), &tuning, &config)
         .await
         .context("open account store")
-}
-
-/// Bind the composer's outgoing path to the durable outbox pipeline. The
-/// client handle is resolved per send (it exists only while a Bot loop is
-/// running); the bridge queues sends attempted before that.
-fn attach_text_sender(
-    bridge: &CoreBridge,
-    supervisor: &wasabi_core::supervisor::CoreSupervisor,
-    session: &Arc<AccountSession>,
-) {
-    let outbox = wasabi_whatsapp::outbox::Outbox::new(Arc::clone(session.chats()));
-    let session = Arc::clone(session);
-    let handle = supervisor.handle();
-    let sender: core_bridge::TextSender = Arc::new(move |to: String, text: String| {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let session = Arc::clone(&session);
-        let outbox = outbox.clone();
-        handle.spawn(async move {
-            let result = match to.parse::<whatsapp_rust::Jid>() {
-                Ok(jid) => match session.client().await {
-                    Some(client) => outbox
-                        .send_text(&client, jid, text)
-                        .await
-                        .map(|r| r.message_id)
-                        .map_err(|e| e.to_string()),
-                    None => Err("not connected".to_string()),
-                },
-                Err(e) => Err(format!("bad jid: {e}")),
-            };
-            let _ = tx.send(result);
-        });
-        rx
-    });
-    bridge.set_text_sender(sender);
 }
 
 fn install_tracing() {

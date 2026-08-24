@@ -11,57 +11,20 @@
 //! the core [`InvalidationPublisher`] here as well, so the UI listens to one
 //! bounded channel regardless of how many producers exist underneath.
 
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use tokio_util::sync::CancellationToken;
 use wasabi_core::events::{Invalidation, InvalidationPublisher};
 use wasabi_core::state::SessionState;
-use wasabi_domain::ServiceError;
-use wasabi_domain::{ChatSummary, MessagePage, PageCursor};
+use wasabi_domain::{
+    ChatSummary, ErrorKind, MessageId, MessagePage, PageCursor, SendContent, SendReceipt,
+    SendRequest, ServiceError,
+};
 use wasabi_repository::AccountStore;
 use wasabi_whatsapp::lifecycle::QrState;
 use wasabi_whatsapp::outbox::Outbox;
 use wasabi_whatsapp::session::{AccountSession, SessionConfig};
-
-/// Maximum queued outgoing texts while no transport seam is attached.
-const PENDING_SEND_CAPACITY: usize = 32;
-
-/// Transport seam for outgoing text.
-///
-/// The live client handle is not reachable through the session
-/// facade yet, so the final wiring happens at startup: a `TextSender` takes
-/// `(chat_jid, text)` and returns a one-shot receiver for the pipeline
-/// result. It spawns onto the core runtime and drives
-/// `Outbox::send_text(&client, jid, text)`:
-///
-/// ```ignore
-/// let sender: TextSender = Arc::new(move |to, text| {
-///     let (tx, rx) = tokio::sync::oneshot::channel();
-///     let client = Arc::clone(&client);
-///     let outbox = outbox.clone();
-///     core_handle.spawn(async move {
-///         let res = match to.parse::<whatsapp_rust::Jid>() {
-///             Ok(jid) => outbox.send_text(&client, jid, text).await
-///                 .map(|r| r.message_id)
-///                 .map_err(|e| e.to_string()),
-///             Err(e) => Err(format!("bad jid: {e}")),
-///         };
-///         let _ = tx.send(res);
-///     });
-///     rx
-/// });
-/// bridge.set_text_sender(sender);
-/// ```
-pub type TextSender = Arc<
-    dyn Fn(String, String) -> tokio::sync::oneshot::Receiver<Result<String, String>> + Send + Sync,
->;
-
-struct PendingSend {
-    chat: String,
-    text: String,
-}
 
 /// Shared handle bundle handed to the UI.
 pub struct CoreBridge {
@@ -72,8 +35,6 @@ pub struct CoreBridge {
     store: Arc<RwLock<Option<Arc<AccountStore>>>>,
     session: Arc<RwLock<Option<Arc<AccountSession>>>>,
     outbox: Arc<RwLock<Option<Outbox>>>,
-    sender: Arc<RwLock<Option<TextSender>>>,
-    pending: Arc<Mutex<VecDeque<PendingSend>>>,
 }
 
 impl CoreBridge {
@@ -90,8 +51,6 @@ impl CoreBridge {
             store: Arc::new(RwLock::new(None)),
             session: Arc::new(RwLock::new(None)),
             outbox: Arc::new(RwLock::new(None)),
-            sender: Arc::new(RwLock::new(None)),
-            pending: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -108,19 +67,6 @@ impl CoreBridge {
         *self.outbox.write().expect("outbox lock") = Some(Outbox::new(Arc::clone(&session.chats)));
         *self.session.write().expect("session lock") = Some(session);
         self.forward_store_changes();
-    }
-
-    /// Attach the outgoing-text transport seam. See [`TextSender`].
-    // Called by integration once a live client handle exists.
-    #[allow(dead_code)]
-    pub fn set_text_sender(&self, sender: TextSender) {
-        *self.sender.write().expect("sender lock") = Some(sender);
-    }
-
-    /// Snapshot of the account outbox for the transport-seam wiring.
-    #[allow(dead_code)]
-    pub fn outbox_snapshot(&self) -> Option<Outbox> {
-        self.outbox.read().expect("outbox lock").clone()
     }
 
     pub fn store_ready(&self) -> bool {
@@ -171,9 +117,7 @@ impl CoreBridge {
                         invalidations.publish(Invalidation::Contacts)
                     }
                     Ok(wasabi_repository::StoreChange::Messages { chat }) => {
-                        invalidations.publish(Invalidation::Messages {
-                            chat,
-                        })
+                        invalidations.publish(Invalidation::Messages { chat })
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         invalidations.publish(Invalidation::Chats)
@@ -265,84 +209,45 @@ impl CoreBridge {
 
     // ---- Sending ------------------------------------------------------------
 
-    /// Send one text through the transport seam, parking it while no seam is
-    /// attached yet. Returns the pipeline message id, or `"queued"` when the
-    /// message waits for the transport to appear.
-    pub async fn send_text(&self, chat: String, text: String) -> Result<String, String> {
+    /// Submit an immutable product request through the durable account
+    /// outbox. The live client is resolved inside the core runtime at the
+    /// moment of submission; no protocol/client type crosses this boundary.
+    pub async fn send(&self, request: SendRequest) -> Result<SendReceipt, ServiceError> {
         if !self.commands_accepted() {
-            return Err("shutting down".to_string());
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
         }
-        if let Some(rx) = self.dispatch(chat.clone(), text.clone()) {
-            match rx.await {
-                Ok(Ok(message_id)) => return Ok(message_id),
-                Ok(Err(err)) if err != "not connected" => return Err(err),
-                Ok(Err(_)) | Err(_) => {
-                    // The seam exists for the lifetime of the app, but the
-                    // live client does not. Preserve the user's message in
-                    // the bounded in-memory handoff until the next
-                    // Connected transition instead of losing it at the
-                    // disconnect boundary.
+        let session = self
+            .session_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::NotPaired, detail))?;
+        let outbox = self
+            .outbox_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
+        self.run_on_core_service(async move {
+            let to = request
+                .chat
+                .as_str()
+                .parse::<whatsapp_rust::Jid>()
+                .map_err(|e| {
+                    ServiceError::new(ErrorKind::InvalidRequest, format!("bad chat id: {e}"))
+                })?;
+            let client = session.client().await.ok_or_else(|| {
+                ServiceError::new(ErrorKind::NotConnected, "no live protocol client")
+            })?;
+            let receipt = match request.content {
+                SendContent::Text { body } => outbox.send_text(&client, to, body).await,
+                _ => {
+                    return Err(ServiceError::new(
+                        ErrorKind::Unsupported,
+                        "send content is not implemented by this backend",
+                    ));
                 }
             }
-        }
-        self.enqueue_pending(chat, text)?;
-        Ok("queued".to_string())
-    }
-
-    /// Drain messages parked while the transport was absent. Called when the
-    /// session reaches Connected; each entry goes through the same seam as a
-    /// fresh send.
-    pub async fn flush_pending(&self) {
-        loop {
-            let next = self.pending.lock().expect("pending lock").pop_front();
-            let Some(PendingSend { chat, text }) = next else {
-                break;
-            };
-            if let Some(rx) = self.dispatch(chat.clone(), text.clone()) {
-                match rx.await {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(_)) | Err(_) => {
-                        // Put the current item back at the front. The
-                        // transport may have disappeared between items; a
-                        // later Connected transition should retry it with
-                        // its original text and destination.
-                        self.pending
-                            .lock()
-                            .expect("pending lock")
-                            .push_front(PendingSend { chat, text });
-                        break;
-                    }
-                }
-            } else {
-                self.pending
-                    .lock()
-                    .expect("pending lock")
-                    .push_front(PendingSend { chat, text });
-                break;
-            }
-        }
-    }
-
-    pub fn has_pending_sends(&self) -> bool {
-        !self.pending.lock().expect("pending lock").is_empty()
-    }
-
-    fn dispatch(
-        &self,
-        chat: String,
-        text: String,
-    ) -> Option<tokio::sync::oneshot::Receiver<Result<String, String>>> {
-        let guard = self.sender.read().expect("sender lock");
-        guard.as_ref().map(|send| send(chat, text))
-    }
-
-    fn enqueue_pending(&self, chat: String, text: String) -> Result<(), String> {
-        let mut queue = self.pending.lock().expect("pending lock");
-        if queue.len() >= PENDING_SEND_CAPACITY {
-            return Err("outbox full, try again shortly".to_string());
-        }
-        queue.push_back(PendingSend { chat, text });
-        Ok(())
+            .map_err(map_outbox_error)?;
+            Ok(SendReceipt {
+                message: MessageId::new(receipt.message_id),
+            })
+        })
+        .await
     }
 
     // ---- Plumbing -----------------------------------------------------------
@@ -363,6 +268,14 @@ impl CoreBridge {
             .ok_or_else(|| "no active session".to_string())
     }
 
+    fn outbox_snapshot(&self) -> Result<Outbox, String> {
+        self.outbox
+            .read()
+            .expect("outbox lock")
+            .clone()
+            .ok_or_else(|| "outbox not ready".to_string())
+    }
+
     /// Drive a future on the core runtime and hand back its result. Awaiting
     /// the join handle needs no runtime context, keeping GPUI tasks clean.
     async fn run_on_core<T, F>(&self, fut: F) -> Result<T, String>
@@ -375,6 +288,30 @@ impl CoreBridge {
             .await
             .map_err(|e| format!("core task: {e}"))?
     }
+
+    async fn run_on_core_service<T, F>(&self, fut: F) -> Result<T, ServiceError>
+    where
+        F: std::future::Future<Output = Result<T, ServiceError>> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.runtime
+            .spawn(fut)
+            .await
+            .map_err(|e| ServiceError::new(ErrorKind::Internal, format!("core task: {e}")))?
+    }
+}
+
+fn map_outbox_error(error: wasabi_whatsapp::outbox::OutboxError) -> ServiceError {
+    use wasabi_whatsapp::outbox::OutboxError;
+
+    let kind = match &error {
+        OutboxError::NotConnected => ErrorKind::NotConnected,
+        OutboxError::Store(_) => ErrorKind::Database,
+        OutboxError::Send { .. } => ErrorKind::Protocol,
+        OutboxError::InvalidRequest(_) => ErrorKind::InvalidRequest,
+        _ => ErrorKind::Internal,
+    };
+    ServiceError::new(kind, error.to_string())
 }
 
 /// Coarse, user-renderable message; diagnostics stay in logs.

@@ -6,6 +6,7 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 
 ### Added
 
+- Typed, immutable send requests that capture their destination chat before asynchronous work begins.
 - Reproducible Linux desktop footprint benchmark and same-machine blank Electron baseline.
 - Customer-facing project documentation and verified native screenshots.
 
@@ -22,6 +23,7 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 
 ### Changed
 
+- Removed the closure-based text transport seam and volatile pending string queue; the desktop bridge now resolves the live client internally and routes requests directly through the durable outbox.
 - Configured release builds to strip compiler symbol tables from shipped binaries.
 - Rebuilt the desktop information architecture around the current unified WhatsApp Web/Desktop interaction model while retaining original Wasabi branding.
 - Removed the global search/network toolbar, persistent information drawer, placeholder destinations, fake participants, alphabetical chat sorting, and overly bright selected-state treatment.
