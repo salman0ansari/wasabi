@@ -654,6 +654,17 @@ impl CoreBridge {
         let outbox = self
             .outbox_snapshot()
             .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
+        let store = self
+            .store_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
+        let manager = self
+            .media_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
+        let cancel = self
+            .root_token
+            .get()
+            .map(CancellationToken::child_token)
+            .ok_or_else(|| ServiceError::new(ErrorKind::Internal, "no cancellation root"))?;
         self.run_on_core_service(async move {
             let to = request
                 .chat
@@ -662,11 +673,161 @@ impl CoreBridge {
                 .map_err(|e| {
                     ServiceError::new(ErrorKind::InvalidRequest, format!("bad chat id: {e}"))
                 })?;
-            let client = session.client().await.ok_or_else(|| {
-                ServiceError::new(ErrorKind::NotConnected, "no live protocol client")
-            })?;
             let receipt = match request.content {
-                SendContent::Text { body } => outbox.send_text(&client, to, body).await,
+                SendContent::Text { body } => {
+                    let client = session.client().await.ok_or_else(|| {
+                        ServiceError::new(ErrorKind::NotConnected, "no live protocol client")
+                    })?;
+                    outbox.send_text(&client, to, body).await
+                }
+                SendContent::Attachment { transfer, caption } => {
+                    let mut job = store
+                        .transfer_job(transfer.clone())
+                        .await?
+                        .ok_or_else(|| {
+                            ServiceError::new(
+                                ErrorKind::InvalidRequest,
+                                "attachment transfer does not exist",
+                            )
+                        })?;
+                    if job.chat != request.chat {
+                        return Err(ServiceError::new(
+                            ErrorKind::InvalidRequest,
+                            "attachment transfer belongs to a different chat",
+                        ));
+                    }
+                    if !matches!(
+                        job.state,
+                        wasabi_domain::TransferState::Staged
+                            | wasabi_domain::TransferState::FailedRetryable
+                    ) {
+                        return Err(ServiceError::new(
+                            ErrorKind::InvalidRequest,
+                            "attachment transfer is not sendable",
+                        ));
+                    }
+                    let source = job.source_path.clone().ok_or_else(|| {
+                        ServiceError::new(ErrorKind::InvalidRequest, "attachment source is missing")
+                    })?;
+                    let bytes_total = job.bytes_total;
+                    let mut payload = job.payload.take().ok_or_else(|| {
+                        ServiceError::new(
+                            ErrorKind::InvalidRequest,
+                            "attachment metadata is missing",
+                        )
+                    })?;
+                    payload.caption = normalized_caption(caption)?;
+                    if payload.kind == wasabi_domain::AttachmentKind::Audio
+                        && payload.caption.is_some()
+                    {
+                        return Err(ServiceError::new(
+                            ErrorKind::InvalidRequest,
+                            "audio attachments do not support captions",
+                        ));
+                    }
+                    if !store
+                        .update_transfer_payload(transfer.clone(), payload.clone())
+                        .await?
+                    {
+                        return Err(ServiceError::new(
+                            ErrorKind::InvalidRequest,
+                            "attachment changed before send",
+                        ));
+                    }
+                    if !store
+                        .set_transfer_state(
+                            transfer.clone(),
+                            wasabi_domain::TransferState::Queued,
+                            None,
+                        )
+                        .await?
+                    {
+                        return Err(ServiceError::new(
+                            ErrorKind::InvalidRequest,
+                            "attachment could not be queued",
+                        ));
+                    }
+                    let client = match session.client().await {
+                        Some(client) => client,
+                        None => {
+                            let _ = store
+                                .set_transfer_state(
+                                    transfer,
+                                    wasabi_domain::TransferState::FailedRetryable,
+                                    Some(ErrorKind::NotConnected),
+                                )
+                                .await;
+                            return Err(ServiceError::new(
+                                ErrorKind::NotConnected,
+                                "no live protocol client",
+                            ));
+                        }
+                    };
+                    if !store
+                        .set_transfer_state(
+                            transfer.clone(),
+                            wasabi_domain::TransferState::Running,
+                            None,
+                        )
+                        .await?
+                    {
+                        return Err(ServiceError::new(
+                            ErrorKind::InvalidRequest,
+                            "attachment could not start",
+                        ));
+                    }
+                    let upload = match manager.upload(source.clone(), payload.kind, cancel).await {
+                        Ok(upload) => upload,
+                        Err(error) => {
+                            let service = map_media_error(error);
+                            let state = transfer_failure_state(service.kind);
+                            let persisted_kind = (state
+                                != wasabi_domain::TransferState::Cancelled)
+                                .then_some(service.kind);
+                            let _ = store
+                                .set_transfer_state(transfer, state, persisted_kind)
+                                .await;
+                            return Err(service);
+                        }
+                    };
+                    if let Some(bytes_total) = bytes_total {
+                        let _ = store
+                            .update_transfer_progress(
+                                transfer.clone(),
+                                bytes_total,
+                                Some(bytes_total),
+                            )
+                            .await;
+                    }
+                    let message = attachment_message(upload, &payload);
+                    let outcome = outbox.send_message(&client, to, message).await;
+                    match &outcome {
+                        Ok(_) | Err(wasabi_whatsapp::outbox::OutboxError::Send { .. }) => {
+                            // A Send error occurs after the proto is committed
+                            // durably. The ordinary message retry path owns it
+                            // from here, so plaintext staging can be erased.
+                            let _ = store
+                                .set_transfer_state(
+                                    transfer,
+                                    wasabi_domain::TransferState::Succeeded,
+                                    None,
+                                )
+                                .await;
+                            let _ = manager.discard_staged_upload(source).await;
+                        }
+                        Err(error) => {
+                            let service = map_outbox_error_ref(error);
+                            let state = transfer_failure_state(service.kind);
+                            let persisted_kind = (state
+                                != wasabi_domain::TransferState::Cancelled)
+                                .then_some(service.kind);
+                            let _ = store
+                                .set_transfer_state(transfer, state, persisted_kind)
+                                .await;
+                        }
+                    }
+                    outcome
+                }
                 _ => {
                     return Err(ServiceError::new(
                         ErrorKind::Unsupported,
@@ -904,6 +1065,10 @@ impl CoreBridge {
 }
 
 fn map_outbox_error(error: wasabi_whatsapp::outbox::OutboxError) -> ServiceError {
+    map_outbox_error_ref(&error)
+}
+
+fn map_outbox_error_ref(error: &wasabi_whatsapp::outbox::OutboxError) -> ServiceError {
     use wasabi_whatsapp::outbox::OutboxError;
 
     let kind = match &error {
@@ -914,6 +1079,70 @@ fn map_outbox_error(error: wasabi_whatsapp::outbox::OutboxError) -> ServiceError
         _ => ErrorKind::Internal,
     };
     ServiceError::new(kind, error.to_string())
+}
+
+fn transfer_failure_state(kind: ErrorKind) -> wasabi_domain::TransferState {
+    match kind {
+        ErrorKind::Cancelled => wasabi_domain::TransferState::Cancelled,
+        ErrorKind::InvalidRequest | ErrorKind::Unsupported => {
+            wasabi_domain::TransferState::FailedPermanent
+        }
+        _ => wasabi_domain::TransferState::FailedRetryable,
+    }
+}
+
+fn normalized_caption(caption: Option<String>) -> Result<Option<String>, ServiceError> {
+    let caption = caption
+        .map(|caption| caption.trim().to_string())
+        .filter(|caption| !caption.is_empty());
+    if caption.as_ref().is_some_and(|caption| caption.chars().count() > 1024) {
+        return Err(ServiceError::new(
+            ErrorKind::InvalidRequest,
+            "attachment caption exceeds 1024 characters",
+        ));
+    }
+    Ok(caption)
+}
+
+fn attachment_message(
+    upload: wasabi_media::UploadResponse,
+    payload: &wasabi_domain::TransferPayload,
+) -> whatsapp_rust::waproto::whatsapp::Message {
+    use wasabi_domain::AttachmentKind;
+    match payload.kind {
+        AttachmentKind::Image => whatsapp_rust::media::image_message(
+            upload,
+            whatsapp_rust::media::ImageOptions {
+                caption: payload.caption.clone(),
+                mimetype: Some(payload.mime_type.clone()),
+                ..Default::default()
+            },
+        ),
+        AttachmentKind::Video => whatsapp_rust::media::video_message(
+            upload,
+            whatsapp_rust::media::VideoOptions {
+                caption: payload.caption.clone(),
+                mimetype: Some(payload.mime_type.clone()),
+                ..Default::default()
+            },
+        ),
+        AttachmentKind::Audio => whatsapp_rust::media::audio_message(
+            upload,
+            whatsapp_rust::media::AudioOptions {
+                mimetype: Some(payload.mime_type.clone()),
+                ..Default::default()
+            },
+        ),
+        AttachmentKind::Document => whatsapp_rust::media::document_message(
+            upload,
+            whatsapp_rust::media::DocumentOptions {
+                mimetype: Some(payload.mime_type.clone()),
+                file_name: Some(payload.display_name.clone()),
+                caption: payload.caption.clone(),
+                ..Default::default()
+            },
+        ),
+    }
 }
 
 fn map_media_error(error: wasabi_media::MediaError) -> ServiceError {
@@ -1129,4 +1358,26 @@ mod tests {
         assert!(!first.as_str().contains('/'));
         assert_eq!(format!("{first:?}"), "TransferId(<opaque>)");
     }
+
+    #[test]
+    fn captions_are_trimmed_bounded_and_audio_is_classified_permanently() {
+        assert_eq!(
+            normalized_caption(Some("  hello  ".to_string())).unwrap(),
+            Some("hello".to_string())
+        );
+        assert_eq!(normalized_caption(Some("   ".to_string())).unwrap(), None);
+        assert_eq!(
+            normalized_caption(Some("x".repeat(1025))).unwrap_err().kind,
+            ErrorKind::InvalidRequest
+        );
+        assert_eq!(
+            transfer_failure_state(ErrorKind::InvalidRequest),
+            wasabi_domain::TransferState::FailedPermanent
+        );
+        assert_eq!(
+            transfer_failure_state(ErrorKind::NotConnected),
+            wasabi_domain::TransferState::FailedRetryable
+        );
+    }
+
 }

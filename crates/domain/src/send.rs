@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ChatId, MessageId};
+use crate::{ChatId, MessageId, TransferId};
 
 /// One immutable outgoing operation submitted by the product UI.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,6 +23,13 @@ impl SendRequest {
             content: SendContent::Text { body: body.into() },
         }
     }
+
+    pub fn attachment(chat: ChatId, transfer: TransferId, caption: Option<String>) -> Self {
+        Self {
+            chat,
+            content: SendContent::Attachment { transfer, caption },
+        }
+    }
 }
 
 /// Payloads supported by the typed outbox boundary.
@@ -32,7 +39,13 @@ impl SendRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum SendContent {
-    Text { body: String },
+    Text {
+        body: String,
+    },
+    Attachment {
+        transfer: TransferId,
+        caption: Option<String>,
+    },
 }
 
 /// Confirmation that the durable send pipeline accepted and published the
@@ -54,6 +67,23 @@ mod tests {
             request.content,
             SendContent::Text {
                 body: "hello".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn attachment_request_captures_destination_transfer_and_caption() {
+        let request = SendRequest::attachment(
+            ChatId::new("chat-a@s.whatsapp.net"),
+            TransferId::new("transfer-a"),
+            Some("caption".to_string()),
+        );
+        assert_eq!(request.chat.as_str(), "chat-a@s.whatsapp.net");
+        assert_eq!(
+            request.content,
+            SendContent::Attachment {
+                transfer: TransferId::new("transfer-a"),
+                caption: Some("caption".to_string()),
             }
         );
     }
