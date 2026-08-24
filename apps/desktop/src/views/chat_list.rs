@@ -319,7 +319,9 @@ fn message_search_row(
         .px(px(10.0))
         .cursor_pointer()
         .hover(|style| style.bg(theme::row_hover()))
-        .on_click(cx.listener(move |this, _, _, cx| this.select_chat(chat_id.clone(), cx)))
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.select_chat(chat_id.clone(), window, cx)
+        }))
         .child(
             gpui::div()
                 .size(px(42.0))
@@ -428,6 +430,7 @@ fn chat_row(
     let time = messages::relative_time(chat.last_activity_ms);
 
     let typing_here = this.typing.contains_key(&id);
+    let has_draft = chat.draft_preview.is_some();
     let preview = if typing_here {
         "typing…".to_string()
     } else if let Some(draft) = chat.draft_preview.as_ref() {
@@ -472,8 +475,8 @@ fn chat_row(
         .overflow_hidden()
         .when(selected, |el| el.bg(theme::row_selected()))
         .hover(|s| s.bg(theme::row_hover()))
-        .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
-            this.select_chat(id.clone(), cx);
+        .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
+            this.select_chat(id.clone(), window, cx);
         }))
         .child(
             gpui::div()
@@ -552,8 +555,12 @@ fn chat_row(
                                 .min_w(px(0.0))
                                 .truncate()
                                 .text_size(px(theme::scaled_text(theme::TEXT_SIZE, text_scale)))
-                                .when(typing_here, |el| el.text_color(theme::accent_text()))
-                                .when(!typing_here, |el| el.text_color(theme::text_secondary()))
+                                .when(typing_here || has_draft, |el| {
+                                    el.text_color(theme::accent_text())
+                                })
+                                .when(!typing_here && !has_draft, |el| {
+                                    el.text_color(theme::text_secondary())
+                                })
                                 .child(preview),
                         )
                         .children(unread_pill),

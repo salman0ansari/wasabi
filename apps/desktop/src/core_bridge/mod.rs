@@ -330,6 +330,21 @@ impl CoreBridge {
         .await
     }
 
+    pub async fn save_draft(
+        &self,
+        chat: ChatId,
+        draft: Option<wasabi_domain::Draft>,
+    ) -> Result<(), String> {
+        let store = self.store_snapshot()?;
+        self.run_on_core(async move {
+            store
+                .save_draft(chat, draft)
+                .await
+                .map_err(service_message)
+        })
+        .await
+    }
+
     // ---- Sending ------------------------------------------------------------
 
     /// Submit an immutable product request through the durable account

@@ -30,6 +30,7 @@ pub const MAIN_KEY_CONTEXT: &str = "Main";
 const CHAT_PAGE_LIMIT: usize = 100;
 const MESSAGE_PAGE_LIMIT: usize = 60;
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
+const DRAFT_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
 /// Countdown label refresh interval.
 const COUNTDOWN_TICK: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -77,6 +78,7 @@ pub struct MainWindow {
     pub(crate) first_visible: usize,
     /// Whether the last frame showed the newest end of the timeline.
     pub(crate) near_bottom: bool,
+    draft_generations: HashMap<String, u64>,
     chats_gen: AtomicU64,
     search_gen: AtomicU64,
     messages_gen: AtomicU64,
@@ -152,6 +154,7 @@ impl MainWindow {
             msg_scroll: VirtualListScrollHandle::new(),
             first_visible: 0,
             near_bottom: true,
+            draft_generations: HashMap::new(),
             chats_gen: AtomicU64::new(0),
             search_gen: AtomicU64::new(0),
             messages_gen: AtomicU64::new(0),
@@ -177,12 +180,32 @@ impl MainWindow {
         });
         this.subscriptions.push(on_search_change);
 
+        let on_composer_change = cx.subscribe_in(&this.composer_input, window, {
+            move |this, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.queue_draft_save(cx);
+                }
+            }
+        });
+        this.subscriptions.push(on_composer_change);
+
         // Deterministic teardown mirrors the supervisor sequence: flush
         // durable boundaries first, then stop the session. The callback is
         // sync at this rev; the async body parks on a detached task.
         let on_quit = cx.on_app_quit(|this, _cx| {
             let bridge = Arc::clone(&this.bridge);
+            let pending_draft = this.chats.selected.clone().map(|chat| {
+                let body = this.composer_input.read(_cx).value().to_string();
+                let draft = (!body.trim().is_empty()).then(|| wasabi_domain::Draft {
+                    body,
+                    ..wasabi_domain::Draft::default()
+                });
+                (wasabi_domain::ChatId::new(chat), draft)
+            });
             async move {
+                if let Some((chat, draft)) = pending_draft {
+                    let _ = bridge.save_draft(chat, draft).await;
+                }
                 let _ = bridge.flush_storage().await;
                 let _ = bridge.stop_session().await;
             }
@@ -306,7 +329,12 @@ impl MainWindow {
         }
     }
 
-    pub(crate) fn select_chat(&mut self, chat_id: String, cx: &mut Context<Self>) {
+    pub(crate) fn select_chat(
+        &mut self,
+        chat_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.chats.selected.as_deref() == Some(chat_id.as_str()) {
             return;
         }
@@ -321,6 +349,15 @@ impl MainWindow {
         self.details_error = None;
         self.first_visible = 0;
         self.near_bottom = true;
+        let draft = self
+            .chats
+            .chats
+            .iter()
+            .find(|chat| chat.id.as_str() == chat_id)
+            .and_then(|chat| chat.draft_preview.clone())
+            .unwrap_or_default();
+        self.composer_input
+            .update(cx, |input, cx| input.set_value(draft, window, cx));
         let generation = self.next_messages_gen();
 
         let bridge = Arc::clone(&self.bridge);
@@ -342,6 +379,53 @@ impl MainWindow {
                 cx.notify();
             })
             .ok();
+        });
+        cx.notify();
+    }
+
+    fn queue_draft_save(&mut self, cx: &mut Context<Self>) {
+        let Some(chat) = self.chats.selected.clone() else {
+            return;
+        };
+        let body = self.composer_input.read(cx).value().to_string();
+        let generation = {
+            let generation = self
+                .draft_generations
+                .entry(chat.clone())
+                .and_modify(|generation| *generation = generation.saturating_add(1))
+                .or_insert(1);
+            *generation
+        };
+        if let Some(summary) = self
+            .chats
+            .chats
+            .iter_mut()
+            .find(|summary| summary.id.as_str() == chat)
+        {
+            summary.draft_preview = (!body.trim().is_empty()).then(|| body.clone());
+        }
+        self.refresh_visible();
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            cx.background_executor().timer(DRAFT_DEBOUNCE).await;
+            let current = this
+                .update(cx, |this, _| {
+                    this.draft_generations.get(&chat).copied() == Some(generation)
+                })
+                .unwrap_or(false);
+            if !current {
+                return;
+            }
+            let draft = (!body.trim().is_empty()).then(|| wasabi_domain::Draft {
+                body,
+                ..wasabi_domain::Draft::default()
+            });
+            if let Err(error) = bridge
+                .save_draft(wasabi_domain::ChatId::new(chat), draft)
+                .await
+            {
+                tracing::warn!(error = %error, "draft save failed");
+            }
         });
         cx.notify();
     }
@@ -727,7 +811,10 @@ impl MainWindow {
             .ok();
 
             if let Some(chat) = first_chat {
-                this.update(cx, |this, cx| this.select_chat(chat, cx)).ok();
+                this.update_in(cx, |this, window, cx| {
+                    this.select_chat(chat, window, cx)
+                })
+                .ok();
             }
 
             // Startup connect: paired accounts come up directly; unpaired

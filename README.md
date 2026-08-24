@@ -51,6 +51,7 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 - Browse cursor-paginated active chats using All, Unread, device-local Favorites, and Groups filters, with a separate Archived destination.
 - Search loaded chats and the complete local message FTS index with cancellable, paginated results.
 - Read paginated message history and send text messages.
+- Keep independent per-chat text drafts across conversation switches and app restarts.
 - Use light, dark, or Linux system appearance.
 - Configure text size, Enter-to-send, spellcheck, link previews, notifications, download location, and cache quota.
 - Persist device settings independently from the linked account.
