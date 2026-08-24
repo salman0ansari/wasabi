@@ -24,8 +24,8 @@ pub use conversation::{
     Participant, ParticipantRole,
 };
 pub use error::{ErrorKind, ServiceError};
-pub use ids::{AccountId, ChatId, LocalCursor, MediaId, MessageId};
-pub use media::{CachedMedia, MediaDownloadRequest};
+pub use ids::{AccountId, ChatId, LocalCursor, MediaId, MessageId, TransferId};
+pub use media::{CachedMedia, MediaDownloadRequest, TransferDirection, TransferJob, TransferState};
 pub use message::{
     ChatSummary, MediaAvailability, MediaDescriptor, MessageContext, MessageDirection, MessageKind,
     MessagePage, MessageRow, MessageStatus, PageCursor, SenderJid, UnavailableMessageReason,

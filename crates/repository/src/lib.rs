@@ -6,6 +6,7 @@ pub mod config;
 pub mod preferences;
 pub mod search;
 pub mod store;
+pub mod transfers;
 mod wasabi_schema;
 
 pub use config::{StorageLayout, StoreTuning};

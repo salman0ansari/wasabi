@@ -445,6 +445,59 @@ impl AccountStore {
         crate::preferences::save_draft(self.shared_db(), self.device_id(), chat, draft).await
     }
 
+    pub async fn save_transfer_job(
+        &self,
+        job: domain::TransferJob,
+    ) -> Result<(), domain::ServiceError> {
+        crate::transfers::save(self.shared_db(), self.device_id(), job).await
+    }
+
+    pub async fn transfer_jobs(
+        &self,
+        include_terminal: bool,
+    ) -> Result<Vec<domain::TransferJob>, domain::ServiceError> {
+        crate::transfers::load(self.shared_db(), self.device_id(), include_terminal).await
+    }
+
+    pub async fn update_transfer_progress(
+        &self,
+        transfer: domain::TransferId,
+        bytes_done: u64,
+        bytes_total: Option<u64>,
+    ) -> Result<bool, domain::ServiceError> {
+        crate::transfers::update_progress(
+            self.shared_db(),
+            self.device_id(),
+            transfer,
+            bytes_done,
+            bytes_total,
+        )
+        .await
+    }
+
+    pub async fn set_transfer_state(
+        &self,
+        transfer: domain::TransferId,
+        state: domain::TransferState,
+        error_kind: Option<domain::ErrorKind>,
+    ) -> Result<bool, domain::ServiceError> {
+        crate::transfers::set_state(
+            self.shared_db(),
+            self.device_id(),
+            transfer,
+            state,
+            error_kind,
+        )
+        .await
+    }
+
+    pub async fn remove_terminal_transfer(
+        &self,
+        transfer: domain::TransferId,
+    ) -> Result<bool, domain::ServiceError> {
+        crate::transfers::remove_terminal(self.shared_db(), self.device_id(), transfer).await
+    }
+
     async fn hydrate_chat_preferences(
         &self,
         chats: &mut [domain::ChatSummary],

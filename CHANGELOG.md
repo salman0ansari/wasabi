@@ -20,6 +20,9 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 - Incoming typing and voice-recording activity now appears in chat rows and
   the open conversation header, expires automatically, and clears on feed lag
   or disconnect instead of becoming stale durable state.
+- Durable upload/download jobs now preserve opaque identity, exact Linux
+  paths, byte progress, redacted failure class, and restart-safe lifecycle
+  state; stale callbacks cannot regress progress or resurrect terminal jobs.
 
 - Phone-number account linking with validated international numbers, short-lived eight-character codes, expiry countdown, cancellation, and redacted sensitive values, alongside the existing QR flow.
 - Visible, focused conversation selection now synchronizes read state through an immutable chat-bound command, with optimistic rollback on failure.

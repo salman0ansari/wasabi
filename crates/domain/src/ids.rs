@@ -61,6 +61,29 @@ impl fmt::Debug for MediaId {
     }
 }
 
+/// Opaque identity for a durable upload or download job.
+///
+/// Transfer ids are generated locally and remain stable across reconnects and
+/// restarts. They deliberately carry no chat or filesystem information.
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct TransferId(String);
+
+impl TransferId {
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for TransferId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("TransferId(<opaque>)")
+    }
+}
+
 /// A conversation key as seen by the domain. The repository normalizes
 /// PN↔LID before persisting; the domain sees one canonical thread id.
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

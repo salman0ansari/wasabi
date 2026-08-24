@@ -3,6 +3,7 @@
 //! UI-facing messages are derived from the kind; diagnostic/source detail
 //! never reaches the user directly.
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -41,7 +42,7 @@ impl ServiceError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ErrorKind {
     NotConnected,
     NotPaired,
