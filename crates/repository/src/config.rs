@@ -62,9 +62,9 @@ fn fs_create_private(path: &Path) -> std::io::Result<()> {
 
 /// Tuning applied to the shared per-account database.
 ///
-/// See third_party sqlite-storage `SqliteStoreConfig` docs: `pool_size` drives
-/// both pool size and write serialization — keep at 1: two deferred read-write transactions deadlock on upgrade, and busy_timeout cannot break it. Read
-/// concurrency comes from `read_pool_size` only.
+/// `pool_size` drives both pool size and write serialization — keep at 1: two
+/// deferred read-write transactions deadlock on upgrade, and busy_timeout
+/// cannot break it. Read concurrency comes from `read_pool_size` only.
 #[derive(Clone, Debug)]
 pub struct StoreTuning {
     pub read_pool_size: u32,

@@ -86,7 +86,7 @@ impl fmt::Debug for AccountId {
 }
 
 /// Keyset cursor tiebreak: arrival order inside the same millisecond.
-/// Session-local by contract — never persisted across restarts
-/// (third_party docs: rowid is renumbered by VACUUM).
+/// Session-local by contract — never persisted across restarts. SQLite may
+/// renumber rowids when VACUUM compacts the database.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalCursor(pub i64);

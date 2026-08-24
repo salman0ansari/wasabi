@@ -1,5 +1,5 @@
 //! Session lifecycle plumbing: bot assembly, the pairing QR feed, and the
-//! mapping from vendored-library events onto the domain state machine.
+//! mapping from upstream-library events onto the domain state machine.
 //!
 //! The event pump is the only component here that runs concurrently, and its
 //! ownership is explicit: it holds clones of the state/QR watch senders plus a

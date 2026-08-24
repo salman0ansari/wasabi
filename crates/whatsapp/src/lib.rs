@@ -1,4 +1,4 @@
-//! Wasabi WhatsApp adapter: assembles the vendored `whatsapp-rust` stack and
+//! Wasabi WhatsApp adapter: assembles the `whatsapp-rust` stack and
 //! maps it onto wasabi's service contracts. Protocol types stop here.
 
 pub mod durability;

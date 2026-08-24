@@ -12,7 +12,7 @@ pub use manager::{MediaManager, media_downloadable};
 pub use thumb::ThumbnailService;
 pub use tokio_util::sync::CancellationToken;
 
-// Re-exported so callers wiring downloads need no direct tokio-util/vendored
+// Re-exported so callers wiring downloads need no direct tokio-util/upstream
 // dependency beyond this crate.
 pub use whatsapp_rust::download::{DownloadParams, Downloadable};
 
@@ -41,7 +41,7 @@ pub enum MediaError {
     Cancelled,
     #[error("invalid argument: {0}")]
     InvalidInput(String),
-    /// Transport/CDN failure surfaced from the vendored client; the original
+    /// Transport/CDN failure surfaced from the upstream client; the original
     /// error is flattened because co-waiters must be able to clone outcomes.
     #[error("download failed: {0}")]
     Download(String),

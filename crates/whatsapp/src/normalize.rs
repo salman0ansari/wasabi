@@ -31,7 +31,7 @@ use whatsapp_rust::types::events::Event;
 pub enum UiSignal {
     /// A durable domain changed; re-query the projection.
     Invalidated(Invalidation),
-    /// Proposed session state (see the module docs: proposals only).
+    /// Proposed session state; callers apply it through the session reducer.
     State(SessionState),
     /// A pairing code arrived; `expires_in` is the library-quoted validity
     /// window. The code itself is fetched by the caller from its own channel.

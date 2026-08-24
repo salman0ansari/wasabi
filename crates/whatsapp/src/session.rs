@@ -140,7 +140,7 @@ impl AccountSession {
     /// Any previous run is torn down first — linking anew replaces whatever
     /// ran before, and each attempt gets a fresh cancellation scope.
     ///
-    /// The vendored flow needs no explicit connect call here: for an unpaired
+    /// The library flow needs no explicit connect call here: for an unpaired
     /// device the server pushes rotating `<pair-device>` refs as soon as the
     /// run loop connects, which surface as `PairingQrCode` events on the feed
     /// below (`pair_with_qr_code` is the opposite, primary-side flow).

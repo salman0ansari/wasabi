@@ -134,7 +134,7 @@ impl Outbox {
         self.send_inner(client, to, wa::Message::text(text)).await
     }
 
-    /// Full pipeline. See the module docs for why the order is fixed.
+    /// Full pipeline. The order keeps durable writes ahead of transport work.
     pub async fn send_message(
         &self,
         client: &Arc<Client>,

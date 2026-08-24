@@ -19,7 +19,7 @@ use whatsapp_rust_chat_store::ChatStore;
 use crate::cache::{DiskCache, is_sha_hex, to_hex};
 use crate::{MAX_CONCURRENT_DOWNLOADS, MEDIA_QUEUE_CAPACITY, MediaError};
 
-/// Maps a received message onto the vendored raw-params downloader.
+/// Maps a received message onto the upstream raw-params downloader.
 ///
 /// Returns `None` for media that cannot round-trip through CDN params alone —
 /// notably newsletter/channel blobs whose [`Downloadable::static_url`] bypasses
@@ -98,7 +98,7 @@ pub fn media_downloadable(message: &wa::Message) -> Option<DownloadParams> {
 /// Streams decrypted plaintext into `inner` while feeding a SHA-256 over every
 /// byte written, so verification costs no extra pass over the file.
 ///
-/// The vendored retry loop calls `truncate(0)` before each fresh attempt; a
+/// The upstream retry loop calls `truncate(0)` before each fresh attempt; a
 /// zero-length truncate therefore resets the hash, keeping the digest equal to
 /// exactly the bytes of the surviving attempt.
 pub(crate) struct HashingWriter<W> {
@@ -568,7 +568,7 @@ mod tests {
 
     #[test]
     fn hashing_writer_resets_on_zero_truncate() {
-        // Mirrors the vendored retry contract: a cleared sink hashes as if the
+        // Mirrors the upstream retry contract: a cleared sink hashes as if the
         // discarded attempt never happened.
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("reset.bin");

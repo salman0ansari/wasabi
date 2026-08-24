@@ -30,7 +30,7 @@ const PENDING_SEND_CAPACITY: usize = 32;
 
 /// Transport seam for outgoing text.
 ///
-/// The live vendored client handle is not reachable through the session
+/// The live client handle is not reachable through the session
 /// facade yet, so the final wiring happens at startup: a `TextSender` takes
 /// `(chat_jid, text)` and returns a one-shot receiver for the pipeline
 /// result. It spawns onto the core runtime and drives
