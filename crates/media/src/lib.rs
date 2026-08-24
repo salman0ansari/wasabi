@@ -8,7 +8,7 @@ mod manager;
 mod thumb;
 
 pub use cache::DiskCache;
-pub use manager::{MediaManager, media_downloadable};
+pub use manager::{ClientProvider, MediaManager, media_downloadable};
 pub use thumb::ThumbnailService;
 pub use tokio_util::sync::CancellationToken;
 

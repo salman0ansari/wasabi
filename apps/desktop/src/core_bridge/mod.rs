@@ -18,10 +18,10 @@ use tokio_util::sync::CancellationToken;
 use wasabi_core::events::{Invalidation, InvalidationPublisher};
 use wasabi_core::state::SessionState;
 use wasabi_domain::{
-    ChatAction, ChatId, ChatPage, ChatScope, DirectContactDetails, ErrorKind, GroupDetails,
-    GroupPermissions, MessageAction, MessageContext, MessageId, MessagePage, NotificationCandidate,
-    PageCursor, PairingPhoneNumber, Participant, ParticipantRole, PhonePairCode, SearchPage,
-    SendContent, SendReceipt, SendRequest, ServiceError,
+    CachedMedia, ChatAction, ChatId, ChatPage, ChatScope, DirectContactDetails, ErrorKind,
+    GroupDetails, GroupPermissions, MediaDownloadRequest, MessageAction, MessageContext, MessageId,
+    MessagePage, NotificationCandidate, PageCursor, PairingPhoneNumber, Participant,
+    ParticipantRole, PhonePairCode, SearchPage, SendContent, SendReceipt, SendRequest, ServiceError,
 };
 use wasabi_repository::AccountStore;
 use wasabi_whatsapp::lifecycle::QrState;
@@ -85,6 +85,10 @@ pub trait DesktopBackend: Send + Sync {
         chat: ChatId,
         draft: Option<wasabi_domain::Draft>,
     ) -> Result<(), String>;
+    async fn download_media(
+        &self,
+        request: MediaDownloadRequest,
+    ) -> Result<CachedMedia, ServiceError>;
     async fn send(&self, request: SendRequest) -> Result<SendReceipt, ServiceError>;
     async fn perform_message_action(&self, action: MessageAction) -> Result<(), ServiceError>;
     async fn perform_chat_action(&self, action: ChatAction) -> Result<(), ServiceError>;
@@ -99,6 +103,20 @@ pub struct CoreBridge {
     store: Arc<RwLock<Option<Arc<AccountStore>>>>,
     session: Arc<RwLock<Option<Arc<AccountSession>>>>,
     outbox: Arc<RwLock<Option<Outbox>>>,
+    media_cache: wasabi_media::DiskCache,
+    media: Arc<RwLock<Option<wasabi_media::MediaManager>>>,
+}
+
+struct InstalledSessionClientProvider {
+    session: Arc<RwLock<Option<Arc<AccountSession>>>>,
+}
+
+#[async_trait::async_trait]
+impl wasabi_media::ClientProvider for InstalledSessionClientProvider {
+    async fn client(&self) -> Option<Arc<whatsapp_rust::client::Client>> {
+        let session = self.session.read().expect("session lock").clone()?;
+        session.client().await
+    }
 }
 
 impl CoreBridge {
@@ -106,6 +124,7 @@ impl CoreBridge {
         runtime: tokio::runtime::Handle,
         invalidations: InvalidationPublisher,
         command_gate: Arc<AtomicBool>,
+        media_cache: wasabi_media::DiskCache,
     ) -> Self {
         Self {
             runtime,
@@ -115,6 +134,8 @@ impl CoreBridge {
             store: Arc::new(RwLock::new(None)),
             session: Arc::new(RwLock::new(None)),
             outbox: Arc::new(RwLock::new(None)),
+            media_cache,
+            media: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -129,7 +150,15 @@ impl CoreBridge {
     pub fn install_session(&self, session: Arc<AccountSession>) {
         *self.store.write().expect("store lock") = Some(Arc::clone(&session.store));
         *self.outbox.write().expect("outbox lock") = Some(Outbox::new(Arc::clone(&session.chats)));
-        *self.session.write().expect("session lock") = Some(session);
+        *self.session.write().expect("session lock") = Some(Arc::clone(&session));
+        let provider = Arc::new(InstalledSessionClientProvider {
+            session: Arc::clone(&self.session),
+        });
+        *self.media.write().expect("media lock") = Some(wasabi_media::MediaManager::with_provider(
+            self.media_cache.clone(),
+            Arc::clone(&session.chats),
+            provider,
+        ));
         self.forward_store_changes();
     }
 
@@ -457,6 +486,59 @@ impl CoreBridge {
         .await
     }
 
+    pub async fn download_media(
+        &self,
+        request: MediaDownloadRequest,
+    ) -> Result<CachedMedia, ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let session = self
+            .session_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
+        let manager = self
+            .media_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
+        let cancel = self
+            .root_token
+            .get()
+            .map(CancellationToken::child_token)
+            .ok_or_else(|| ServiceError::new(ErrorKind::Internal, "no cancellation root"))?;
+        self.run_on_core_service(async move {
+            let chat = request
+                .chat
+                .as_str()
+                .parse::<whatsapp_rust::Jid>()
+                .map_err(|error| {
+                    ServiceError::new(ErrorKind::InvalidRequest, error.to_string())
+                })?;
+            let stored = session
+                .chats
+                .message(&chat, request.media.as_str())
+                .await
+                .map_err(|error| ServiceError::new(ErrorKind::Database, error.to_string()))?
+                .ok_or_else(|| {
+                    ServiceError::new(ErrorKind::InvalidRequest, "media message no longer exists")
+                })?;
+            let message = stored.message.ok_or_else(|| {
+                ServiceError::new(ErrorKind::Unsupported, "media metadata is unavailable")
+            })?;
+            let downloadable = wasabi_media::media_downloadable(&message).ok_or_else(|| {
+                ServiceError::new(ErrorKind::Unsupported, "this media cannot be downloaded")
+            })?;
+            let expected_sha = <[u8; 32]>::try_from(downloadable.file_sha256.as_slice()).ok();
+            let path = manager
+                .download(downloadable, expected_sha, None, cancel)
+                .await
+                .map_err(map_media_error)?;
+            Ok(CachedMedia {
+                media: request.media,
+                path,
+            })
+        })
+        .await
+    }
+
     // ---- Sending ------------------------------------------------------------
 
     /// Submit an immutable product request through the durable account
@@ -688,6 +770,14 @@ impl CoreBridge {
             .ok_or_else(|| "outbox not ready".to_string())
     }
 
+    fn media_snapshot(&self) -> Result<wasabi_media::MediaManager, String> {
+        self.media
+            .read()
+            .expect("media lock")
+            .clone()
+            .ok_or_else(|| "media service not ready".to_string())
+    }
+
     /// Drive a future on the core runtime and hand back its result. Awaiting
     /// the join handle needs no runtime context, keeping GPUI tasks clean.
     async fn run_on_core<T, F>(&self, fut: F) -> Result<T, String>
@@ -722,6 +812,21 @@ fn map_outbox_error(error: wasabi_whatsapp::outbox::OutboxError) -> ServiceError
         OutboxError::Send { .. } => ErrorKind::Protocol,
         OutboxError::InvalidRequest(_) => ErrorKind::InvalidRequest,
         _ => ErrorKind::Internal,
+    };
+    ServiceError::new(kind, error.to_string())
+}
+
+fn map_media_error(error: wasabi_media::MediaError) -> ServiceError {
+    use wasabi_media::MediaError;
+
+    let kind = match &error {
+        MediaError::Overloaded => ErrorKind::Overloaded,
+        MediaError::Cancelled => ErrorKind::Cancelled,
+        MediaError::InvalidInput(_) => ErrorKind::InvalidRequest,
+        MediaError::Unavailable | MediaError::Download(_) | MediaError::Decode(_) => {
+            ErrorKind::MediaUnavailable
+        }
+        MediaError::Io(_) => ErrorKind::Database,
     };
     ServiceError::new(kind, error.to_string())
 }
@@ -851,6 +956,13 @@ impl DesktopBackend for CoreBridge {
         draft: Option<wasabi_domain::Draft>,
     ) -> Result<(), String> {
         CoreBridge::save_draft(self, chat, draft).await
+    }
+
+    async fn download_media(
+        &self,
+        request: MediaDownloadRequest,
+    ) -> Result<CachedMedia, ServiceError> {
+        CoreBridge::download_media(self, request).await
     }
 
     async fn send(&self, request: SendRequest) -> Result<SendReceipt, ServiceError> {

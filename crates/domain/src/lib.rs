@@ -8,6 +8,7 @@ pub mod actions;
 pub mod conversation;
 pub mod error;
 pub mod ids;
+pub mod media;
 pub mod message;
 pub mod notification;
 pub mod page;
@@ -23,6 +24,7 @@ pub use conversation::{
 };
 pub use error::{ErrorKind, ServiceError};
 pub use ids::{AccountId, ChatId, LocalCursor, MediaId, MessageId};
+pub use media::{CachedMedia, MediaDownloadRequest};
 pub use message::{
     ChatSummary, MediaAvailability, MediaDescriptor, MessageContext, MessageDirection, MessageKind,
     MessagePage, MessageRow, MessageStatus, PageCursor, SenderJid,

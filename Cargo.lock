@@ -2035,6 +2035,7 @@ dependencies = [
 name = "wasabi-media"
 version = "0.2.0-alpha.1"
 dependencies = [
+ "async-trait",
  "filetime",
  "image",
  "sha2 0.10.9",

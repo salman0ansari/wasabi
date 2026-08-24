@@ -47,6 +47,13 @@ pub(crate) enum MessageOverlay {
     Confirm(wasabi_domain::MessageAction),
 }
 
+#[derive(Clone)]
+pub(crate) enum MediaDownloadUi {
+    Downloading,
+    Ready(std::path::PathBuf),
+    Failed,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum NavDestination {
     Chats,
@@ -84,6 +91,8 @@ pub struct MainWindow {
     pub(crate) settings_section: SettingsSection,
     pub(crate) send_error: Option<String>,
     pub(crate) message_overlay: Option<MessageOverlay>,
+    pub(crate) media_downloads:
+        HashMap<(wasabi_domain::ChatId, wasabi_domain::MediaId), MediaDownloadUi>,
     pub(crate) composer_input: gpui::Entity<InputState>,
     pub(crate) search_input: gpui::Entity<InputState>,
     pub(crate) phone_pair_input: gpui::Entity<InputState>,
@@ -176,6 +185,7 @@ impl MainWindow {
             settings_section: SettingsSection::Chats,
             send_error: None,
             message_overlay: None,
+            media_downloads: HashMap::new(),
             composer_input,
             search_input,
             phone_pair_input,
@@ -586,6 +596,46 @@ impl MainWindow {
                 })
                 .ok();
             }
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn download_media(
+        &mut self,
+        chat: wasabi_domain::ChatId,
+        media: wasabi_domain::MediaId,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (chat.clone(), media.clone());
+        if matches!(
+            self.media_downloads.get(&key),
+            Some(MediaDownloadUi::Downloading | MediaDownloadUi::Ready(_))
+        ) {
+            return;
+        }
+        self.media_downloads
+            .insert(key.clone(), MediaDownloadUi::Downloading);
+        let request = wasabi_domain::MediaDownloadRequest { chat, media };
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.download_media(request).await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(cached) => {
+                        debug_assert_eq!(cached.media, key.1);
+                        this.media_downloads
+                            .insert(key, MediaDownloadUi::Ready(cached.path));
+                    }
+                    Err(error) => {
+                        // Do not log `detail`: transport failures may contain a
+                        // private CDN URL. The typed kind is sufficient here.
+                        tracing::warn!(kind = %error.kind, "media download failed");
+                        this.media_downloads.insert(key, MediaDownloadUi::Failed);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
         });
         cx.notify();
     }

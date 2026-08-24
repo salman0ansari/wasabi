@@ -8042,6 +8042,7 @@ dependencies = [
  "tracing-subscriber",
  "wasabi-core",
  "wasabi-domain",
+ "wasabi-media",
  "wasabi-repository",
  "wasabi-whatsapp",
  "whatsapp-rust",
@@ -8054,6 +8055,24 @@ dependencies = [
  "chrono",
  "serde",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "wasabi-media"
+version = "0.2.0-alpha.1"
+dependencies = [
+ "async-trait",
+ "filetime",
+ "image",
+ "sha2 0.10.9",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "waproto",
+ "wasabi-domain",
+ "whatsapp-rust",
+ "whatsapp-rust-chat-store",
 ]
 
 [[package]]

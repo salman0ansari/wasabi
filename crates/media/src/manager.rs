@@ -163,7 +163,7 @@ impl Drop for TmpGuard {
 
 #[derive(Clone)]
 pub struct MediaManager {
-    client: Arc<Client>,
+    client_provider: Arc<dyn ClientProvider>,
     chats: Arc<ChatStore>,
     cache: DiskCache,
     /// Admission gate: caps pending-plus-running operations, so saturation
@@ -171,6 +171,23 @@ pub struct MediaManager {
     queue: Arc<Semaphore>,
     running: Arc<Semaphore>,
     inflight: OpRegistry<PathBuf>,
+}
+
+/// Resolves the currently connected protocol client for each operation.
+/// Implementations may swap clients across reconnects; no manager rebuild is
+/// required and an operation always captures exactly one client snapshot.
+#[async_trait::async_trait]
+pub trait ClientProvider: Send + Sync {
+    async fn client(&self) -> Option<Arc<Client>>;
+}
+
+struct FixedClientProvider(Arc<Client>);
+
+#[async_trait::async_trait]
+impl ClientProvider for FixedClientProvider {
+    async fn client(&self) -> Option<Arc<Client>> {
+        Some(Arc::clone(&self.0))
+    }
 }
 
 impl std::fmt::Debug for MediaManager {
@@ -184,8 +201,16 @@ impl std::fmt::Debug for MediaManager {
 
 impl MediaManager {
     pub fn new(cache: DiskCache, chats: Arc<ChatStore>, client: Arc<Client>) -> Self {
+        Self::with_provider(cache, chats, Arc::new(FixedClientProvider(client)))
+    }
+
+    pub fn with_provider(
+        cache: DiskCache,
+        chats: Arc<ChatStore>,
+        client_provider: Arc<dyn ClientProvider>,
+    ) -> Self {
         Self {
-            client,
+            client_provider,
             chats,
             cache,
             queue: Arc::new(Semaphore::new(MEDIA_QUEUE_CAPACITY)),
@@ -235,7 +260,7 @@ impl MediaManager {
             .try_acquire()
             .map_err(|_| MediaError::Overloaded)?;
 
-        let client = self.client.clone();
+        let client_provider = Arc::clone(&self.client_provider);
         let chats = self.chats.clone();
         let cache = self.cache.clone();
         let running = self.running.clone();
@@ -247,6 +272,11 @@ impl MediaManager {
                     .acquire()
                     .await
                     .map_err(|_| MediaError::Unavailable)?;
+
+                let client = client_provider
+                    .client()
+                    .await
+                    .ok_or(MediaError::Unavailable)?;
 
                 // A peer may have published while this attempt sat queued.
                 if let Some(hex) = &known_hex

@@ -137,13 +137,9 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
                 }
             }),
         ))
-        .child(action_row("Media, links and documents", "No cached media"))
-        .child(action_row("Starred messages", "None cached"))
-        .child(action_row("Notifications", "Default"))
         .child(chat_sync_action(this, cx, ChatSyncAction::Pin))
         .child(chat_sync_action(this, cx, ChatSyncAction::Mute))
         .child(favorite_action(this, cx))
-        .child(action_row("Disappearing messages", "Off"))
         .child(action_row("Encryption", "End-to-end encrypted"));
 
     if let Some(error) = this.details_error.clone() {
@@ -152,8 +148,6 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
 
     if is_group {
         panel = panel.child(participants_section(this));
-    } else {
-        panel = panel.child(action_row("Groups in common", "None cached"));
     }
 
     panel

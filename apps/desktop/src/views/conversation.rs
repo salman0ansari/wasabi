@@ -249,11 +249,17 @@ fn timeline_row(
         Some(TimelineItem::Message(row_ix)) => match this.messages.rows.get(*row_ix) {
             Some(row) => {
                 let highlighted = this.messages.highlighted.as_ref() == Some(&row.id);
+                let media_state = media_descriptor(&row.kind).and_then(|media| {
+                    this.media_downloads
+                        .get(&(row.chat.clone(), media.id.clone()))
+                        .cloned()
+                });
                 bubble(
                     row.clone(),
                     *row_ix,
                     this.settings.text_scale,
                     highlighted,
+                    media_state,
                     cx,
                 )
                 .into_any_element()
@@ -269,6 +275,7 @@ fn bubble(
     row_index: usize,
     text_scale: u16,
     highlighted: bool,
+    media_state: Option<crate::views::root::MediaDownloadUi>,
     cx: &mut Context<MainWindow>,
 ) -> gpui::Div {
     use wasabi_domain::{MessageDirection, MessageKind};
@@ -321,7 +328,7 @@ fn bubble(
                 .text_color(theme::text_secondary())
                 .child("This message was deleted"),
         );
-    } else if let Some(media) = media_content(&row.kind, text_scale) {
+    } else if let Some(media) = media_content(&row, text_scale, media_state, cx) {
         content = content.child(media);
     } else {
         content = content.child(
@@ -363,10 +370,15 @@ fn bubble(
     )
 }
 
-fn media_content(kind: &wasabi_domain::MessageKind, text_scale: u16) -> Option<gpui::Div> {
+fn media_content(
+    row: &wasabi_domain::MessageRow,
+    text_scale: u16,
+    download_state: Option<crate::views::root::MediaDownloadUi>,
+    cx: &mut Context<MainWindow>,
+) -> Option<gpui::AnyElement> {
     use wasabi_domain::{MediaAvailability, MessageKind};
 
-    let (title, caption, descriptor, visual, icon) = match kind {
+    let (title, caption, descriptor, visual, icon) = match &row.kind {
         MessageKind::Image { caption, media } => (
             "Photo".to_string(),
             caption.clone(),
@@ -418,6 +430,24 @@ fn media_content(kind: &wasabi_domain::MessageKind, text_scale: u16) -> Option<g
 
     let metadata = media_metadata(descriptor);
     let unavailable = descriptor.availability == MediaAvailability::Unavailable;
+    let (transfer_label, can_download) = if unavailable {
+        ("Media unavailable", false)
+    } else {
+        match download_state.as_ref() {
+            Some(crate::views::root::MediaDownloadUi::Downloading) => ("Downloading…", false),
+            Some(crate::views::root::MediaDownloadUi::Ready(path)) => {
+                // Reading the verified path here deliberately proves the state
+                // still points at a committed cache entry without displaying
+                // private filesystem details in the conversation.
+                let _exists = path.is_file();
+                ("Downloaded to secure cache", false)
+            }
+            Some(crate::views::root::MediaDownloadUi::Failed) => {
+                ("Download failed · click to retry", true)
+            }
+            None => ("Click to download", true),
+        }
+    };
     let body = if visual {
         gpui::div()
             .h(px(150.0))
@@ -441,10 +471,16 @@ fn media_content(kind: &wasabi_domain::MessageKind, text_scale: u16) -> Option<g
                     .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child(if unavailable {
-                        "Media unavailable".to_string()
+                        transfer_label.to_string()
                     } else {
                         title.clone()
                     }),
+            )
+            .child(
+                gpui::div()
+                    .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+                    .text_color(theme::text_secondary())
+                    .child(transfer_label),
             )
     } else {
         gpui::div()
@@ -486,46 +522,74 @@ fn media_content(kind: &wasabi_domain::MessageKind, text_scale: u16) -> Option<g
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(theme::text_primary())
                             .child(if unavailable {
-                                "Media unavailable".to_string()
+                                transfer_label.to_string()
                             } else {
                                 title.clone()
                             }),
                     )
-                    .when(!metadata.is_empty(), |el| {
-                        el.child(
-                            gpui::div()
-                                .truncate()
-                                .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
-                                .text_color(theme::text_secondary())
-                                .child(metadata.clone()),
-                        )
-                    }),
+                    .child(
+                        gpui::div()
+                            .truncate()
+                            .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+                            .text_color(theme::text_secondary())
+                            .child(if metadata.is_empty() {
+                                transfer_label.to_string()
+                            } else {
+                                format!("{transfer_label} · {metadata}")
+                            }),
+                    ),
             )
     };
 
-    Some(
-        gpui::div()
-            .flex()
-            .flex_col()
-            .gap(px(5.0))
-            .child(body)
-            .when(visual && !metadata.is_empty(), |el| {
-                el.child(
-                    gpui::div()
-                        .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
-                        .text_color(theme::text_secondary())
-                        .child(metadata),
-                )
-            })
-            .when_some(caption, |el, caption| {
-                el.child(
-                    gpui::div()
-                        .text_size(px(theme::scaled_text(theme::TEXT_SIZE, text_scale)))
-                        .text_color(theme::text_primary())
-                        .child(caption),
-                )
-            }),
-    )
+    let card = gpui::div()
+        .flex()
+        .flex_col()
+        .gap(px(5.0))
+        .child(body)
+        .when(visual && !metadata.is_empty(), |el| {
+            el.child(
+                gpui::div()
+                    .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+                    .text_color(theme::text_secondary())
+                    .child(metadata),
+            )
+        })
+        .when_some(caption, |el, caption| {
+            el.child(
+                gpui::div()
+                    .text_size(px(theme::scaled_text(theme::TEXT_SIZE, text_scale)))
+                    .text_color(theme::text_primary())
+                    .child(caption),
+            )
+        });
+    let chat = row.chat.clone();
+    let media = descriptor.id.clone();
+    let mut interactive = gpui::div()
+        .id(("media-card", row.seq.0 as usize))
+        .rounded(px(theme::RADIUS_SM))
+        .child(card);
+    if can_download {
+        interactive = interactive
+            .cursor_pointer()
+            .hover(|style| style.bg(theme::row_hover()))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.download_media(chat.clone(), media.clone(), cx)
+            }));
+    }
+    Some(interactive.into_any_element())
+}
+
+fn media_descriptor(
+    kind: &wasabi_domain::MessageKind,
+) -> Option<&wasabi_domain::MediaDescriptor> {
+    match kind {
+        wasabi_domain::MessageKind::Image { media, .. }
+        | wasabi_domain::MessageKind::Video { media, .. }
+        | wasabi_domain::MessageKind::Audio { media, .. }
+        | wasabi_domain::MessageKind::Document { media }
+        | wasabi_domain::MessageKind::Sticker { media, .. } => Some(media),
+        _ => None,
+    }
 }
 
 fn media_metadata(media: &wasabi_domain::MediaDescriptor) -> String {

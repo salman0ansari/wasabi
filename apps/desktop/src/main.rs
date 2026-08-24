@@ -47,12 +47,17 @@ fn main() -> anyhow::Result<()> {
     // in-window instead of aborting the process.
     let layout = StorageLayout::new(data_dir);
     let opened = supervisor.handle().block_on(open_session(&layout));
+    let media_cache = supervisor
+        .handle()
+        .block_on(wasabi_media::DiskCache::open(layout.media_cache()))
+        .context("open media cache")?;
     let open_error = opened.as_ref().err().map(|e| e.to_string());
 
     let bridge = CoreBridge::new(
         supervisor.handle().clone(),
         supervisor.invalidations().clone(),
         Arc::clone(&command_gate),
+        media_cache,
     );
     bridge.set_root_token(supervisor.root_cancellation());
     match opened {
