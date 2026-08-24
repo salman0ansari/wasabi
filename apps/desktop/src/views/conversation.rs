@@ -6,6 +6,7 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{Context, px};
 use gpui_component::v_virtual_list;
+use gpui_component::{Icon, IconName};
 
 use crate::state::chats;
 use crate::state::messages::{self, TimelineItem};
@@ -134,7 +135,7 @@ fn header(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.toggle_right_panel(cx);
                 }))
-                .child("ⓘ"),
+                .child(Icon::new(IconName::Info).size(px(18.0))),
         )
 }
 

@@ -18,11 +18,11 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use tokio_util::sync::CancellationToken;
 use wasabi_core::events::{Invalidation, InvalidationPublisher};
 use wasabi_core::state::SessionState;
-use wasabi_domain::{ChatSummary, MessagePage, PageCursor};
 use wasabi_domain::ServiceError;
+use wasabi_domain::{ChatSummary, MessagePage, PageCursor};
 use wasabi_repository::AccountStore;
-use wasabi_whatsapp::outbox::Outbox;
 use wasabi_whatsapp::lifecycle::QrState;
+use wasabi_whatsapp::outbox::Outbox;
 use wasabi_whatsapp::session::{AccountSession, SessionConfig};
 
 /// Maximum queued outgoing texts while no transport seam is attached.
@@ -193,9 +193,10 @@ impl CoreBridge {
 
     pub async fn start_pairing(&self) -> Result<(), String> {
         let session = self.session_snapshot()?;
+        let root = self.root_token.get().cloned().ok_or("no cancel root")?;
         self.run_on_core(async move {
             session
-                .start_pairing()
+                .start_pairing(root)
                 .await
                 .map(|_| ())
                 .map_err(|e| e.to_string())
@@ -264,7 +265,17 @@ impl CoreBridge {
             return Err("shutting down".to_string());
         }
         if let Some(rx) = self.dispatch(chat.clone(), text.clone()) {
-            return rx.await.map_err(|_| "transport dropped".to_string())?;
+            match rx.await {
+                Ok(Ok(message_id)) => return Ok(message_id),
+                Ok(Err(err)) if err != "not connected" => return Err(err),
+                Ok(Err(_)) | Err(_) => {
+                    // The seam exists for the lifetime of the app, but the
+                    // live client does not. Preserve the user's message in
+                    // the bounded in-memory handoff until the next
+                    // Connected transition instead of losing it at the
+                    // disconnect boundary.
+                }
+            }
         }
         self.enqueue_pending(chat, text)?;
         Ok("queued".to_string())
@@ -279,12 +290,27 @@ impl CoreBridge {
             let Some(PendingSend { chat, text }) = next else {
                 break;
             };
-            if let Some(rx) = self.dispatch(chat, text) {
-                // A dropped receiver means the seam went away mid-flush;
-                // stop instead of silently losing the remaining entries.
-                if rx.await.is_err() {
-                    break;
+            if let Some(rx) = self.dispatch(chat.clone(), text.clone()) {
+                match rx.await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(_)) | Err(_) => {
+                        // Put the current item back at the front. The
+                        // transport may have disappeared between items; a
+                        // later Connected transition should retry it with
+                        // its original text and destination.
+                        self.pending
+                            .lock()
+                            .expect("pending lock")
+                            .push_front(PendingSend { chat, text });
+                        break;
+                    }
                 }
+            } else {
+                self.pending
+                    .lock()
+                    .expect("pending lock")
+                    .push_front(PendingSend { chat, text });
+                break;
             }
         }
     }

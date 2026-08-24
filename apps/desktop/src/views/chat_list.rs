@@ -5,6 +5,7 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{Context, Window, px, size};
 use gpui_component::v_virtual_list;
+use gpui_component::{Icon, IconName};
 
 use crate::state::chats::{self, ChatFilter};
 use crate::state::messages;
@@ -48,6 +49,17 @@ pub fn filter_bar(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::
         .border_b_1()
         .border_color(theme::BORDER)
         .children(chips)
+        .child(
+            gpui::div()
+                .size(px(28.0))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(theme::TEXT_SECONDARY)
+                .hover(|s| s.bg(theme::ROW_HOVER))
+                .child(Icon::new(IconName::SortAscending).size(px(16.0))),
+        )
 }
 
 pub fn chat_list(
@@ -184,7 +196,7 @@ fn chat_row(
                                 gpui::div()
                                     .text_size(px(theme::TEXT_SIZE_SM))
                                     .text_color(theme::ACCENT_TEXT)
-                                    .child("⚑"),
+                                    .child(Icon::new(IconName::Star).size(px(13.0))),
                             )
                         })
                         .child(

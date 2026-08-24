@@ -15,6 +15,7 @@ use gpui::{
 };
 use gpui_component::VirtualListScrollHandle;
 use gpui_component::input::{InputEvent, InputState};
+use gpui_component::{Icon, IconName};
 
 use crate::core_bridge::CoreBridge;
 use crate::state::chats::ChatFilter;
@@ -389,18 +390,17 @@ impl MainWindow {
                 let Some(handle) = this.upgrade() else {
                     break;
                 };
-                handle
-                    .update(cx, |this, cx| {
-                        use wasabi_core::events::Invalidation;
-                        match invalidation {
-                            Invalidation::Chats | Invalidation::Contacts => this.refresh_chats(cx),
-                            Invalidation::Messages { chat } => {
-                                if this.chats.selected.as_deref() == Some(chat.as_str()) {
-                                    this.refresh_current_messages(cx);
-                                }
+                handle.update(cx, |this, cx| {
+                    use wasabi_core::events::Invalidation;
+                    match invalidation {
+                        Invalidation::Chats | Invalidation::Contacts => this.refresh_chats(cx),
+                        Invalidation::Messages { chat } => {
+                            if this.chats.selected.as_deref() == Some(chat.as_str()) {
+                                this.refresh_current_messages(cx);
                             }
                         }
-                    });
+                    }
+                });
             }
         });
     }
@@ -548,9 +548,10 @@ fn titlebar(this: &MainWindow) -> gpui::Div {
         .border_b_1()
         .border_color(theme::BORDER)
         .child(
-            div()
-                .w(px(340.0))
-                .child(gpui_component::input::Input::new(&this.search_input)),
+            div().w(px(340.0)).child(
+                gpui_component::input::Input::new(&this.search_input)
+                    .prefix(Icon::new(IconName::Search).size(px(16.0))),
+            ),
         )
         .child(div().flex_1())
         .child(
@@ -560,21 +561,24 @@ fn titlebar(this: &MainWindow) -> gpui::Div {
                 .gap(px(6.0))
                 .text_size(px(theme::TEXT_SIZE_SM))
                 .text_color(theme::TEXT_SECONDARY)
+                .child(Icon::new(IconName::Network).size(px(16.0)))
                 .child(div().size(px(9.0)).rounded_full().bg(status_color))
-                .child(format!("Network ● {}", this.session.status_label()))
-                .child("▾"),
+                .child(format!("Network · {}", this.session.status_label()))
+                .child(Icon::new(IconName::ChevronDown).size(px(15.0))),
         )
 }
 
 fn nav_rail() -> gpui::Div {
-    // Single active destination for now: the chats pane owns the shell.
+    // Single active destination for now: the chats pane owns the shell. The
+    // icons come from the bundled GPUI component asset set so their stroke
+    // weight stays consistent with the rest of the shell.
     let items = [
-        ("✉", true),
-        ("◔", false),
-        ("☎", false),
-        ("@", false),
-        ("★", false),
-        ("▦", false),
+        (IconName::Inbox, true),
+        (IconName::CircleUser, false),
+        (IconName::Network, false),
+        (IconName::User, false),
+        (IconName::Star, false),
+        (IconName::Calendar, false),
     ];
 
     let mut rail = div()
@@ -590,7 +594,7 @@ fn nav_rail() -> gpui::Div {
         .border_r_1()
         .border_color(theme::BORDER);
 
-    for (glyph, active) in items {
+    for (icon, active) in items {
         let mut item = div()
             .size(px(46.0))
             .rounded(px(theme::RADIUS_LG))
@@ -603,7 +607,7 @@ fn nav_rail() -> gpui::Div {
         } else {
             item = item.text_color(theme::TEXT_SECONDARY);
         }
-        rail = rail.child(item.child(glyph));
+        rail = rail.child(item.child(Icon::new(icon).size(px(20.0))));
     }
 
     rail = rail.child(
@@ -623,7 +627,7 @@ fn nav_rail() -> gpui::Div {
                     .text_size(px(18.0))
                     .text_color(theme::TEXT_SECONDARY)
                     .hover(|s| s.bg(theme::ROW_HOVER))
-                    .child("⚙"),
+                    .child(Icon::new(IconName::Settings2).size(px(20.0))),
             )
             .child(
                 div()
@@ -707,6 +711,7 @@ fn apply_state(
         let left_pairing = this.session.qr_deadline.is_some()
             && !matches!(state, wasabi_core::state::SessionState::Pairing);
         if left_pairing {
+            this.session.qr_code = None;
             this.session.qr_deadline = None;
             this.qr_ticker_gen.fetch_add(1, Ordering::AcqRel);
         }
@@ -731,10 +736,17 @@ fn apply_qr(
     weak.update(cx, |this, cx| {
         match qr {
             Some(qr) => {
+                // The payload stays only in the ephemeral UI mirror so
+                // the pairing code can be rendered; it is never logged
+                // or included in a domain event.
+                this.session.qr_code = Some(qr.code);
                 this.session.qr_deadline = Some(std::time::Instant::now() + qr.expires_in);
                 this.spawn_countdown_ticker(cx);
             }
-            None => this.session.qr_deadline = None,
+            None => {
+                this.session.qr_code = None;
+                this.session.qr_deadline = None;
+            }
         }
         cx.notify();
     })

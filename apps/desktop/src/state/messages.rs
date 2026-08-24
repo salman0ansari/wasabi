@@ -5,7 +5,7 @@
 //! window overflows. Render order (date separators interleaved) and row
 //! height estimates are prepared eagerly so `render` stays a pure read.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use wasabi_domain::{
     ChatSummary, MessageDirection, MessageKind, MessagePage, MessageRow, MessageStatus,
@@ -81,13 +81,21 @@ impl MessageWindowModel {
     /// view can re-anchor scrolling.
     pub fn prepend_older(&mut self, page: &MessagePage) -> usize {
         self.loading_older = false;
-        let mut older = page.rows.clone();
-        older.reverse();
+        let existing = self.rows.iter().map(row_key).collect::<HashSet<_>>();
+        let mut seen = existing;
+        let mut older = page
+            .rows
+            .iter()
+            .rev()
+            .filter(|row| seen.insert(row_key(row)))
+            .cloned()
+            .collect::<Vec<_>>();
         let added = older.len();
         if added == 0 {
+            self.has_more_older = page.next_before.is_some();
             return 0;
         }
-        let mut rows = older;
+        let mut rows = std::mem::take(&mut older);
         rows.extend(self.rows.drain(..));
 
         let overflow = rows.len().saturating_sub(WINDOW_MAX);
@@ -105,15 +113,16 @@ impl MessageWindowModel {
 
     /// Append newer rows (invalidation refresh while scrolled up).
     pub fn merge_newer(&mut self, page: &MessagePage) {
-        let mut newer = page.rows.clone();
-        newer.reverse();
-        for row in newer {
-            match self.rows.last() {
-                // Skip rows we already show; identity is (id, seq).
-                Some(last) if last.id == row.id && last.seq == row.seq => {}
-                _ => self.rows.push(row),
+        // A refresh page can overlap the current window at any position, not
+        // only at its last row. Merge by stable identity before sorting so a
+        // mid-history refresh never creates duplicate bubbles.
+        let mut seen = self.rows.iter().map(row_key).collect::<HashSet<_>>();
+        for row in page.rows.iter().rev() {
+            if seen.insert(row_key(row)) {
+                self.rows.push(row.clone());
             }
         }
+        self.rows.sort_by_key(|row| (row.timestamp_ms, row.seq.0));
         if self.rows.len() > WINDOW_MAX {
             let drop = self.rows.len() - WINDOW_MAX;
             self.rows.drain(..drop);
@@ -167,6 +176,13 @@ impl MessageWindowModel {
         self.items = items;
         self.sizes = sizes;
     }
+}
+
+/// Stable UI identity for a row. Message ids are only unique within a
+/// sender/chat in the protocol, so the sequence tiebreak remains part of the
+/// projection key when pages overlap.
+fn row_key(row: &MessageRow) -> (wasabi_domain::MessageId, i64) {
+    (row.id.clone(), row.seq.0)
 }
 
 /// Cached chars-per-line height heuristic keyed by message id.

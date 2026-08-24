@@ -9,6 +9,10 @@ use wasabi_core::state::SessionState;
 #[derive(Clone)]
 pub struct SessionMirror {
     pub state: SessionState,
+    /// Ephemeral QR payload used only to render the current pairing code.
+    /// It is never logged or persisted and is cleared when the code rotates
+    /// or pairing succeeds.
+    pub qr_code: Option<String>,
     /// Wall-clock instant at which the current QR code expires.
     pub qr_deadline: Option<Instant>,
 }
@@ -17,6 +21,7 @@ impl SessionMirror {
     pub fn new() -> Self {
         Self {
             state: SessionState::Stopped,
+            qr_code: None,
             qr_deadline: None,
         }
     }

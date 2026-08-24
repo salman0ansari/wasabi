@@ -3,6 +3,7 @@
 
 use gpui::prelude::*;
 use gpui::{Context, px};
+use gpui_component::{Icon, IconName};
 
 use crate::state::chats;
 use crate::theme;
@@ -51,20 +52,21 @@ pub fn info_panel(this: &mut MainWindow, _cx: &mut Context<MainWindow>) -> impl 
             .child(label)
     };
 
-    // 3-across media grid placeholder; thumbnails land with the media
-    // pipeline.
+    // Media handles are not part of the current chat projection yet. Keep
+    // the section honest and useful rather than showing fake thumbnails.
     let media_grid = gpui::div()
         .flex()
-        .flex_wrap()
-        .gap(px(4.0))
+        .items_center()
+        .gap(px(8.0))
         .px(px(16.0))
-        .children((0..9).map(|_| {
+        .py(px(8.0))
+        .text_color(theme::TEXT_SECONDARY)
+        .child(Icon::new(IconName::GalleryVerticalEnd).size(px(18.0)))
+        .child(
             gpui::div()
-                .w(px((theme::RIGHT_PANEL_W - 44.0) / 3.0))
-                .h(px((theme::RIGHT_PANEL_W - 44.0) / 3.0))
-                .rounded(px(theme::RADIUS_SM))
-                .bg(theme::SKELETON)
-        }));
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .child("No media shared yet"),
+        );
 
     let divider = || {
         gpui::div()
@@ -152,9 +154,13 @@ pub fn info_panel(this: &mut MainWindow, _cx: &mut Context<MainWindow>) -> impl 
             gpui::div()
                 .px(px(16.0))
                 .py(px(6.0))
+                .flex()
+                .items_center()
+                .gap(px(4.0))
                 .text_size(px(theme::TEXT_SIZE))
                 .text_color(theme::ACCENT_TEXT)
-                .child("Show all >"),
+                .child("Show all")
+                .child(Icon::new(IconName::ChevronRight).size(px(15.0))),
         )
         .child(divider())
         .child(section_title("Participants"))

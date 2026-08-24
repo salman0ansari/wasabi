@@ -146,6 +146,7 @@ impl AccountSession {
     /// below (`pair_with_qr_code` is the opposite, primary-side flow).
     pub async fn start_pairing(
         self: &Arc<Self>,
+        supervisor_token: CancellationToken,
     ) -> Result<watch::Receiver<Option<lifecycle::QrState>>, lifecycle::LifecycleError> {
         if matches!(self.state(), SessionState::Pairing) && self.is_running().await {
             return Ok(self.subscribe_qr());
@@ -155,7 +156,7 @@ impl AccountSession {
         self.stop().await;
         self.launch(
             self.config.clone(),
-            CancellationToken::new(),
+            supervisor_token.child_token(),
             SessionState::Pairing,
         )
         .await?;
@@ -208,12 +209,16 @@ impl AccountSession {
 
         let handle = bot.spawn();
 
-        let _pump = lifecycle::spawn_event_pump(
+        let pump = lifecycle::spawn_event_pump(
             event_rx,
             self.state_tx.clone(),
             self.qr_tx.clone(),
             run_token,
         );
+        // Keep the pump under the same account owner as the bot. Dropping
+        // this handle would detach the task, which makes reconnects and
+        // shutdown unable to cancel and join the old event consumer.
+        *self.pump.lock().await = Some(pump);
         *guard = Some(handle);
         drop(guard);
 

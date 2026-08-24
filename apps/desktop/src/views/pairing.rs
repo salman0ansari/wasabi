@@ -36,21 +36,35 @@ pub fn pairing_panel(session: &SessionMirror, cx: &mut Context<MainWindow>) -> g
         button
     };
 
-    // QR rendering arrives with the media pipeline; the dashed frame reserves
-    // the exact footprint so layout stays stable once codes are drawn.
-    let qr_placeholder = gpui::div()
-        .size(px(220.0))
-        .rounded(px(theme::RADIUS_MD))
-        .border_1()
-        .border_dashed()
-        .border_color(theme::BORDER)
-        .bg(theme::SURFACE)
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(px(28.0))
-        .text_color(theme::BORDER)
-        .child("▦");
+    let qr_view = match session.qr_code.as_deref() {
+        Some(payload) => match qrcode::QrCode::new(payload.as_bytes()) {
+            Ok(code) => {
+                // Dense1x2 keeps the modules square on a desktop text grid
+                // while avoiding a large raster allocation on the GPUI side.
+                let rendered = code
+                    .render::<qrcode::render::unicode::Dense1x2>()
+                    .quiet_zone(true)
+                    .build()
+                    .to_string();
+                gpui::div()
+                    .size(px(220.0))
+                    .rounded(px(theme::RADIUS_MD))
+                    .border_1()
+                    .border_color(theme::BORDER)
+                    .bg(theme::SURFACE)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .overflow_hidden()
+                    .font_family("monospace")
+                    .text_size(px(8.0))
+                    .text_color(theme::TEXT_PRIMARY)
+                    .child(rendered)
+            }
+            Err(_) => qr_status("QR unavailable — waiting for a fresh code"),
+        },
+        None => qr_status("Waiting for QR…"),
+    };
 
     gpui::div()
         .flex_1()
@@ -68,7 +82,7 @@ pub fn pairing_panel(session: &SessionMirror, cx: &mut Context<MainWindow>) -> g
                 .text_color(theme::TEXT_PRIMARY)
                 .child("Link with WhatsApp"),
         )
-        .child(qr_placeholder)
+        .child(qr_view)
         .child(
             gpui::div()
                 .text_size(px(theme::TEXT_SIZE))
@@ -87,4 +101,20 @@ pub fn pairing_panel(session: &SessionMirror, cx: &mut Context<MainWindow>) -> g
                 .child("Open WhatsApp on your phone")
                 .child("Settings → Linked devices → Link a device"),
         )
+}
+
+fn qr_status(text: &'static str) -> gpui::Div {
+    gpui::div()
+        .size(px(220.0))
+        .rounded(px(theme::RADIUS_MD))
+        .border_1()
+        .border_dashed()
+        .border_color(theme::BORDER)
+        .bg(theme::SURFACE)
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(theme::TEXT_SIZE_SM))
+        .text_color(theme::TEXT_SECONDARY)
+        .child(text)
 }

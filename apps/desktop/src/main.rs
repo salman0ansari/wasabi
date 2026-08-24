@@ -11,8 +11,8 @@ mod state;
 mod theme;
 mod views;
 
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use anyhow::Context as _;
 use gpui::prelude::*;
@@ -60,7 +60,8 @@ fn main() -> anyhow::Result<()> {
     }
     let bridge = Arc::new(bridge);
 
-    gpui_platform::application().with_assets(gpui_component_assets::Assets)
+    gpui_platform::application()
+        .with_assets(gpui_component_assets::Assets)
         .run(move |cx| {
             gpui_component::init(cx);
             // The shell is designed around the light reference palette.
