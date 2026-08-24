@@ -53,6 +53,7 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 - Read paginated message history and send text messages.
 - Star and unstar messages with optimistic rollback if synchronization fails.
 - Pin/unpin and mute/unmute chats from the conversation drawer.
+- Mark unread conversations read when they are opened in the active window, without cross-chat races.
 - Keep independent per-chat text drafts across conversation switches and app restarts.
 - Use light, dark, or Linux system appearance.
 - Configure text size, Enter-to-send, spellcheck, link previews, notifications, download location, and cache quota.

@@ -367,6 +367,26 @@ impl MainWindow {
             .unwrap_or_default();
         self.composer_input
             .update(cx, |input, cx| input.set_value(draft, window, cx));
+        let should_mark_read = window.is_window_active()
+            && self.session.can_send()
+            && self
+                .chats
+                .chats
+                .iter()
+                .find(|chat| chat.id.as_str() == chat_id)
+                .is_some_and(|chat| chat.unread_count != 0);
+        if should_mark_read {
+            // The immutable chat identity is captured before the command is
+            // dispatched. A rapid conversation switch cannot mark the next
+            // chat read by mistake.
+            self.perform_chat_action(
+                wasabi_domain::ChatAction::MarkRead {
+                    chat: wasabi_domain::ChatId::new(chat_id.clone()),
+                    read: true,
+                },
+                cx,
+            );
+        }
         let generation = self.next_messages_gen();
 
         let bridge = Arc::clone(&self.bridge);
