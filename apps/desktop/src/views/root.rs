@@ -282,7 +282,7 @@ impl MainWindow {
     }
 
     fn start_pairing_request(&mut self, cx: &mut Context<Self>, restart: bool) {
-        if self.session.pairing_requesting {
+        if self.session.pairing_requesting || !self.bridge.commands_accepted() {
             return;
         }
 
