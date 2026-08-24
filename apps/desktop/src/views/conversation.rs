@@ -282,12 +282,17 @@ fn timeline_row(
                         .get(&(row.chat.clone(), media.id.clone()))
                         .cloned()
                 });
+                let retrying = this.retrying_messages.contains(&(
+                    row.chat.as_str().to_string(),
+                    row.id.as_str().to_string(),
+                ));
                 bubble(
                     row.clone(),
                     *row_ix,
                     this.settings.text_scale,
                     highlighted,
                     media_state,
+                    retrying,
                     cx,
                 )
                 .into_any_element()
@@ -304,6 +309,7 @@ fn bubble(
     text_scale: u16,
     highlighted: bool,
     media_state: Option<crate::views::root::MediaDownloadUi>,
+    retrying: bool,
     cx: &mut Context<MainWindow>,
 ) -> gpui::Div {
     use wasabi_domain::{MessageDirection, MessageKind};
@@ -387,10 +393,33 @@ fn bubble(
     content = content.child(
         gpui::div()
             .flex()
+            .items_center()
             .justify_end()
             .gap(px(4.0))
             .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
             .text_color(messages::status_color(row.status))
+            .when(
+                outgoing && row.status == wasabi_domain::MessageStatus::Failed,
+                |meta| {
+                    let message = row.id.clone();
+                    meta.child(
+                        gpui::div()
+                            .id(("retry-message", row_index))
+                            .cursor_pointer()
+                            .rounded(px(theme::RADIUS_SM))
+                            .px(px(6.0))
+                            .py(px(2.0))
+                            .bg(theme::surface())
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme::danger())
+                            .hover(|style| style.bg(theme::chip_idle()))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.retry_message(message.clone(), cx)
+                            }))
+                            .child(if retrying { "Retrying…" } else { "Retry" }),
+                    )
+                },
+            )
             .child(meta_ticks)
             .child(message_actions_button(&row, row_index, cx)),
     );
@@ -737,6 +766,9 @@ fn message_action_sheet(
             target: (&row).into(),
         }
     });
+    let retry = (row.direction == wasabi_domain::MessageDirection::Outgoing
+        && row.status == wasabi_domain::MessageStatus::Failed)
+        .then(|| row.id.clone());
 
     action_card()
         .child(
@@ -788,6 +820,15 @@ fn message_action_sheet(
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.copy_message(message.clone(), cx)
                     })),
+            )
+        })
+        .when_some(retry, |card, message| {
+            card.child(
+                sheet_button("retry-message-from-actions", "Retry send", false).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        this.retry_message(message.clone(), cx)
+                    }),
+                ),
             )
         })
         .child(

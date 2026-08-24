@@ -142,6 +142,7 @@ pub struct MainWindow {
     pub(crate) staged_attachments: HashMap<String, wasabi_domain::StagedAttachment>,
     pub(crate) attachment_staging: HashSet<String>,
     pub(crate) attachment_sending: HashSet<String>,
+    pub(crate) retrying_messages: HashSet<(String, String)>,
     pub(crate) composer_input: gpui::Entity<InputState>,
     pub(crate) search_input: gpui::Entity<InputState>,
     pub(crate) phone_pair_input: gpui::Entity<InputState>,
@@ -246,6 +247,7 @@ impl MainWindow {
             staged_attachments: HashMap::new(),
             attachment_staging: HashSet::new(),
             attachment_sending: HashSet::new(),
+            retrying_messages: HashSet::new(),
             composer_input,
             search_input,
             phone_pair_input,
@@ -391,6 +393,16 @@ impl MainWindow {
         self.chats.chats = vec![preview.summary];
         self.messages.chat_id = Some(preview.chat.as_str().to_string());
         self.messages.anchor_newest(&preview.page);
+        if mode == "retry"
+            && let Some(row) = self
+                .messages
+                .rows
+                .iter_mut()
+                .find(|row| row.direction == wasabi_domain::MessageDirection::Outgoing)
+        {
+            row.status = wasabi_domain::MessageStatus::Failed;
+            self.messages.rebuild();
+        }
         self.msg_scroll.reset(self.messages.items.len());
         self.msg_scroll.scroll_to_end();
         if mode == "media" {
@@ -1257,6 +1269,19 @@ impl MainWindow {
             wasabi_domain::MessageAction::Star { starred, .. } => Some(*starred),
             _ => None,
         };
+        let retry_key = matches!(action, wasabi_domain::MessageAction::Retry { .. }).then(|| {
+            (
+                target.chat.as_str().to_string(),
+                target.message.as_str().to_string(),
+            )
+        });
+        if let Some(key) = retry_key.clone() {
+            if !self.retrying_messages.insert(key) {
+                return;
+            }
+            self.message_overlay = None;
+            self.send_error = None;
+        }
         if let Some(starred) = desired_star
             && let Some(row) = self.messages.rows.iter_mut().find(|row| {
                 row.chat == target.chat && row.id == target.message
@@ -1268,6 +1293,9 @@ impl MainWindow {
         spawn_main(cx, async move |this, cx| {
             let result = bridge.perform_message_action(action).await;
             this.update(cx, |this, cx| {
+                if let Some(key) = retry_key {
+                    this.retrying_messages.remove(&key);
+                }
                 if let Err(error) = result {
                     if let Some(starred) = desired_star
                         && let Some(row) = this.messages.rows.iter_mut().find(|row| {
@@ -1278,6 +1306,9 @@ impl MainWindow {
                         row.starred = !starred;
                     }
                     this.send_error = Some(error.ui_message().to_string());
+                }
+                if this.chats.selected.as_deref() == Some(target.chat.as_str()) {
+                    this.refresh_current_messages(cx);
                 }
                 cx.notify();
             })
@@ -1346,6 +1377,30 @@ impl MainWindow {
         };
         self.message_overlay = None;
         self.perform_message_action(action, cx);
+    }
+
+    pub(crate) fn retry_message(
+        &mut self,
+        message: wasabi_domain::MessageId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(row) = self
+            .messages
+            .rows
+            .iter()
+            .find(|row| row.id == message)
+        else {
+            return;
+        };
+        if row.direction != wasabi_domain::MessageDirection::Outgoing
+            || row.status != wasabi_domain::MessageStatus::Failed
+        {
+            return;
+        }
+        self.perform_message_action(
+            wasabi_domain::MessageAction::Retry { target: row.into() },
+            cx,
+        );
     }
 
     pub(crate) fn dismiss_overlay_or_drawer(&mut self, cx: &mut Context<Self>) {

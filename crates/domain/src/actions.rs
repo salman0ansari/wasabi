@@ -29,6 +29,9 @@ impl From<&MessageRow> for MessageActionTarget {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageAction {
+    Retry {
+        target: MessageActionTarget,
+    },
     Star {
         target: MessageActionTarget,
         starred: bool,
@@ -68,7 +71,8 @@ impl ChatAction {
 impl MessageAction {
     pub fn target(&self) -> &MessageActionTarget {
         match self {
-            Self::Star { target, .. }
+            Self::Retry { target }
+            | Self::Star { target, .. }
             | Self::React { target, .. }
             | Self::DeleteForMe { target, .. }
             | Self::RevokeForEveryone { target } => target,
@@ -117,5 +121,21 @@ mod tests {
             muted: true,
         };
         assert_eq!(action.chat().as_str(), "chat-a@s.whatsapp.net");
+    }
+
+    #[test]
+    fn retry_captures_the_original_message_identity() {
+        let action = MessageAction::Retry {
+            target: MessageActionTarget {
+                chat: ChatId::new("chat-a@s.whatsapp.net"),
+                message: MessageId::new("failed-message"),
+                sender: "me@s.whatsapp.net".to_string(),
+                from_me: true,
+                timestamp_ms: 42,
+            },
+        };
+
+        assert_eq!(action.target().chat.as_str(), "chat-a@s.whatsapp.net");
+        assert_eq!(action.target().message.as_str(), "failed-message");
     }
 }

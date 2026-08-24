@@ -31,6 +31,12 @@ compact affordance lets the user move to the newest anchored page explicitly.
 
 ![Wasabi new-message affordance](docs/screenshots/new-messages-affordance.png)
 
+Failed outgoing messages remain visible and can be retried safely. Wasabi
+republishes the durable stored payload under its original message ID so an
+ambiguous earlier attempt cannot turn into a duplicate.
+
+![Wasabi failed-message retry](docs/screenshots/failed-message-retry.png)
+
 ### Attachments
 
 Selected files are copied into restart-safe Wasabi staging before upload. The composer shows the real filename, media class, and size without exposing local paths.
@@ -77,6 +83,7 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 - Read paginated message history and send text, image, video, audio, and document messages with optional supported captions.
 - Read actually measured multiline and multilingual bubbles that reflow across supported window sizes and text scaling without overlap.
 - Keep the current history anchor when older pages prepend or new messages arrive, with an explicit jump-to-newest affordance.
+- Retry failed outgoing messages from the bubble or message-action menu without creating a second message identity.
 - Stage outgoing files durably, recover interrupted composer attachments after restart, cancel them safely, and stream encryption/upload without buffering entire files in memory.
 - Download received media on demand into a bounded, content-addressed, SHA-256-verified cache.
 - Copy and react to messages, or star/unstar them with optimistic rollback if synchronization fails.

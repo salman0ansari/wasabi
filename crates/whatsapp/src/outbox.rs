@@ -145,6 +145,52 @@ impl Outbox {
         self.send_inner(client, to, message).await
     }
 
+    /// Republish one durable failed outgoing row under its original message
+    /// id. Reusing the id is essential: the server can deduplicate an
+    /// ambiguous earlier attempt, while minting a new id could duplicate the
+    /// user's message.
+    pub async fn retry_failed(
+        &self,
+        client: &Arc<Client>,
+        chat: Jid,
+        message_id: &str,
+    ) -> Result<SentReceipt, OutboxError> {
+        if !client.is_connected() {
+            return Err(OutboxError::NotConnected);
+        }
+        let stored = self
+            .chats
+            .message(&chat, message_id)
+            .await?
+            .ok_or_else(|| OutboxError::InvalidRequest("message no longer exists".into()))?;
+        validate_retry_candidate(&stored)?;
+        let message = stored
+            .message
+            .as_deref()
+            .ok_or_else(|| OutboxError::InvalidRequest("message content is unavailable".into()))?;
+        let options = SendOptions::default().with_message_id(stored.id.clone());
+        match client
+            .send_message_with_options(chat.clone(), message.clone(), options)
+            .await
+        {
+            Ok(_) => Ok(SentReceipt {
+                message_id: stored.id,
+            }),
+            Err(source) => {
+                warn!(
+                    id = %stored.id,
+                    class = ?classify_send_failure(&source),
+                    error = %source,
+                    "outbox: manual retry failed"
+                );
+                Err(OutboxError::Send {
+                    message_id: stored.id,
+                    source,
+                })
+            }
+        }
+    }
+
     async fn send_inner(
         &self,
         client: &Arc<Client>,
@@ -207,6 +253,25 @@ impl Outbox {
             }
         }
     }
+}
+
+fn validate_retry_candidate(message: &StoredMessage) -> Result<(), OutboxError> {
+    if !message.from_me {
+        return Err(OutboxError::InvalidRequest(
+            "incoming messages cannot be retried".into(),
+        ));
+    }
+    if message.status != MessageStatus::Error {
+        return Err(OutboxError::InvalidRequest(
+            "only failed messages can be retried".into(),
+        ));
+    }
+    if message.message.is_none() {
+        return Err(OutboxError::InvalidRequest(
+            "message content is unavailable".into(),
+        ));
+    }
+    Ok(())
 }
 
 async fn record_send_failure(
@@ -391,5 +456,51 @@ pub async fn reconcile_stale_pending(
     // depend on that grace window.
     if let Err(e) = chats.flush().await {
         warn!(error = %e, "outbox: reconcile final flush failed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OutboxError, validate_retry_candidate};
+    use whatsapp_rust::chrono::Utc;
+    use whatsapp_rust::wacore::proto_helpers::MessageBuilderExt;
+    use whatsapp_rust::waproto::whatsapp as wa;
+    use whatsapp_rust::Jid;
+    use whatsapp_rust_chat_store::{MessageKind, MessageStatus, types::StoredMessage};
+
+    fn retry_candidate(from_me: bool, status: MessageStatus, with_content: bool) -> StoredMessage {
+        let chat: Jid = "15550000000@s.whatsapp.net".parse().unwrap();
+        StoredMessage {
+            chat_jid: chat.clone(),
+            id: "FAILED-1".to_string(),
+            sender_jid: chat,
+            from_me,
+            timestamp: Utc::now(),
+            kind: MessageKind::Text,
+            text: Some("retry me".to_string()),
+            message: with_content.then(|| Box::new(wa::Message::text("retry me"))),
+            status,
+            starred: false,
+            edited_at: None,
+            revoked: false,
+            seq: 1,
+        }
+    }
+
+    #[test]
+    fn manual_retry_requires_a_failed_outgoing_row_with_durable_content() {
+        assert!(
+            validate_retry_candidate(&retry_candidate(true, MessageStatus::Error, true)).is_ok()
+        );
+        for candidate in [
+            retry_candidate(false, MessageStatus::Error, true),
+            retry_candidate(true, MessageStatus::Pending, true),
+            retry_candidate(true, MessageStatus::Error, false),
+        ] {
+            assert!(matches!(
+                validate_retry_candidate(&candidate),
+                Err(OutboxError::InvalidRequest(_))
+            ));
+        }
     }
 }

@@ -1037,6 +1037,9 @@ impl CoreBridge {
         let session = self
             .session_snapshot()
             .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
+        let outbox = self
+            .outbox_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
         self.run_on_core_service(async move {
             let client = session.client().await.ok_or_else(|| {
                 ServiceError::new(ErrorKind::NotConnected, "no live protocol client")
@@ -1057,6 +1060,12 @@ impl CoreBridge {
                 })?;
 
             match action {
+                MessageAction::Retry { target } => {
+                    outbox
+                        .retry_failed(&client, chat, target.message.as_str())
+                        .await
+                        .map_err(map_outbox_error)?;
+                }
                 MessageAction::Star { target, starred } => {
                     let actions = client.chat_actions();
                     let result = if starred {

@@ -6,6 +6,10 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 
 ### Added
 
+- Failed outgoing messages now expose inline and message-menu Retry actions.
+  Retry republishes the durable stored proto under its original message ID,
+  rejects incoming/non-failed/missing-content rows, prevents duplicate clicks,
+  and refreshes the exact conversation after completion.
 - The conversation timeline now uses GPUI's native measured variable-height
   list, so multiline, multilingual, emoji, media, resized, and scaled content
   is laid out from actual rendered geometry instead of character estimates.
