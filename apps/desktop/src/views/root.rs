@@ -144,6 +144,7 @@ pub struct MainWindow {
     pub(crate) attachment_staging: HashSet<String>,
     pub(crate) attachment_sending: HashSet<String>,
     pub(crate) retrying_messages: HashSet<(String, String)>,
+    pub(crate) editing_messages: HashSet<(String, String)>,
     pub(crate) composer_input: gpui::Entity<InputState>,
     pub(crate) search_input: gpui::Entity<InputState>,
     pub(crate) phone_pair_input: gpui::Entity<InputState>,
@@ -250,6 +251,7 @@ impl MainWindow {
             attachment_staging: HashSet::new(),
             attachment_sending: HashSet::new(),
             retrying_messages: HashSet::new(),
+            editing_messages: HashSet::new(),
             composer_input,
             search_input,
             phone_pair_input,
@@ -362,7 +364,7 @@ impl MainWindow {
 
         #[cfg(debug_assertions)]
         let previewing = if let Ok(preview_mode) = std::env::var("WASABI_UI_PREVIEW") {
-            this.install_preview(&preview_mode);
+            this.install_preview(&preview_mode, window, cx);
             true
         } else {
             false
@@ -387,7 +389,7 @@ impl MainWindow {
     /// mutations. Use `WASABI_UI_PREVIEW=media` or `settings` with a debug
     /// binary.
     #[cfg(debug_assertions)]
-    fn install_preview(&mut self, mode: &str) {
+    fn install_preview(&mut self, mode: &str, window: &mut Window, cx: &mut Context<Self>) {
         let preview = crate::state::preview::media_preview();
         self.session.state = wasabi_core::state::SessionState::Connected;
         self.session.connected_once = true;
@@ -421,6 +423,22 @@ impl MainWindow {
                 row.quoted = Some(quoted);
             }
             self.active_draft.reply_to = Some(wasabi_domain::MessageId::new("PREVIEW-DOC"));
+            self.messages.rebuild();
+        }
+        if mode == "edit"
+            && let Some(row) = self
+                .messages
+                .rows
+                .iter_mut()
+                .find(|row| row.id.as_str() == "PREVIEW-TEXT")
+        {
+            let original = crate::state::messages::body_text(row);
+            row.edited_at_ms = Some(chrono::Utc::now().timestamp_millis());
+            self.active_draft.body = format!("{original} I’ll send notes before lunch.");
+            self.active_draft.edit_target = Some(row.id.clone());
+            self.composer_input.update(cx, |input, cx| {
+                input.set_value(self.active_draft.body.clone(), window, cx)
+            });
             self.messages.rebuild();
         }
         self.msg_scroll.reset(self.messages.items.len());
@@ -869,6 +887,10 @@ impl MainWindow {
         let Some(chat_id) = self.chats.selected.clone() else {
             return;
         };
+        if self.active_draft.edit_target.is_some() {
+            self.submit_current_edit(chat_id, window, cx);
+            return;
+        }
         let text = self.composer_input.read(cx).value().trim().to_string();
         let reply_to = self.active_draft.reply_to.clone();
         let attachment = self.staged_attachments.get(&chat_id).cloned();
@@ -1463,6 +1485,11 @@ impl MainWindow {
         if !self.messages.rows.iter().any(|row| row.id == message) {
             return;
         }
+        if self.active_draft.edit_target.is_some() {
+            self.send_error = Some("Finish or cancel the current edit first".to_string());
+            cx.notify();
+            return;
+        }
         self.active_draft.reply_to = Some(message);
         self.message_overlay = None;
         self.queue_draft_save(cx);
@@ -1475,6 +1502,209 @@ impl MainWindow {
             self.queue_draft_save(cx);
             cx.notify();
         }
+    }
+
+    pub(crate) fn begin_edit(
+        &mut self,
+        message: wasabi_domain::MessageId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(row) = self
+            .messages
+            .rows
+            .iter()
+            .find(|row| row.id == message)
+            .cloned()
+        else {
+            return;
+        };
+        if !row.can_edit_text_at(chrono::Utc::now().timestamp_millis()) {
+            self.message_overlay = None;
+            self.send_error = Some("This message can no longer be edited".to_string());
+            cx.notify();
+            return;
+        }
+        let current = self.composer_input.read(cx).value().trim().to_string();
+        if !current.is_empty()
+            || self.active_draft.reply_to.is_some()
+            || self
+                .chats
+                .selected
+                .as_ref()
+                .is_some_and(|chat| self.staged_attachments.contains_key(chat))
+        {
+            self.message_overlay = None;
+            self.send_error = Some("Finish or clear the current draft before editing".to_string());
+            cx.notify();
+            return;
+        }
+        let wasabi_domain::MessageKind::Text { body } = row.kind else {
+            return;
+        };
+        self.active_draft.reply_to = None;
+        self.active_draft.edit_target = Some(message);
+        self.active_draft.body = body.clone();
+        self.message_overlay = None;
+        self.send_error = None;
+        self.composer_input
+            .update(cx, |input, cx| input.set_value(body, window, cx));
+        self.queue_draft_save(cx);
+        self.composer_input.update(cx, |input, cx| input.focus(window, cx));
+        cx.notify();
+    }
+
+    pub(crate) fn cancel_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(target) = self.active_draft.edit_target.clone() else {
+            return;
+        };
+        let Some(chat) = self.chats.selected.clone() else {
+            return;
+        };
+        if self
+            .editing_messages
+            .contains(&(chat, target.as_str().to_string()))
+        {
+            return;
+        }
+        self.active_draft.edit_target = None;
+        self.active_draft.body.clear();
+        self.composer_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.queue_draft_save(cx);
+        cx.notify();
+    }
+
+    fn submit_current_edit(
+        &mut self,
+        chat_id: String,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(message) = self.active_draft.edit_target.clone() else {
+            return;
+        };
+        let body = self.composer_input.read(cx).value().trim().to_string();
+        if body.is_empty() {
+            self.send_error = Some("Edited text cannot be empty".to_string());
+            cx.notify();
+            return;
+        }
+        let Some(row_index) = self
+            .messages
+            .rows
+            .iter()
+            .position(|row| row.chat.as_str() == chat_id && row.id == message)
+        else {
+            self.send_error = Some("Open the original message before editing it".to_string());
+            cx.notify();
+            return;
+        };
+        if !self.messages.rows[row_index]
+            .can_edit_text_at(chrono::Utc::now().timestamp_millis())
+        {
+            self.send_error = Some("This message can no longer be edited".to_string());
+            cx.notify();
+            return;
+        }
+        let wasabi_domain::MessageKind::Text { body: previous_body } =
+            self.messages.rows[row_index].kind.clone()
+        else {
+            return;
+        };
+        if body == previous_body {
+            self.cancel_edit(_window, cx);
+            return;
+        }
+        let key = (chat_id.clone(), message.as_str().to_string());
+        if !self.editing_messages.insert(key.clone()) {
+            return;
+        }
+        let previous_edited_at = self.messages.rows[row_index].edited_at_ms;
+        let optimistic_edited_at = chrono::Utc::now().timestamp_millis();
+        self.messages.rows[row_index].kind = wasabi_domain::MessageKind::Text {
+            body: body.clone(),
+        };
+        self.messages.rows[row_index].edited_at_ms = Some(optimistic_edited_at);
+        let action = wasabi_domain::MessageAction::Edit {
+            target: (&self.messages.rows[row_index]).into(),
+            body: body.clone(),
+        };
+        self.messages.rebuild();
+        self.msg_scroll.remeasure();
+        self.send_error = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.perform_message_action(action).await;
+            if result.is_ok() {
+                let _ = bridge
+                    .save_draft(wasabi_domain::ChatId::new(chat_id.clone()), None)
+                    .await;
+            }
+            let update = this.update(cx, |this, cx| {
+                this.editing_messages.remove(&key);
+                if let Err(error) = &result {
+                    if let Some(row) = this.messages.rows.iter_mut().find(|row| {
+                        row.chat.as_str() == chat_id && row.id == message
+                    }) && row.edited_at_ms == Some(optimistic_edited_at)
+                        && matches!(&row.kind, wasabi_domain::MessageKind::Text { body: current } if current == &body)
+                    {
+                        row.kind = wasabi_domain::MessageKind::Text {
+                            body: previous_body.clone(),
+                        };
+                        row.edited_at_ms = previous_edited_at;
+                        this.messages.rebuild();
+                        this.msg_scroll.remeasure();
+                    }
+                    this.send_error = Some(error.ui_message().to_string());
+                } else {
+                    if let Some(summary) = this
+                        .chats
+                        .chats
+                        .iter_mut()
+                        .find(|summary| summary.id.as_str() == chat_id)
+                        && submitted_edit_matches(summary.draft.as_ref(), &message, &body)
+                    {
+                        summary.draft = None;
+                        summary.draft_preview = None;
+                    }
+                    let clear_visible_composer = should_clear_visible_edit(
+                        this.chats.selected.as_deref(),
+                        &chat_id,
+                        this.active_draft.edit_target.as_ref(),
+                        &message,
+                        &this.composer_input.read(cx).value(),
+                        &body,
+                    );
+                    if clear_visible_composer {
+                        this.active_draft = wasabi_domain::Draft::default();
+                    }
+                    this.refresh_current_messages(cx);
+                    this.refresh_visible();
+                    cx.notify();
+                    return (
+                        this.window_handle,
+                        this.composer_input.clone(),
+                        clear_visible_composer,
+                    );
+                }
+                this.refresh_visible();
+                cx.notify();
+                (this.window_handle, this.composer_input.clone(), false)
+            });
+            if result.is_ok()
+                && let Ok((window_handle, input, true)) = update
+            {
+                window_handle
+                    .update(cx, |_, window, cx| {
+                        if input.read(cx).value().trim() == body {
+                            input.update(cx, |state, cx| state.set_value("", window, cx));
+                        }
+                    })
+                    .ok();
+            }
+        });
+        cx.notify();
     }
 
     pub(crate) fn reveal_quoted_message(
@@ -1819,6 +2049,8 @@ impl MainWindow {
                         this.message_overlay = None;
                         this.settings_overlay = None;
                         this.active_draft = wasabi_domain::Draft::default();
+                        this.editing_messages.clear();
+                        this.retrying_messages.clear();
                         this.typing.clear();
                         this.notification_seen.clear();
                         this.notification_seen_order.clear();
@@ -2646,6 +2878,29 @@ fn should_restore_composer(accepted: bool, text_only: bool, current: &str) -> bo
     !accepted && text_only && current.trim().is_empty()
 }
 
+fn submitted_edit_matches(
+    draft: Option<&wasabi_domain::Draft>,
+    target: &wasabi_domain::MessageId,
+    body: &str,
+) -> bool {
+    draft.is_some_and(|draft| {
+        draft.edit_target.as_ref() == Some(target) && draft.body.trim() == body
+    })
+}
+
+fn should_clear_visible_edit(
+    selected_chat: Option<&str>,
+    submitted_chat: &str,
+    active_target: Option<&wasabi_domain::MessageId>,
+    submitted_target: &wasabi_domain::MessageId,
+    current_body: &str,
+    submitted_body: &str,
+) -> bool {
+    selected_chat == Some(submitted_chat)
+        && active_target == Some(submitted_target)
+        && current_body.trim() == submitted_body
+}
+
 fn timeline_splice<T: PartialEq>(before: &[T], after: &[T]) -> (std::ops::Range<usize>, usize) {
     let prefix = before
         .iter()
@@ -2759,8 +3014,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        TYPING_REFRESH_AFTER, TypingDisplay, should_restore_composer, timeline_splice,
-        typing_refresh_due,
+        TYPING_REFRESH_AFTER, TypingDisplay, should_restore_composer, submitted_edit_matches,
+        should_clear_visible_edit, timeline_splice, typing_refresh_due,
     };
 
     #[test]
@@ -2807,5 +3062,52 @@ mod tests {
         assert!(!should_restore_composer(true, true, ""));
         assert!(!should_restore_composer(false, false, ""));
         assert!(!should_restore_composer(false, true, "new draft"));
+    }
+
+    #[test]
+    fn successful_edit_clears_only_the_exact_submitted_draft() {
+        let target = wasabi_domain::MessageId::new("message-a");
+        let exact = wasabi_domain::Draft {
+            body: " corrected ".to_string(),
+            edit_target: Some(target.clone()),
+            ..Default::default()
+        };
+        assert!(submitted_edit_matches(Some(&exact), &target, "corrected"));
+
+        let newer_text = wasabi_domain::Draft {
+            body: "newer correction".to_string(),
+            ..exact.clone()
+        };
+        assert!(!submitted_edit_matches(
+            Some(&newer_text),
+            &target,
+            "corrected"
+        ));
+        assert!(!submitted_edit_matches(
+            Some(&exact),
+            &wasabi_domain::MessageId::new("message-b"),
+            "corrected"
+        ));
+    }
+
+    #[test]
+    fn edit_completion_never_clears_an_identical_draft_after_chat_switch() {
+        let target = wasabi_domain::MessageId::new("message-a");
+        assert!(should_clear_visible_edit(
+            Some("chat-a"),
+            "chat-a",
+            Some(&target),
+            &target,
+            "corrected",
+            "corrected",
+        ));
+        assert!(!should_clear_visible_edit(
+            Some("chat-b"),
+            "chat-a",
+            Some(&target),
+            &target,
+            "corrected",
+            "corrected",
+        ));
     }
 }

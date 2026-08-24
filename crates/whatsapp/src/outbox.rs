@@ -462,10 +462,10 @@ pub async fn reconcile_stale_pending(
 #[cfg(test)]
 mod tests {
     use super::{OutboxError, validate_retry_candidate};
+    use whatsapp_rust::Jid;
     use whatsapp_rust::chrono::Utc;
     use whatsapp_rust::wacore::proto_helpers::MessageBuilderExt;
     use whatsapp_rust::waproto::whatsapp as wa;
-    use whatsapp_rust::Jid;
     use whatsapp_rust_chat_store::{MessageKind, MessageStatus, types::StoredMessage};
 
     fn retry_candidate(from_me: bool, status: MessageStatus, with_content: bool) -> StoredMessage {

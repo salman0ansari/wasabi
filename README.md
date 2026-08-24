@@ -44,6 +44,12 @@ an anchored history window first.
 
 ![Wasabi reply flow](docs/screenshots/reply-flow.png)
 
+Acknowledged outgoing text can be edited inside the protocol window. Edit
+mode is per-chat and restart-safe, refuses to overwrite another draft or
+attachment, and rolls the optimistic bubble back if synchronization fails.
+
+![Wasabi message editing](docs/screenshots/edit-message-flow.png)
+
 ### Attachments
 
 Selected files are copied into restart-safe Wasabi staging before upload. The composer shows the real filename, media class, and size without exposing local paths.
@@ -93,6 +99,7 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 - Retry failed outgoing messages from the bubble or message-action menu without creating a second message identity.
 - Restore composer text when a send fails before durable acceptance; committed failures remain represented by their retryable bubble.
 - Reply to text or media with restart-safe per-chat context, render received quotes, and navigate quoted cards to their original messages.
+- Edit acknowledged outgoing text inside the protocol window with a chat-bound, restart-safe composer and failure rollback.
 - Stage outgoing files durably, recover interrupted composer attachments after restart, cancel them safely, and stream encryption/upload without buffering entire files in memory.
 - Download received media on demand into a bounded, content-addressed, SHA-256-verified cache.
 - Copy and react to messages, or star/unstar them with optimistic rollback if synchronization fails.

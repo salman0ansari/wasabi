@@ -6,6 +6,11 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 
 ### Added
 
+- Acknowledged outgoing text messages can now be edited inside the protocol
+  window. The action captures its immutable chat/message identity, persists
+  edit mode in the per-chat draft, refuses to overwrite active composer work,
+  sends a real WhatsApp edit, materializes accepted content in place, and
+  rolls the optimistic bubble back while retaining retryable text on failure.
 - Message actions now start real WhatsApp-compatible replies for text and
   attachments. Reply targets persist in per-chat drafts, outgoing context is
   built from the exact durable original message, received quotes render as

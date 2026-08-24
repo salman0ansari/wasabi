@@ -4,8 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ChatKind, Draft};
 use crate::ids::{ChatId, LocalCursor, MediaId, MessageId};
+use crate::{ChatKind, Draft};
 
 /// One row of the virtualized chat list.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -75,6 +75,27 @@ pub struct MessageRow {
     pub edited_at_ms: Option<i64>,
     pub revoked: bool,
     pub starred: bool,
+}
+
+/// Conservative WhatsApp Web edit entry-point window. The server remains
+/// authoritative and may reject an edit sooner for account-specific policy.
+pub const MESSAGE_EDIT_WINDOW_MS: i64 = 20 * 60 * 1_000;
+
+impl MessageRow {
+    /// Whether the desktop product may offer text editing at `now_ms`.
+    /// Pending/failed rows use Retry instead; incoming, revoked, media, and
+    /// expired rows never expose an inert Edit command.
+    pub fn can_edit_text_at(&self, now_ms: i64) -> bool {
+        self.direction == MessageDirection::Outgoing
+            && matches!(self.kind, MessageKind::Text { .. })
+            && !self.revoked
+            && matches!(
+                self.status,
+                MessageStatus::ServerAck | MessageStatus::Delivered | MessageStatus::Read
+            )
+            && now_ms >= self.timestamp_ms
+            && now_ms.saturating_sub(self.timestamp_ms) <= MESSAGE_EDIT_WINDOW_MS
+    }
 }
 
 /// Display-safe reply context projected from a message's protocol context.
@@ -163,6 +184,52 @@ pub enum UnavailableMessageReason {
     HostedContent,
     /// A known bot fanout cannot be rendered by this client.
     BotContent,
+}
+
+#[cfg(test)]
+mod edit_tests {
+    use super::*;
+
+    fn row(timestamp_ms: i64) -> MessageRow {
+        MessageRow {
+            id: MessageId::new("message-a"),
+            chat: ChatId::new("chat-a@s.whatsapp.net"),
+            direction: MessageDirection::Outgoing,
+            sender: SenderJid {
+                bare: "me@s.whatsapp.net".to_string(),
+                push_name: None,
+            },
+            timestamp_ms,
+            seq: LocalCursor(1),
+            kind: MessageKind::Text {
+                body: "before".to_string(),
+            },
+            quoted: None,
+            status: MessageStatus::Delivered,
+            edited_at_ms: None,
+            revoked: false,
+            starred: false,
+        }
+    }
+
+    #[test]
+    fn acknowledged_outgoing_text_is_editable_only_inside_window() {
+        let now = 2_000_000;
+        assert!(row(now - MESSAGE_EDIT_WINDOW_MS).can_edit_text_at(now));
+        assert!(!row(now - MESSAGE_EDIT_WINDOW_MS - 1).can_edit_text_at(now));
+
+        let mut incoming = row(now);
+        incoming.direction = MessageDirection::Incoming;
+        assert!(!incoming.can_edit_text_at(now));
+
+        let mut pending = row(now);
+        pending.status = MessageStatus::Pending;
+        assert!(!pending.can_edit_text_at(now));
+
+        let mut media = row(now);
+        media.kind = MessageKind::Unknown;
+        assert!(!media.can_edit_text_at(now));
+    }
 }
 
 /// A keyset page of messages, ordered newest→oldest.

@@ -30,9 +30,9 @@ pub use media::{
     TransferJob, TransferPayload, TransferState,
 };
 pub use message::{
-    ChatSummary, MediaAvailability, MediaDescriptor, MessageContext, MessageDirection, MessageKind,
-    MessagePage, MessageRow, MessageStatus, PageCursor, QuotedMessage, SenderJid,
-    UnavailableMessageReason,
+    ChatSummary, MESSAGE_EDIT_WINDOW_MS, MediaAvailability, MediaDescriptor, MessageContext,
+    MessageDirection, MessageKind, MessagePage, MessageRow, MessageStatus, PageCursor,
+    QuotedMessage, SenderJid, UnavailableMessageReason,
 };
 pub use notification::NotificationCandidate;
 pub use page::{ChatPage, ChatPageCursor, ChatScope};

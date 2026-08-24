@@ -608,9 +608,7 @@ fn chat_kind(jid: &str) -> domain::ChatKind {
 mod projection_tests {
     use super::{chat_kind, map_kind_fields, map_quoted_message};
     use wasabi_domain::{ChatKind, MessageKind, UnavailableMessageReason};
-    use whatsapp_rust::wacore::proto_helpers::{
-        MessageBuilderExt, build_quote_context,
-    };
+    use whatsapp_rust::wacore::proto_helpers::{MessageBuilderExt, build_quote_context};
     use whatsapp_rust::waproto::whatsapp as wa;
 
     #[test]
@@ -649,19 +647,12 @@ mod projection_tests {
         let original = wa::Message::text(format!("first line\n{}", "界".repeat(200)));
         let reply = wa::Message::text_with_context(
             "reply",
-            build_quote_context(
-                "ORIGINAL-ID",
-                "15550000000@s.whatsapp.net",
-                &original,
-            ),
+            build_quote_context("ORIGINAL-ID", "15550000000@s.whatsapp.net", &original),
         );
         let quoted = map_quoted_message(&reply).expect("quoted projection");
 
         assert_eq!(quoted.id.as_str(), "ORIGINAL-ID");
-        assert_eq!(
-            quoted.sender.as_deref(),
-            Some("15550000000@s.whatsapp.net")
-        );
+        assert_eq!(quoted.sender.as_deref(), Some("15550000000@s.whatsapp.net"));
         assert!(!quoted.preview.contains('\n'));
         assert!(quoted.preview.ends_with('…'));
         assert!(quoted.preview.chars().count() <= 161);
@@ -782,7 +773,10 @@ fn map_quoted_message(message: &wa::Message) -> Option<domain::QuotedMessage> {
     );
     Some(domain::QuotedMessage {
         id: domain::MessageId::new(id),
-        sender: context.participant.clone().filter(|sender| !sender.is_empty()),
+        sender: context
+            .participant
+            .clone()
+            .filter(|sender| !sender.is_empty()),
         preview,
     })
 }

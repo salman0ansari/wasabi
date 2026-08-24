@@ -67,9 +67,28 @@ pub fn composer_bar(
                 )
             })
     });
-    let can_send = session_can_send && selected.is_some() && !staging && !sending;
+    let editing = this.active_draft.edit_target.as_ref().map(|message| {
+        this.messages
+            .rows
+            .iter()
+            .find(|row| &row.id == message)
+            .map(|row| compact_preview(&messages::body_text(row)))
+            .unwrap_or_else(|| "Original text is outside this history window".to_string())
+    });
+    let editing_in_flight = selected.as_ref().is_some_and(|chat| {
+        this.active_draft.edit_target.as_ref().is_some_and(|message| {
+            this.editing_messages
+                .contains(&(chat.clone(), message.as_str().to_string()))
+        })
+    });
+    let can_send =
+        session_can_send && selected.is_some() && !staging && !sending && !editing_in_flight;
     let send_label = if sending {
         "Sending…"
+    } else if editing_in_flight {
+        "Saving…"
+    } else if editing.is_some() && can_send {
+        "Save"
     } else if can_send {
         "Send"
     } else if !session_can_send {
@@ -79,7 +98,7 @@ pub fn composer_bar(
     };
 
     let attach = {
-        let enabled = can_send && attachment.is_none();
+        let enabled = can_send && attachment.is_none() && editing.is_none();
         let mut button = Button::new("attach-button")
             .icon(IconName::File)
             .ghost()
@@ -133,6 +152,9 @@ pub fn composer_bar(
     if let Some((sender, preview)) = reply {
         bar = bar.child(reply_preview(sender, preview, cx));
     }
+    if let Some(preview) = editing {
+        bar = bar.child(edit_preview(preview, cx));
+    }
 
     if staging {
         bar = bar.child(attachment_preview(
@@ -179,6 +201,56 @@ pub fn composer_bar(
         );
     }
     bar
+}
+
+fn edit_preview(preview: String, cx: &mut Context<MainWindow>) -> gpui::Div {
+    gpui::div()
+        .min_h(px(48.0))
+        .rounded(px(theme::RADIUS_MD))
+        .border_l_2()
+        .border_color(theme::accent())
+        .bg(theme::chip_idle())
+        .px(px(10.0))
+        .py(px(6.0))
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .child(
+            gpui::div()
+                .flex_1()
+                .min_w(px(0.0))
+                .flex()
+                .flex_col()
+                .child(
+                    gpui::div()
+                        .text_size(px(theme::TEXT_SIZE_SM))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme::accent_text())
+                        .child("Edit message"),
+                )
+                .child(
+                    gpui::div()
+                        .whitespace_nowrap()
+                        .overflow_hidden()
+                        .text_size(px(theme::TEXT_SIZE_SM))
+                        .text_color(theme::text_secondary())
+                        .child(preview),
+                ),
+        )
+        .child(
+            gpui::div()
+                .id("cancel-edit")
+                .cursor_pointer()
+                .rounded_full()
+                .px(px(7.0))
+                .py(px(3.0))
+                .text_color(theme::text_secondary())
+                .hover(|style| style.bg(theme::surface()).text_color(theme::text_primary()))
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.cancel_edit(window, cx)
+                }))
+                .child("×"),
+        )
 }
 
 fn reply_preview(

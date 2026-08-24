@@ -1128,6 +1128,86 @@ impl CoreBridge {
                             ServiceError::new(ErrorKind::Protocol, error.to_string())
                         })?;
                 }
+                MessageAction::Edit { target, body } => {
+                    if !target.from_me {
+                        return Err(ServiceError::new(
+                            ErrorKind::InvalidRequest,
+                            "only your own messages can be edited",
+                        ));
+                    }
+                    let body = body.trim().to_string();
+                    if body.is_empty() || body.chars().count() > 65_536 {
+                        return Err(ServiceError::new(
+                            ErrorKind::InvalidRequest,
+                            "edited text must contain 1 to 65536 characters",
+                        ));
+                    }
+                    let stored = session
+                        .chats
+                        .message(&chat, target.message.as_str())
+                        .await
+                        .map_err(|error| {
+                            ServiceError::new(ErrorKind::Database, error.to_string())
+                        })?
+                        .ok_or_else(|| {
+                            ServiceError::new(
+                                ErrorKind::InvalidRequest,
+                                "message no longer exists",
+                            )
+                        })?;
+                    if !stored.from_me
+                        || stored.revoked
+                        || !matches!(
+                            stored.kind,
+                            whatsapp_rust_chat_store::MessageKind::Text
+                        )
+                    {
+                        return Err(ServiceError::new(
+                            ErrorKind::InvalidRequest,
+                            "message is not editable text",
+                        ));
+                    }
+                    let now = whatsapp_rust::chrono::Utc::now();
+                    if now.timestamp_millis() < stored.timestamp.timestamp_millis()
+                        || now
+                            .timestamp_millis()
+                            .saturating_sub(stored.timestamp.timestamp_millis())
+                            > wasabi_domain::MESSAGE_EDIT_WINDOW_MS
+                    {
+                        return Err(ServiceError::new(
+                            ErrorKind::InvalidRequest,
+                            "message edit window has expired",
+                        ));
+                    }
+                    let new_content =
+                        whatsapp_rust::waproto::whatsapp::Message::text(body);
+                    client
+                        .edit_message(
+                            chat.clone(),
+                            target.message.as_str(),
+                            new_content.clone(),
+                        )
+                        .await
+                        .map_err(map_protocol_send_error)?;
+                    // Materialize only after the protocol accepts the edit.
+                    // If this local write fails, the server echo/history sync
+                    // can still converge the cache without showing an edit
+                    // that never reached other devices.
+                    session
+                        .chats
+                        .record_edit(
+                            &chat,
+                            target.message.as_str(),
+                            &new_content,
+                            now,
+                        )
+                        .map_err(|error| {
+                            ServiceError::new(ErrorKind::Database, error.to_string())
+                        })?;
+                    session.chats.flush().await.map_err(|error| {
+                        ServiceError::new(ErrorKind::Database, error.to_string())
+                    })?;
+                }
                 MessageAction::DeleteForMe {
                     target,
                     delete_media,
@@ -1293,6 +1373,21 @@ fn map_outbox_error_ref(error: &wasabi_whatsapp::outbox::OutboxError) -> Service
         OutboxError::Send { .. } => ErrorKind::Protocol,
         OutboxError::InvalidRequest(_) => ErrorKind::InvalidRequest,
         _ => ErrorKind::Internal,
+    };
+    ServiceError::new(kind, error.to_string())
+}
+
+fn map_protocol_send_error(error: whatsapp_rust::SendError) -> ServiceError {
+    use whatsapp_rust::client::ClientError;
+    use whatsapp_rust::SendError;
+
+    let kind = match &error {
+        SendError::NotLoggedIn => ErrorKind::NotPaired,
+        SendError::Client(ClientError::NotConnected | ClientError::Socket(_)) => {
+            ErrorKind::NotConnected
+        }
+        SendError::InvalidRequest(_) => ErrorKind::InvalidRequest,
+        _ => ErrorKind::Protocol,
     };
     ServiceError::new(kind, error.to_string())
 }

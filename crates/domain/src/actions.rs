@@ -40,6 +40,10 @@ pub enum MessageAction {
         target: MessageActionTarget,
         emoji: String,
     },
+    Edit {
+        target: MessageActionTarget,
+        body: String,
+    },
     DeleteForMe {
         target: MessageActionTarget,
         delete_media: bool,
@@ -74,6 +78,7 @@ impl MessageAction {
             Self::Retry { target }
             | Self::Star { target, .. }
             | Self::React { target, .. }
+            | Self::Edit { target, .. }
             | Self::DeleteForMe { target, .. }
             | Self::RevokeForEveryone { target } => target,
         }
@@ -138,5 +143,25 @@ mod tests {
 
         assert_eq!(action.target().chat.as_str(), "chat-a@s.whatsapp.net");
         assert_eq!(action.target().message.as_str(), "failed-message");
+    }
+
+    #[test]
+    fn edit_captures_body_and_original_destination() {
+        let action = MessageAction::Edit {
+            target: MessageActionTarget {
+                chat: ChatId::new("chat-a@s.whatsapp.net"),
+                message: MessageId::new("message-a"),
+                sender: "me@s.whatsapp.net".to_string(),
+                from_me: true,
+                timestamp_ms: 42,
+            },
+            body: "corrected text".to_string(),
+        };
+
+        assert_eq!(action.target().chat.as_str(), "chat-a@s.whatsapp.net");
+        assert!(matches!(
+            action,
+            MessageAction::Edit { body, .. } if body == "corrected text"
+        ));
     }
 }

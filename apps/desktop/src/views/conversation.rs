@@ -335,14 +335,15 @@ fn bubble(
     let sender_label = messages::sender_display(&row);
     let sender_color = theme::sender_color(&sender_label);
 
+    let edited = row.edited_at_ms.is_some().then_some("edited · ").unwrap_or("");
     let meta_ticks = if outgoing {
         format!(
-            "{} {}",
+            "{edited}{} {}",
             messages::relative_time(row.timestamp_ms),
             messages::status_glyph(row.status)
         )
     } else {
-        messages::relative_time(row.timestamp_ms)
+        format!("{edited}{}", messages::relative_time(row.timestamp_ms))
     };
 
     let mut content = gpui::div().min_w(px(0.0)).flex().flex_col().gap(px(2.0));
@@ -818,6 +819,9 @@ fn message_action_sheet(
         .then(|| row.id.clone());
     let reply = (!row.revoked && !matches!(row.kind, wasabi_domain::MessageKind::System { .. }))
         .then(|| row.id.clone());
+    let edit = row
+        .can_edit_text_at(chrono::Utc::now().timestamp_millis())
+        .then(|| row.id.clone());
 
     action_card()
         .child(
@@ -876,6 +880,15 @@ fn message_action_sheet(
                 sheet_button("reply-to-message", "Reply", false).on_click(cx.listener(
                     move |this, _, window, cx| {
                         this.begin_reply(message.clone(), window, cx)
+                    },
+                )),
+            )
+        })
+        .when_some(edit, |card, message| {
+            card.child(
+                sheet_button("edit-message", "Edit", false).on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        this.begin_edit(message.clone(), window, cx)
                     },
                 )),
             )
