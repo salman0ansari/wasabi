@@ -11,7 +11,7 @@ wasabi-domain = { path = "../../crates/domain" }
 wasabi-core = { path = "../../crates/core" }
 wasabi-repository = { path = "../../crates/repository" }
 wasabi-whatsapp = { path = "../../crates/whatsapp" }
-whatsapp-rust = { path = "../../third_party/whatsapp-rust", default-features = false, features = [
+whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust.git", rev = "1489b7da9a6a7e3cadc4337ee46399da7de25915", default-features = false, features = [
     "sqlite-storage",
     "tokio-transport",
     "tokio-runtime",

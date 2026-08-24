@@ -2,16 +2,15 @@
 //! `InboundDurabilityHook`.
 //!
 //! The hook runs inside the receive pipeline; awaiting our commit here is the
-//! backpressure that makes "persist before ACK" true. The commit path is
-//! `ChatStore::apply_inbound` — a direct transaction reusing the store's own
-//! idempotent appliers — NOT the write-behind queue.
+//! backpressure that makes "persist before ACK" true. The commit path feeds
+//! the store's public event handler and waits for its flush barrier.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use whatsapp_rust::InboundDurabilityHook;
 use whatsapp_rust::client::Client;
-use whatsapp_rust::types::events::InboundMessage;
+use whatsapp_rust::types::events::{BatchOrigin, Event, InboundMessage, MessageBatch};
 use whatsapp_rust_chat_store::ChatStore;
 
 /// Commits every decrypted inbound batch to the chat store before the
@@ -38,7 +37,14 @@ impl InboundDurabilityHook for RepositoryDurabilityHook {
         // Batch copy: live batches are size 1; drain batches are bounded by
         // the library's MessageProcessorCache granularity. Correctness over
         // micro-allocation here — this path gates delivery.
-        self.chats.apply_inbound(batch.to_vec()).await?;
+        let event = Event::Messages(
+            MessageBatch::builder()
+                .messages(Arc::from(batch.to_vec()))
+                .origin(BatchOrigin::Live)
+                .build(),
+        );
+        self.chats.handler().handle_event(Arc::new(event));
+        self.chats.flush().await?;
         Ok(())
     }
 }

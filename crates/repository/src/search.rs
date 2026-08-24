@@ -345,7 +345,7 @@ mod tests {
         let err = map_store_error(ChatStoreError::InvalidSearchQuery);
         assert_eq!(err.kind, domain::ErrorKind::InvalidRequest);
 
-        let err = map_store_error(ChatStoreError::IngressFull);
+        let err = map_store_error(ChatStoreError::WriteBatchFailed("writer failed".into()));
         assert_eq!(err.kind, domain::ErrorKind::Database);
     }
 

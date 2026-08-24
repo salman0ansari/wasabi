@@ -60,6 +60,10 @@ impl AccountSession {
     ) -> Result<Arc<Self>, wasabi_repository::OpenError> {
         let store = AccountStore::open(&db_path, tuning).await?;
         let chats = Arc::clone(store.chats());
+        // The durability hook feeds this same store before the client emits
+        // its hook-committed event. Skip that follow-up event so each inbound
+        // batch is materialized exactly once.
+        chats.skip_hook_committed_batches(true);
         let (state_tx, _) = watch::channel(SessionState::Stopped);
         let (qr_tx, _) = watch::channel(None);
         Ok(Arc::new(Self {

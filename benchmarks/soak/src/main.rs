@@ -15,20 +15,21 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
 use tracing::{info, warn};
 use wacore::proto_helpers::MessageBuilderExt;
-use wacore::types::events::InboundMessage;
+use wacore::types::events::{BatchOrigin, Event, InboundMessage, MessageBatch};
 use wacore::types::message::{MessageInfo, MessageSource};
 use waproto::whatsapp as wa;
 use wasabi_core::{CoreSupervisor, SupervisorConfig};
 use wasabi_repository::{AccountStore, StoreTuning};
 use whatsapp_rust::Jid;
+use whatsapp_rust_chat_store::ChatStore;
 
 const PEER_JID: &str = "559900000001@s.whatsapp.net";
 
@@ -36,8 +37,8 @@ const SAMPLE_PERIOD: Duration = Duration::from_secs(10);
 const FLUSH_PERIOD: Duration = Duration::from_millis(250);
 const INBOUND_PERIOD: Duration = Duration::from_secs(1);
 const INBOUND_BATCH: usize = 5;
-/// Bounded worker set draining the feed queue; the queue bound plus the
-/// store's own ingress backpressure keeps in-flight work capped under stalls.
+/// Bounded worker set draining the feed queue; the queue bound keeps in-flight
+/// work capped under stalls.
 const WORKERS: usize = 4;
 const QUEUE_CAPACITY: usize = 256;
 /// Latency ring sized to hold one full sample window of flush timings.
@@ -133,8 +134,6 @@ struct Sample {
     rss_kib: Option<u64>,
     threads: Option<u64>,
     fds: u64,
-    ingress_depth: usize,
-    ingress_dropped: u64,
     flush_p50_us: f64,
     flush_p95_us: f64,
 }
@@ -176,6 +175,15 @@ fn flag_fatal(tx: &tokio::sync::watch::Sender<bool>) {
     tx.send_modify(|v| *v = true);
 }
 
+fn enqueue_inbound(chats: &ChatStore, batch: Vec<InboundMessage>) {
+    chats.handler().handle_event(Arc::new(Event::Messages(
+        MessageBatch::builder()
+            .messages(Arc::from(batch))
+            .origin(BatchOrigin::Live)
+            .build(),
+    )));
+}
+
 /// Owns the store and every spawned task until graceful teardown completes.
 async fn drive(sup: &CoreSupervisor, db_path: &Path, cfg: Config) -> Result<Vec<Sample>> {
     let peer: Jid = PEER_JID.parse().context("fixture JID")?;
@@ -201,8 +209,9 @@ async fn drive(sup: &CoreSupervisor, db_path: &Path, cfg: Config) -> Result<Vec<
     // Producer: paces the synthetic outgoing load into the bounded queue.
     let producer = {
         let token = token.clone();
-        let mut tx = feed_tx.clone();
+        let tx = feed_tx.clone();
         let sent = Arc::clone(&sent);
+        let task_token = token.clone();
         sup.spawn_owned(&token, "soak-producer", async move {
             let mut ticker =
                 tokio::time::interval(Duration::from_secs_f64(1.0 / cfg.rate_msgs_per_sec));
@@ -219,7 +228,7 @@ async fn drive(sup: &CoreSupervisor, db_path: &Path, cfg: Config) -> Result<Vec<
                         }
                         sent.fetch_add(1, Ordering::Relaxed);
                     }
-                    _ = token.cancelled() => break,
+                    _ = task_token.cancelled() => break,
                 }
             }
         })
@@ -235,12 +244,13 @@ async fn drive(sup: &CoreSupervisor, db_path: &Path, cfg: Config) -> Result<Vec<
         let queue = Arc::clone(&queue);
         let fatal = fatal_tx.clone();
         let peer = peer.clone();
+        let task_token = token.clone();
         handles.push(sup.spawn_owned(&token, "soak-worker", async move {
             loop {
                 let next = {
                     let mut q = queue.lock().await;
                     tokio::select! {
-                        _ = token.cancelled() => None,
+                        _ = task_token.cancelled() => None,
                         msg = q.recv() => msg,
                     }
                 };
@@ -248,15 +258,12 @@ async fn drive(sup: &CoreSupervisor, db_path: &Path, cfg: Config) -> Result<Vec<
                     Some(n) => n,
                     None => break,
                 };
-                if let Err(e) = chats
-                    .record_outgoing_async(
-                        &peer,
-                        format!("soak-out-w{w}-{n}"),
-                        &wa::Message::text(format!("soak outgoing {n}")),
-                        Utc::now(),
-                    )
-                    .await
-                {
+                if let Err(e) = chats.record_outgoing(
+                    &peer,
+                    format!("soak-out-w{w}-{n}"),
+                    &wa::Message::text(format!("soak outgoing {n}")),
+                    Utc::now(),
+                ) {
                     warn!(error = %e, worker = w, "outgoing record failed; ending soak load");
                     flag_fatal(&fatal);
                     break;
@@ -270,9 +277,9 @@ async fn drive(sup: &CoreSupervisor, db_path: &Path, cfg: Config) -> Result<Vec<
     handles.push({
         let token = token.clone();
         let chats = Arc::clone(&chats);
-        let fatal = fatal_tx.clone();
         let seq = Arc::clone(&inbound_applied);
         let peer = peer.clone();
+        let task_token = token.clone();
         sup.spawn_owned(&token, "soak-inbound", async move {
             let mut ticker = tokio::time::interval(INBOUND_PERIOD);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -303,13 +310,9 @@ async fn drive(sup: &CoreSupervisor, db_path: &Path, cfg: Config) -> Result<Vec<
                                     .build()
                             })
                             .collect();
-                        if let Err(e) = chats.apply_inbound(batch).await {
-                            warn!(error = %e, "inbound batch apply failed; ending soak load");
-                            flag_fatal(&fatal);
-                            break;
-                        }
+                        enqueue_inbound(&chats, batch);
                     }
-                    _ = token.cancelled() => break,
+                    _ = task_token.cancelled() => break,
                 }
             }
         })
@@ -321,6 +324,7 @@ async fn drive(sup: &CoreSupervisor, db_path: &Path, cfg: Config) -> Result<Vec<
         let store = Arc::clone(&store);
         let ring = Arc::clone(&flush_lat_us);
         let fatal = fatal_tx.clone();
+        let task_token = token.clone();
         sup.spawn_owned(&token, "soak-flusher", async move {
             let mut ticker = tokio::time::interval(FLUSH_PERIOD);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -343,7 +347,7 @@ async fn drive(sup: &CoreSupervisor, db_path: &Path, cfg: Config) -> Result<Vec<
                             Err(_) => break,
                         }
                     }
-                    _ = token.cancelled() => break,
+                    _ = task_token.cancelled() => break,
                 }
             }
         })
@@ -358,12 +362,12 @@ async fn drive(sup: &CoreSupervisor, db_path: &Path, cfg: Config) -> Result<Vec<
         WORKERS,
         QUEUE_CAPACITY,
     );
-    println!("ts_s,rss_kib,threads,fds,ingress_depth,ingress_dropped,flush_p50_us,flush_p95_us");
+    println!("ts_s,rss_kib,threads,fds,flush_p50_us,flush_p95_us");
 
     let start = Instant::now();
     let mut samples: Vec<Sample> = Vec::new();
 
-    let mut sample = |t: f64, samples: &mut Vec<Sample>| {
+    let sample = |t: f64, samples: &mut Vec<Sample>| {
         let latencies: Vec<f64> = match flush_lat_us.lock() {
             Ok(mut ring) => ring.drain(..).collect(),
             Err(_) => Vec::new(),
@@ -375,19 +379,15 @@ async fn drive(sup: &CoreSupervisor, db_path: &Path, cfg: Config) -> Result<Vec<
             rss_kib: proc_status_field("VmRSS"),
             threads: proc_status_field("Threads"),
             fds: fd_count(),
-            ingress_depth: chats.ingress_depth(),
-            ingress_dropped: chats.ingress_dropped(),
             flush_p50_us: percentile(&sorted, 50.0),
             flush_p95_us: percentile(&sorted, 95.0),
         };
         println!(
-            "{:.1},{},{},{},{},{},{:.0},{:.0}",
+            "{:.1},{},{},{},{:.0},{:.0}",
             s.t_secs,
             s.rss_kib.map(|v| v.to_string()).unwrap_or_default(),
             s.threads.map(|v| v.to_string()).unwrap_or_default(),
             s.fds,
-            s.ingress_depth,
-            s.ingress_dropped,
             s.flush_p50_us,
             s.flush_p95_us,
         );
@@ -487,7 +487,9 @@ fn quarter_means(ys: &[f64]) -> Option<(f64, f64)> {
 
 /// Final trend verdict: no monotonic growth beyond noise, else nonzero exit.
 fn verdict(samples: &[Sample]) -> ExitCode {
-    let probes_ok = samples.iter().all(|s| s.rss_kib.is_some() && s.threads.is_some());
+    let probes_ok = samples
+        .iter()
+        .all(|s| s.rss_kib.is_some() && s.threads.is_some());
     if !probes_ok {
         println!("summary: resource probes unavailable on this platform; leak verdict skipped");
         return ExitCode::SUCCESS;
@@ -502,14 +504,18 @@ fn verdict(samples: &[Sample]) -> ExitCode {
     }
 
     let ts: Vec<f64> = samples.iter().map(|s| s.t_secs).collect();
-    let rss: Vec<f64> = samples.iter().map(|s| s.rss_kib.unwrap_or(0) as f64).collect();
-    let thr: Vec<f64> = samples.iter().map(|s| s.threads.unwrap_or(0) as f64).collect();
+    let rss: Vec<f64> = samples
+        .iter()
+        .map(|s| s.rss_kib.unwrap_or(0) as f64)
+        .collect();
+    let thr: Vec<f64> = samples
+        .iter()
+        .map(|s| s.threads.unwrap_or(0) as f64)
+        .collect();
     let max_flush_p95 = samples
         .iter()
         .map(|s| s.flush_p95_us)
         .fold(0.0_f64, f64::max);
-    let max_ingress_depth = samples.iter().map(|s| s.ingress_depth).max().unwrap_or(0);
-
     let rss_slope = slope_per_min(&ts, &rss).unwrap_or(0.0);
     let thr_slope = slope_per_min(&ts, &thr).unwrap_or(0.0);
     let (q1, q4) = quarter_means(&rss).unwrap_or((0.0, 0.0));
@@ -518,7 +524,7 @@ fn verdict(samples: &[Sample]) -> ExitCode {
 
     println!("== soak summary ==");
     println!(
-        "windows={} span={:.1}min max_ingress_depth={max_ingress_depth} max_flush_p95_us={max_flush_p95:.0}",
+        "windows={} span={:.1}min max_flush_p95_us={max_flush_p95:.0}",
         samples.len(),
         samples.last().map(|s| s.t_secs).unwrap_or(0.0) / 60.0,
     );
@@ -529,10 +535,7 @@ fn verdict(samples: &[Sample]) -> ExitCode {
 
     let leaks = [
         ("rss slope", rss_slope > RSS_LEAK_KIB_PER_MIN),
-        (
-            "rss quarter-step",
-            step > step_allowance,
-        ),
+        ("rss quarter-step", step > step_allowance),
         ("thread slope", thr_slope > THREAD_LEAK_PER_MIN),
     ];
     let triggered: Vec<&str> = leaks

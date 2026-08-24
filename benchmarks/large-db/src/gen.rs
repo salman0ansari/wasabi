@@ -1,11 +1,9 @@
 //! Deterministic charter-grade dataset generator for the account store.
 //!
-//! Streams the fixture through the store's real write APIs —
-//! [`whatsapp_rust_chat_store::ChatStore::apply_inbound`] for incoming
-//! traffic (one committed transaction per 500-row batch) and
-//! `record_outgoing_async` for the outgoing slice — so at most one batch of
-//! fixtures is ever resident; the million-row dataset exists only inside
-//! SQLite.
+//! Streams the fixture through the store's real write APIs. Incoming traffic
+//! uses the same event-handler path as the client, while outgoing traffic uses
+//! the public record API; at most one batch of fixtures is ever resident and
+//! the million-row dataset exists only inside SQLite.
 //!
 //! Throughput expectation (order-of-magnitude, not a guarantee): with the
 //! production tuning (`synchronous=FULL`) every inbound batch pays one fsync,
@@ -19,20 +17,21 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use wacore::proto_helpers::MessageBuilderExt;
-use wacore::types::events::InboundMessage;
+use wacore::types::events::{BatchOrigin, Event, InboundMessage, MessageBatch};
 use wacore::types::message::{MessageInfo, MessageSource};
 use wacore_binary::Jid;
 use waproto::buffa::MessageField;
 use waproto::whatsapp as wa;
 use wasabi_repository::AccountStore;
+use whatsapp_rust_chat_store::ChatStore;
 
 /// Charter-grade scale: 10_000 chats averaging ~100 messages each.
 pub const CHATS: u64 = 10_000;
 /// Every 7th chat is a group whose senders cycle a fixed participant pool.
 const GROUP_EVERY: u64 = 7;
 const GROUP_PARTICIPANTS: u64 = 20;
-/// apply_inbound commits one transaction per call; 500 rows amortizes the
-/// fsync while staying far below SQLite's per-statement limits.
+/// 500 rows amortizes the flush barrier while staying far below SQLite's
+/// per-statement limits.
 const INBOUND_BATCH: usize = 500;
 const PROGRESS_EVERY: u64 = 50_000;
 
@@ -177,6 +176,15 @@ fn inbound_fixture(
         .build()
 }
 
+fn enqueue_inbound(chats: &ChatStore, batch: Vec<InboundMessage>) {
+    chats.handler().handle_event(Arc::new(Event::Messages(
+        MessageBatch::builder()
+            .messages(Arc::from(batch))
+            .origin(BatchOrigin::OfflineDrain)
+            .build(),
+    )));
+}
+
 /// Generate `total_rows` messages across [`CHATS`] chats into `store`'s
 /// database. Timestamps ascend globally (three-year span), so every chat's
 /// history orders naturally and later chats are newer.
@@ -211,10 +219,8 @@ pub async fn generate(store: &AccountStore, total_rows: u64) -> anyhow::Result<G
                 chat.clone()
             };
             match kind_for(rng.next()) {
-                Kind::Outgoing => {
-                    chats
-                        .record_outgoing_async(&chat, id, &wa::Message::text(body(ordinal)), ts)
-                        .await?;
+                Kind::OutgoingText => {
+                    chats.record_outgoing(&chat, id, &wa::Message::text(body(ordinal)), ts)?;
                 }
                 kind => {
                     let msg = match kind {
@@ -226,24 +232,20 @@ pub async fn generate(store: &AccountStore, total_rows: u64) -> anyhow::Result<G
                     } else {
                         String::new()
                     };
-                    batch.push(inbound_fixture(
-                        &chat, &sender, group, &id, ts, &push, msg,
-                    ));
+                    batch.push(inbound_fixture(&chat, &sender, group, &id, ts, &push, msg));
                     if batch.len() >= INBOUND_BATCH {
                         // Swap in a fresh capacity-carrying buffer so the
                         // committed one moves out without realloc churn.
-                        let full = std::mem::replace(
-                            &mut batch,
-                            Vec::with_capacity(INBOUND_BATCH),
-                        );
-                        chats.apply_inbound(full).await?;
+                        let full = std::mem::replace(&mut batch, Vec::with_capacity(INBOUND_BATCH));
+                        enqueue_inbound(&chats, full);
+                        store.flush().await?;
                     }
                 }
             }
             ordinal += 1;
             if ordinal % PROGRESS_EVERY == 0 {
-                // Periodic drain keeps the bounded writer queue shallow over
-                // long runs instead of relying purely on backpressure.
+                // Periodic barriers keep the write-behind queue shallow over
+                // long runs.
                 store.flush().await?;
                 let elapsed = started.elapsed().as_secs_f64();
                 tracing::info!(
@@ -256,7 +258,7 @@ pub async fn generate(store: &AccountStore, total_rows: u64) -> anyhow::Result<G
         }
     }
     if !batch.is_empty() {
-        chats.apply_inbound(batch).await?;
+        enqueue_inbound(&chats, batch);
     }
     // Drain the write-behind queue so every outgoing row is on disk before
     // the report prints.

@@ -11,15 +11,13 @@ license = "MIT"
 publish = false
 
 [dependencies]
-wasabi-core = { path = "../../../crates/core" }
-wasabi-repository = { path = "../../../crates/repository" }
+wasabi-core = { path = "../../crates/core" }
+wasabi-repository = { path = "../../crates/repository" }
 
-# Vendored upstream pins, mirroring the root workspace's relative-path style
-# and feature selections; never float these independently.
-wacore = { path = "../../../third_party/whatsapp-rust/wacore" }
-waproto = { path = "../../../third_party/whatsapp-rust/waproto" }
-whatsapp-rust = { path = "../../../third_party/whatsapp-rust", default-features = false }
-whatsapp-rust-chat-store = { path = "../../../third_party/whatsapp-rust/storages/chat-store", features = ["search"] }
+wacore = { git = "https://github.com/oxidezap/whatsapp-rust.git", rev = "1489b7da9a6a7e3cadc4337ee46399da7de25915", default-features = false }
+waproto = { git = "https://github.com/oxidezap/whatsapp-rust.git", rev = "1489b7da9a6a7e3cadc4337ee46399da7de25915" }
+whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust.git", rev = "1489b7da9a6a7e3cadc4337ee46399da7de25915", default-features = false }
+whatsapp-rust-chat-store = { git = "https://github.com/oxidezap/whatsapp-rust.git", rev = "1489b7da9a6a7e3cadc4337ee46399da7de25915", features = ["search"] }
 
 # Version pins mirror the root workspace table.
 anyhow = "1.0"

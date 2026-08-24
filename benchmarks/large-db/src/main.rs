@@ -7,7 +7,7 @@
 //! (default 1000000), GEN_DB=<path to sqlite file, required>. Run in release
 //! mode; generation is fsync-bound, benches are latency-bound.
 
-mod gen;
+mod r#gen;
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -31,7 +31,11 @@ struct OpStat {
     p95_ns: u128,
 }
 
-async fn bench_op<T, F, Fut>(key: &'static str, label: &'static str, mut op: F) -> anyhow::Result<OpStat>
+async fn bench_op<T, F, Fut>(
+    key: &'static str,
+    label: &'static str,
+    mut op: F,
+) -> anyhow::Result<OpStat>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, domain::ServiceError>>,
@@ -126,12 +130,15 @@ async fn run_gen(db: &Path, rows: u64) -> anyhow::Result<()> {
     // Refuse to pile duplicate fixtures onto an existing dataset; regenerating
     // means deleting the file first.
     if db.metadata().map(|m| m.len()).unwrap_or(0) > 0 {
-        bail!("{} already exists; remove it before generating", db.display());
+        bail!(
+            "{} already exists; remove it before generating",
+            db.display()
+        );
     }
     let store = AccountStore::open(db, &StoreTuning::default())
         .await
         .context("open account store for generation")?;
-    let report = gen::generate(&store, rows).await?;
+    let report = r#gen::generate(&store, rows).await?;
     tracing::info!(
         rows = report.rows,
         elapsed_s = report.elapsed.as_secs_f64(),
@@ -147,7 +154,10 @@ async fn run_bench(db: &Path) -> anyhow::Result<()> {
         .context("open account store for benching")?;
 
     // Cursor discovery happens once, untimed.
-    let first_page = store.chat_page(false, None, CHAT_PAGE).await.context("chat page 0")?;
+    let first_page = store
+        .chat_page(false, None, CHAT_PAGE)
+        .await
+        .context("chat page 0")?;
     let newest = first_page
         .iter()
         .max_by_key(|c| c.last_activity_ms)
@@ -185,7 +195,7 @@ async fn run_bench(db: &Path) -> anyhow::Result<()> {
         })
         .await?,
         bench_op("search", "search(common term, page 0)", || {
-            search.search(gen::SEARCH_TERM, None, 0)
+            search.search(r#gen::SEARCH_TERM, None, 0)
         })
         .await?,
     ];
@@ -206,11 +216,7 @@ async fn run_bench(db: &Path) -> anyhow::Result<()> {
 
     // File footprint: bytes on disk plus the PRAGMA view of the same thing.
     let db_bytes = std::fs::metadata(db).map(|m| m.len()).unwrap_or(0);
-    println!(
-        "{:<30}{:>12}",
-        "db size",
-        humansize_bytes(db_bytes)
-    );
+    println!("{:<30}{:>12}", "db size", humansize_bytes(db_bytes));
 
     let shared = store.shared_db();
     // Pragmas are best-effort: their absence must not sink a bench run.

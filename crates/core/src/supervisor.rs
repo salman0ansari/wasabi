@@ -49,7 +49,7 @@ struct Inner {
     active_tasks: AtomicU64,
 }
 
-/// The single execution-domain owner. See module docs.
+/// The single execution-domain owner for runtime tasks and shutdown.
 pub struct CoreSupervisor {
     runtime: Option<CoreRuntime>,
     config: SupervisorConfig,

@@ -169,13 +169,12 @@ fn open_close_account_store_x100_no_fd_growth() {
             let chats = store.chats().clone();
             let peer: whatsapp_rust::Jid = PEER.parse().expect("valid test JID");
             chats
-                .record_outgoing_async(
+                .record_outgoing(
                     &peer,
                     &format!("FD{i}"),
                     &wa::Message::text("soak"),
                     chrono::Utc::now(),
                 )
-                .await
                 .expect("record outgoing");
             store.flush().await.expect("flush barrier");
             drop(chats);

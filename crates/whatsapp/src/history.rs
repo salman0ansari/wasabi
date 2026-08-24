@@ -46,11 +46,6 @@ pub enum HistoryError {
     #[error("payload declares {declared} decompressed bytes, over the {limit} ceiling")]
     Oversized { declared: u64, limit: u64 },
 
-    /// The bounded writer queue refused the chunk, so nothing was
-    /// materialized by this call; reporting success would be a lie.
-    #[error("chat store writer queue refused the history chunk")]
-    IngressFull,
-
     #[error("history sync payload unreadable: {0}")]
     Decode(#[from] HistorySyncError),
 
@@ -201,13 +196,9 @@ pub async fn import_lazy_history(
         // Exactly the delivery shape of a live client: one canonical event,
         // refcount-cheap, applied by the store's writer inside its own
         // transactional batch. Content never touches this module's logs.
-        let dropped_before = chats.ingress_dropped();
         chats
             .handler()
             .handle_event(Arc::new(Event::HistorySync(Box::new(lazy))));
-        if chats.ingress_dropped() != dropped_before {
-            return Err(HistoryError::IngressFull);
-        }
 
         // Commit barrier: until this returns Ok the chunk may still roll back,
         // so success must not be reported before it lands. Awaited even when

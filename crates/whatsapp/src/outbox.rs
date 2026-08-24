@@ -17,6 +17,7 @@ use tracing::{debug, info, warn};
 
 use whatsapp_rust::chrono::{DateTime, Duration, Utc};
 use whatsapp_rust::client::Client;
+use whatsapp_rust::types::events::{Event, ServerAck};
 use whatsapp_rust::wacore::proto_helpers::MessageBuilderExt;
 use whatsapp_rust::waproto::whatsapp as wa;
 use whatsapp_rust::{Jid, SendError, SendOptions};
@@ -160,9 +161,7 @@ impl Outbox {
 
         // Backpressuring enqueue: under a stalled writer this awaits instead
         // of refusing, because losing the enqueue loses the message.
-        self.chats
-            .record_outgoing_async(&to, &id, &message, Utc::now())
-            .await?;
+        self.chats.record_outgoing(&to, &id, &message, Utc::now())?;
 
         // COMMIT BARRIER. Until this returns Ok the batch may still roll
         // back, so publishing first could put a message on the wire with no
@@ -198,7 +197,7 @@ impl Outbox {
                 );
                 // Only lifts a still-Pending row to ERROR; a late ack racing
                 // this call wins, which is the correct outcome.
-                if let Err(mark_err) = self.chats.mark_send_failed(&to, &id).await {
+                if let Err(mark_err) = record_send_failure(&self.chats, &to, &id).await {
                     warn!(id = %id, error = %mark_err, "outbox: marking send-failed failed");
                 }
                 Err(OutboxError::Send {
@@ -208,6 +207,23 @@ impl Outbox {
             }
         }
     }
+}
+
+async fn record_send_failure(
+    chats: &ChatStore,
+    chat: &Jid,
+    message_id: &str,
+) -> Result<(), ChatStoreError> {
+    let event = Event::ServerAck(
+        ServerAck::builder()
+            .id(message_id.to_owned())
+            .class("message".to_owned())
+            .from(chat.clone())
+            .error("local send failure".to_owned())
+            .build(),
+    );
+    chats.handler().handle_event(Arc::new(event));
+    chats.flush().await
 }
 
 /// Backward-scan bounds. The scan cap keeps pathological histories cheap;
@@ -228,7 +244,7 @@ const RECONCILE_CHAT_CAP: i64 = 500;
 /// under its ORIGINAL id — never a new id, because the durable row and any
 /// server-side dedupe state are keyed by it. A row whose stored proto is
 /// missing cannot be re-materialized and is marked failed rather than
-/// silently dropped. Every resend failure ends in `mark_send_failed`: the
+/// silently dropped. Every resend failure ends in a durable error marker: the
 /// sweep never loops on a sick recipient, and the user retries manually.
 ///
 /// Single concurrent instance is the CALLER's obligation (one spawned task
@@ -339,7 +355,7 @@ pub async fn reconcile_stale_pending(
             // No stored proto means no content to re-materialize; fail the
             // row honestly instead of leaving a zombie Pending forever.
             warn!(id = %id, chat = %m.chat_jid.to_string(), "outbox: stale message has no stored proto");
-            if let Err(e) = chats.mark_send_failed(&m.chat_jid, &id).await {
+            if let Err(e) = record_send_failure(&chats, &m.chat_jid, &id).await {
                 warn!(id = %id, error = %e, "outbox: marking send-failed failed");
             }
             continue;
@@ -362,7 +378,7 @@ pub async fn reconcile_stale_pending(
                         error = %e,
                         "outbox: stale resend failed"
                     );
-                    if let Err(mark_err) = chats.mark_send_failed(&m.chat_jid, &id).await {
+                    if let Err(mark_err) = record_send_failure(&chats, &m.chat_jid, &id).await {
                         warn!(id = %id, error = %mark_err, "outbox: marking send-failed failed");
                     }
                 }

@@ -9,13 +9,14 @@ use std::time::Duration;
 
 use chrono::{TimeZone, Utc};
 use wacore::proto_helpers::MessageBuilderExt;
-use wacore::types::events::InboundMessage;
+use wacore::types::events::{BatchOrigin, Event, InboundMessage, MessageBatch};
 use wacore::types::message::{MessageInfo, MessageSource};
 use waproto::whatsapp as wa;
 use wasabi_domain as domain;
 use wasabi_repository::{AccountStore, StoreTuning};
 use wasabi_test_support::TestDir;
 use whatsapp_rust::Jid;
+use whatsapp_rust_chat_store::ChatStore;
 
 const PEER1: &str = "559900000001@s.whatsapp.net";
 const PEER2: &str = "559900000002@s.whatsapp.net";
@@ -28,6 +29,15 @@ async fn open(dir: &TestDir) -> AccountStore {
     AccountStore::open(&dir.path().join("store.sqlite3"), &StoreTuning::default())
         .await
         .expect("open account store")
+}
+
+fn enqueue_inbound(chats: &ChatStore, batch: Vec<InboundMessage>) {
+    chats.handler().handle_event(Arc::new(Event::Messages(
+        MessageBatch::builder()
+            .messages(Arc::from(batch))
+            .origin(BatchOrigin::Live)
+            .build(),
+    )));
 }
 
 fn incoming_info(chat: &str, sender: &str, id: &str, ts_secs: i64) -> MessageInfo {
@@ -91,7 +101,7 @@ async fn outgoing_roundtrip_via_flush_barrier() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn apply_inbound_is_idempotent_under_replay() {
+async fn event_delivery_is_idempotent_under_replay() {
     let dir = TestDir::new("replay");
     let store = open(&dir).await;
 
@@ -102,8 +112,8 @@ async fn apply_inbound_is_idempotent_under_replay() {
             .build(),
     ];
 
-    store.chats().apply_inbound(batch.clone()).await.unwrap();
-    store.chats().apply_inbound(batch).await.unwrap();
+    enqueue_inbound(store.chats(), batch.clone());
+    enqueue_inbound(store.chats(), batch);
     store.flush().await.unwrap();
 
     let page = store.message_page(PEER2, None, 10).await.unwrap();
@@ -172,7 +182,7 @@ async fn store_change_invalidation_emitted_after_commit() {
             .info(Arc::new(incoming_info(PEER2, PEER2, "R2", 1_700_000_001)))
             .build(),
     ];
-    store.chats().apply_inbound(batch).await.unwrap();
+    enqueue_inbound(store.chats(), batch);
 
     let change = tokio::time::timeout(Duration::from_secs(2), rx.recv())
         .await
