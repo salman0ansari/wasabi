@@ -2,7 +2,7 @@
 
 use gpui::prelude::*;
 use gpui::{ClickEvent, Context, Window, px};
-use gpui_component::input::{Input, InputState};
+use gpui_component::input::{Input, InputEvent, InputState};
 
 use crate::theme;
 use crate::views::root::MainWindow;
@@ -10,7 +10,20 @@ use crate::views::root::MainWindow;
 pub const COMPOSER_H: f32 = 64.0;
 
 pub fn build_input(window: &mut Window, cx: &mut Context<MainWindow>) -> gpui::Entity<InputState> {
-    cx.new(|cx| InputState::new(window, cx).placeholder("Type a message"))
+    let input = cx.new(|cx| InputState::new(window, cx).placeholder("Type a message"));
+    cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
+        if matches!(
+            event,
+            InputEvent::PressEnter {
+                secondary: false,
+                shift: false,
+            }
+        ) {
+            this.send_current(window, cx);
+        }
+    })
+    .detach();
+    input
 }
 
 pub fn composer_bar(
@@ -18,7 +31,15 @@ pub fn composer_bar(
     _window: &mut Window,
     cx: &mut Context<MainWindow>,
 ) -> gpui::Div {
-    let can_send = this.session.can_send() && this.chats.selected.is_some();
+    let session_can_send = this.session.can_send();
+    let can_send = session_can_send && this.chats.selected.is_some();
+    let send_label = if can_send {
+        "Send"
+    } else if !session_can_send {
+        "Connect to send"
+    } else {
+        "Select a chat"
+    };
 
     let send = {
         let (bg, fg) = if can_send {
@@ -28,18 +49,19 @@ pub fn composer_bar(
         };
         let mut button = gpui::div()
             .id("send-button")
-            .cursor_pointer()
             .rounded(px(theme::RADIUS_MD))
             .px(px(16.0))
             .py(px(9.0))
             .bg(bg)
             .text_color(fg)
             .text_size(px(theme::TEXT_SIZE))
-            .child("Send");
+            .child(send_label);
         if can_send {
-            button = button.on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                this.send_current(window, cx);
-            }));
+            button = button.cursor_pointer().on_click(cx.listener(
+                |this, _: &ClickEvent, window, cx| {
+                    this.send_current(window, cx);
+                },
+            ));
         }
         button
     };
