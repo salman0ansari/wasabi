@@ -66,7 +66,7 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 
 ## Native footprint
 
-On the current Linux reference machine, five fresh-profile launches of Wasabi `0.2.0-alpha.1` opened the window in a mean 131.6 ms and settled at 230.0 MiB proportional set size (PSS). A blank Electron 41 window on the same machine took 423.8 ms and settled at 326.8 MiB PSS. Wasabi used one process versus Electron's six.
+On the current Linux reference machine, five fresh-profile launches of Wasabi `0.2.0-alpha.1` opened the window in a mean 159.8 ms and settled at 222.1 MiB proportional set size (PSS). A blank Electron 41 window on the same machine took 546.0 ms and settled at 319.8 MiB PSS. Wasabi used one process versus Electron's six. Startup medians were 131 ms and 360 ms respectively; the raw samples retain the colder first run.
 
 This is a reproducible runtime-baseline comparison, not a fabricated measurement of the official WhatsApp app. There is no official Linux desktop binary to measure locally, and Meta's current Windows and Mac apps should not be described as the old Electron client. Read the complete methodology, raw results, package-size context, limitations, and rerun instructions in [`benchmarks/desktop`](benchmarks/desktop/README.md).
 

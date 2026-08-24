@@ -44,6 +44,9 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 - Removed unverified placeholder values for shared media, starred messages,
   notification overrides, disappearing messages, and groups in common from the
   conversation information drawer until their real data sources are wired.
+- Refreshed the reproducible native-versus-blank-Electron benchmark after
+  adding notifications, media downloads, and typing feeds; raw samples and
+  cold-start outliers remain committed.
 - GPUI now depends on a mockable `DesktopBackend` product-service contract instead of the concrete protocol bridge.
 
 ## [0.2.0-alpha.1] - 2026-08-24

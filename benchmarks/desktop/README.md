@@ -10,17 +10,20 @@ Measured on 2026-08-24 with Wasabi `0.2.0-alpha.1` and Electron `41.3.0`. Values
 
 | Metric | Wasabi | Blank Electron | Wasabi difference |
 |---|---:|---:|---:|
-| Window startup | 131.6 ms | 423.8 ms | 68.9% faster |
-| RSS after settle | 256.6 MiB | 619.5 MiB | 58.6% lower |
-| PSS after settle | 230.0 MiB | 326.8 MiB | 29.6% lower |
-| Idle CPU sample | 0.80% | 0.00% | Electron lower in this run |
+| Window startup (mean) | 159.8 ms | 546.0 ms | 70.7% faster |
+| Window startup (median) | 131 ms | 360 ms | 63.6% faster |
+| RSS after settle | 256.8 MiB | 619.4 MiB | 58.5% lower |
+| PSS after settle | 222.1 MiB | 319.8 MiB | 30.6% lower |
+| Idle CPU sample | 1.00% | 0.07% | Electron lower in this run |
 | Processes | 1.0 | 6.0 | 5 fewer |
-| Threads | 55.0 | 72.4 | 24.0% fewer |
+| Threads | 55.4 | 72.8 | 23.9% fewer |
 | File descriptors | 77.0 | 252.0 | 69.4% fewer |
 
 RSS double-counts shared mappings across processes; PSS apportions shared pages and is the better whole-tree memory comparison. Both are included so the raw behavior stays visible. The Electron case renders only a local heading, while Wasabi initializes its native UI, local storage, protocol/session machinery, and pairing state. Conversely, this is a fresh unpaired profile, not a large synchronized account. Treat the result as a repeatable baseline, not a universal promise.
 
-The release executable measured here was 86,493,520 bytes before final symbol stripping. The verified release profile now produces a stripped 63,678,496-byte executable (60.7 MiB). On this Arch Linux machine the Electron runtime executable alone was 204,037,104 bytes (194.6 MiB), and `/usr/lib/electron41` occupied 307,645,219 bytes (293.4 MiB) before any WhatsApp application code or profile data.
+The release profile measured here produced a symbol-stripped 68,391,104-byte executable (65.2 MiB), including the native notification and media subsystems. On this Arch Linux machine the Electron runtime executable alone was 204,037,104 bytes (194.6 MiB), and `/usr/lib/electron41` occupied about 294 MiB before any WhatsApp application code or profile data.
+
+The first launch in this run was colder for both applications (272 ms for Wasabi and 1,326 ms for Electron), so the table includes startup medians alongside the script's committed mean summary. No sample was discarded.
 
 ## Method
 
