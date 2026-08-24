@@ -147,6 +147,70 @@ pub async fn load(
     rows.into_iter().map(row_to_job).collect()
 }
 
+pub async fn load_one(
+    shared: SharedSqlite,
+    device_id: i32,
+    transfer: TransferId,
+) -> Result<Option<TransferJob>, ServiceError> {
+    let transfer = transfer.as_str().to_string();
+    let row = shared
+        .read(move |connection| {
+            use self::wasabi_transfer_jobs::dsl;
+            dsl::wasabi_transfer_jobs
+                .filter(
+                    dsl::device_id
+                        .eq(device_id)
+                        .and(dsl::transfer_id.eq(transfer)),
+                )
+                .select(TransferRow::as_select())
+                .first(connection)
+                .optional()
+                .map_err(database_error)
+        })
+        .await
+        .map_err(service_error)?;
+    row.map(row_to_job).transpose()
+}
+
+/// Replace restart-critical attachment metadata only while a job is active.
+/// A stale composer callback cannot rewrite a terminal transfer.
+pub async fn update_payload(
+    shared: SharedSqlite,
+    device_id: i32,
+    transfer: TransferId,
+    payload: wasabi_domain::TransferPayload,
+) -> Result<bool, ServiceError> {
+    let transfer = transfer.as_str().to_string();
+    let payload_json = serde_json::to_string(&payload)
+        .map_err(|error| ServiceError::new(ErrorKind::Internal, error.to_string()))?;
+    let updated_at_ms = chrono::Utc::now().timestamp_millis();
+    shared
+        .run(move |connection| {
+            use self::wasabi_transfer_jobs::dsl;
+            diesel::update(
+                dsl::wasabi_transfer_jobs.filter(
+                    dsl::device_id
+                        .eq(device_id)
+                        .and(dsl::transfer_id.eq(transfer))
+                        .and(dsl::state.ne_all([
+                            state_code(TransferState::Succeeded),
+                            state_code(TransferState::FailedPermanent),
+                            state_code(TransferState::Cancelled),
+                        ])),
+                ),
+            )
+            .set((
+                dsl::payload_json.eq(payload_json),
+                dsl::updated_at_ms.eq(updated_at_ms),
+            ))
+            .execute(connection)
+            .map(|changed| changed != 0)
+            .map_err(database_error)
+        })
+        .await
+        .map_err(service_error)
+}
+
 /// Advance byte progress without allowing a stale callback to decrease it or
 /// resurrect a terminal job.
 pub async fn update_progress(
@@ -679,6 +743,71 @@ mod tests {
                 TransferId::new("upload-immutable"),
                 1,
                 Some(5),
+            )
+            .await
+            .unwrap()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn one_job_lookup_and_payload_update_are_terminal_safe() {
+        let (_directory, sqlite) = fixture().await;
+        let mut job = TransferJob::staged_upload(
+            TransferId::new("upload-caption"),
+            ChatId::new("chat@s.whatsapp.net"),
+            PathBuf::from("/tmp/photo.jpg"),
+            5,
+        );
+        let payload = wasabi_domain::TransferPayload {
+            kind: wasabi_domain::AttachmentKind::Image,
+            display_name: "photo.jpg".to_string(),
+            mime_type: "image/jpeg".to_string(),
+            caption: None,
+        };
+        job.payload = Some(payload.clone());
+        save(sqlite.shared(), 4, job).await.unwrap();
+        let loaded = load_one(sqlite.shared(), 4, TransferId::new("upload-caption"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.payload, Some(payload.clone()));
+
+        let mut captioned = payload;
+        captioned.caption = Some("A durable caption".to_string());
+        assert!(
+            update_payload(
+                sqlite.shared(),
+                4,
+                TransferId::new("upload-caption"),
+                captioned.clone(),
+            )
+            .await
+            .unwrap()
+        );
+        assert_eq!(
+            load_one(sqlite.shared(), 4, TransferId::new("upload-caption"))
+                .await
+                .unwrap()
+                .unwrap()
+                .payload,
+            Some(captioned.clone())
+        );
+        set_state(
+            sqlite.shared(),
+            4,
+            TransferId::new("upload-caption"),
+            TransferState::Cancelled,
+            None,
+        )
+        .await
+        .unwrap();
+        captioned.caption = Some("stale rewrite".to_string());
+        assert!(
+            !update_payload(
+                sqlite.shared(),
+                4,
+                TransferId::new("upload-caption"),
+                captioned,
             )
             .await
             .unwrap()

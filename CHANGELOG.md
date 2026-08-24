@@ -32,6 +32,8 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 - Outgoing attachment sources can now be copied into fsync-backed Wasabi staging with
   cancellation cleanup and a two-GiB safety ceiling; durable stages are kept
   separate from evictable received-media cache entries and temporary files.
+- Attachment captions and metadata now update atomically on one opaque
+  transfer job, while terminal jobs reject stale composer rewrites.
 
 - Phone-number account linking with validated international numbers, short-lived eight-character codes, expiry countdown, cancellation, and redacted sensitive values, alongside the existing QR flow.
 - Visible, focused conversation selection now synchronizes read state through an immutable chat-bound command, with optimistic rollback on failure.

@@ -459,6 +459,22 @@ impl AccountStore {
         crate::transfers::load(self.shared_db(), self.device_id(), include_terminal).await
     }
 
+    pub async fn transfer_job(
+        &self,
+        transfer: domain::TransferId,
+    ) -> Result<Option<domain::TransferJob>, domain::ServiceError> {
+        crate::transfers::load_one(self.shared_db(), self.device_id(), transfer).await
+    }
+
+    pub async fn update_transfer_payload(
+        &self,
+        transfer: domain::TransferId,
+        payload: domain::TransferPayload,
+    ) -> Result<bool, domain::ServiceError> {
+        crate::transfers::update_payload(self.shared_db(), self.device_id(), transfer, payload)
+            .await
+    }
+
     pub async fn update_transfer_progress(
         &self,
         transfer: domain::TransferId,
