@@ -434,10 +434,14 @@ fn chat_row(
     let avatar_bg = theme::sender_color(&name);
     let time = messages::relative_time(chat.last_activity_ms);
 
-    let typing_here = this.typing.contains_key(&id);
+    let typing_preview = this
+        .typing
+        .get(&id)
+        .map(|typing| typing.label(chats::is_group(&id)));
+    let typing_here = typing_preview.is_some();
     let has_draft = chat.draft_preview.is_some();
-    let preview = if typing_here {
-        "typing…".to_string()
+    let preview = if let Some(typing) = typing_preview {
+        typing
     } else if let Some(draft) = chat.draft_preview.as_ref() {
         format!("Draft: {draft}")
     } else {

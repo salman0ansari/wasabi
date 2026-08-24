@@ -34,6 +34,7 @@ const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(25
 const DRAFT_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
 const TYPING_PAUSE_AFTER: std::time::Duration = std::time::Duration::from_secs(3);
 const TYPING_REFRESH_AFTER: std::time::Duration = std::time::Duration::from_secs(4);
+const INCOMING_TYPING_TTL: std::time::Duration = std::time::Duration::from_secs(4);
 /// Countdown label refresh interval.
 const COUNTDOWN_TICK: std::time::Duration = std::time::Duration::from_secs(1);
 const NOTIFICATION_DEDUPE_LIMIT: usize = 4096;
@@ -54,6 +55,32 @@ pub(crate) enum MediaDownloadUi {
     Downloading,
     Ready(std::path::PathBuf),
     Failed,
+}
+
+#[derive(Clone)]
+pub(crate) struct TypingDisplay {
+    pub state: wasabi_domain::TypingState,
+    pub participant: Option<String>,
+    generation: u64,
+}
+
+impl TypingDisplay {
+    pub fn label(&self, group: bool) -> String {
+        let action = match self.state {
+            wasabi_domain::TypingState::Composing => "typing…",
+            wasabi_domain::TypingState::RecordingAudio => "recording audio…",
+            wasabi_domain::TypingState::Paused => return String::new(),
+        };
+        if group {
+            self.participant
+                .as_deref()
+                .and_then(|participant| participant.split('@').next())
+                .filter(|participant| !participant.is_empty())
+                .map_or_else(|| action.to_string(), |participant| format!("{participant} is {action}"))
+        } else {
+            action.to_string()
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -83,7 +110,7 @@ pub struct MainWindow {
     pub(crate) chats: ChatListModel,
     pub(crate) messages: MessageWindowModel,
     pub(crate) session: SessionMirror,
-    pub(crate) typing: HashMap<String, ()>,
+    pub(crate) typing: HashMap<String, TypingDisplay>,
     nav_destination: NavDestination,
     pub(crate) show_right_panel: bool,
     pub(crate) conversation_details: Option<ConversationDetails>,
@@ -288,6 +315,7 @@ impl MainWindow {
             this.spawn_invalidation_loop(cx);
             this.spawn_state_watch(cx);
             this.spawn_qr_watch(cx);
+            this.spawn_typing_watch(cx);
             this.spawn_notification_click_watch(notification_click_rx, cx);
         }
         window.focus(&this.focus, cx);
@@ -307,6 +335,14 @@ impl MainWindow {
         self.chats.chats = vec![preview.summary];
         self.messages.chat_id = Some(preview.chat.as_str().to_string());
         self.messages.anchor_newest(&preview.page);
+        self.typing.insert(
+            preview.chat.as_str().to_string(),
+            TypingDisplay {
+                state: wasabi_domain::TypingState::Composing,
+                participant: None,
+                generation: 1,
+            },
+        );
     }
 
     // ---- User intents ------------------------------------------------------
@@ -657,6 +693,28 @@ impl MainWindow {
                 // composer failure or log protocol detail for it.
                 tracing::debug!(kind = %error.kind, "typing state update failed");
             }
+        });
+    }
+
+    fn spawn_typing_expiry(
+        &mut self,
+        chat: String,
+        generation: u64,
+        cx: &mut Context<Self>,
+    ) {
+        spawn_main(cx, async move |this, cx| {
+            cx.background_executor().timer(INCOMING_TYPING_TTL).await;
+            this.update(cx, |this, cx| {
+                if this
+                    .typing
+                    .get(&chat)
+                    .is_some_and(|entry| entry.generation == generation)
+                {
+                    this.typing.remove(&chat);
+                    cx.notify();
+                }
+            })
+            .ok();
         });
     }
 
@@ -1483,6 +1541,55 @@ impl MainWindow {
         });
     }
 
+    fn spawn_typing_watch(&mut self, cx: &mut Context<Self>) {
+        let Some(mut rx) = self.bridge.subscribe_typing() else {
+            return;
+        };
+        spawn_main(cx, async move |this, cx| {
+            loop {
+                match rx.recv().await {
+                    Ok(update) => {
+                        let Some(entity) = this.upgrade() else {
+                            break;
+                        };
+                        entity.update(cx, |this, cx| {
+                            let chat = update.chat.as_str().to_string();
+                            if update.state == wasabi_domain::TypingState::Paused {
+                                this.typing.remove(&chat);
+                            } else {
+                                let generation = this
+                                    .typing
+                                    .get(&chat)
+                                    .map_or(1, |entry| entry.generation.saturating_add(1));
+                                this.typing.insert(
+                                    chat.clone(),
+                                    TypingDisplay {
+                                        state: update.state,
+                                        participant: update.participant,
+                                        generation,
+                                    },
+                                );
+                                this.spawn_typing_expiry(chat, generation, cx);
+                            }
+                            cx.notify();
+                        });
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        if let Some(entity) = this.upgrade() {
+                            entity.update(cx, |this, cx| {
+                                // Ephemeral state cannot be reconstructed from
+                                // a lagged feed; clearing is the honest state.
+                                this.typing.clear();
+                                cx.notify();
+                            });
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+
     fn spawn_notification_click_watch(
         &mut self,
         mut receiver: tokio::sync::mpsc::UnboundedReceiver<wasabi_domain::NotificationCandidate>,
@@ -1917,6 +2024,9 @@ fn apply_state(
             this.session.phone_pair_requesting = false;
             this.session.phone_pair_error = None;
         }
+        if !state.is_connected() {
+            this.typing.clear();
+        }
         let left_pairing = this.session.qr_deadline.is_some()
             && !matches!(state, wasabi_core::state::SessionState::Pairing);
         if left_pairing {
@@ -1988,7 +2098,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{TYPING_REFRESH_AFTER, typing_refresh_due};
+    use super::{TYPING_REFRESH_AFTER, TypingDisplay, typing_refresh_due};
 
     #[test]
     fn composing_updates_are_throttled_until_refresh_interval() {
@@ -1999,5 +2109,22 @@ mod tests {
             Some(now),
             now + TYPING_REFRESH_AFTER
         ));
+    }
+
+    #[test]
+    fn incoming_typing_labels_distinguish_direct_group_and_recording() {
+        let direct = TypingDisplay {
+            state: wasabi_domain::TypingState::Composing,
+            participant: None,
+            generation: 1,
+        };
+        assert_eq!(direct.label(false), "typing…");
+
+        let group = TypingDisplay {
+            state: wasabi_domain::TypingState::RecordingAudio,
+            participant: Some("alex@s.whatsapp.net".to_string()),
+            generation: 1,
+        };
+        assert_eq!(group.label(true), "alex is recording audio…");
     }
 }

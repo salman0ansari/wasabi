@@ -38,6 +38,9 @@ pub trait DesktopBackend: Send + Sync {
     fn invalidations(&self) -> &InvalidationPublisher;
     fn subscribe_state(&self) -> Option<tokio::sync::watch::Receiver<SessionState>>;
     fn subscribe_qr(&self) -> Option<tokio::sync::watch::Receiver<Option<QrState>>>;
+    fn subscribe_typing(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<wasabi_domain::TypingUpdate>>;
 
     async fn connect_session(&self) -> Result<(), String>;
     async fn start_pairing(&self) -> Result<(), String>;
@@ -191,6 +194,16 @@ impl CoreBridge {
             .expect("session lock")
             .as_ref()
             .map(|s| s.subscribe_qr())
+    }
+
+    pub fn subscribe_typing(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<wasabi_domain::TypingUpdate>> {
+        self.session
+            .read()
+            .expect("session lock")
+            .as_ref()
+            .map(|session| session.subscribe_typing())
     }
 
     /// Forward materialization-store changes at their real scope. Lag is the
@@ -898,6 +911,12 @@ impl DesktopBackend for CoreBridge {
 
     fn subscribe_qr(&self) -> Option<tokio::sync::watch::Receiver<Option<QrState>>> {
         CoreBridge::subscribe_qr(self)
+    }
+
+    fn subscribe_typing(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<wasabi_domain::TypingUpdate>> {
+        CoreBridge::subscribe_typing(self)
     }
 
     async fn connect_session(&self) -> Result<(), String> {

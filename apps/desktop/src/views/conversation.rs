@@ -82,9 +82,14 @@ fn header(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
         Some(chat) => {
             let name = chats::fallback_name(chat);
             let initials = messages::avatar_initials(chat);
+            let subtitle = this
+                .typing
+                .get(chat.id.as_str())
+                .map(|typing| typing.label(chats::is_group(chat.id.as_str())))
+                .unwrap_or_else(|| messages::conversation_subtitle(chat));
             (
                 name.clone(),
-                messages::conversation_subtitle(chat),
+                subtitle,
                 initials,
                 theme::sender_color(&name),
             )

@@ -17,6 +17,9 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
   actionable explanations instead of one generic unsupported-message label.
 - Composer typing state now sends throttled, immutable chat-bound composing
   updates and an automatic paused update after inactivity or a chat switch.
+- Incoming typing and voice-recording activity now appears in chat rows and
+  the open conversation header, expires automatically, and clears on feed lag
+  or disconnect instead of becoming stale durable state.
 
 - Phone-number account linking with validated international numbers, short-lived eight-character codes, expiry countdown, cancellation, and redacted sensitive values, alongside the existing QR flow.
 - Visible, focused conversation selection now synchronizes read state through an immutable chat-bound command, with optimistic rollback on failure.

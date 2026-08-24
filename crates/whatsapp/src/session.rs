@@ -47,6 +47,7 @@ pub struct AccountSession {
     pub chats: Arc<ChatStore>,
     state_tx: watch::Sender<SessionState>,
     qr_tx: watch::Sender<Option<lifecycle::QrState>>,
+    typing_tx: tokio::sync::broadcast::Sender<wasabi_domain::TypingUpdate>,
     bot_handle: tokio::sync::Mutex<Option<BotHandle>>,
     pump: tokio::sync::Mutex<Option<lifecycle::Pump>>,
     config: SessionConfig,
@@ -68,11 +69,13 @@ impl AccountSession {
         chats.skip_hook_committed_batches(true);
         let (state_tx, _) = watch::channel(SessionState::Stopped);
         let (qr_tx, _) = watch::channel(None);
+        let (typing_tx, _) = tokio::sync::broadcast::channel(256);
         Ok(Arc::new(Self {
             store: Arc::new(store),
             chats,
             state_tx,
             qr_tx,
+            typing_tx,
             bot_handle: tokio::sync::Mutex::new(None),
             pump: tokio::sync::Mutex::new(None),
             config: config.clone(),
@@ -110,6 +113,12 @@ impl AccountSession {
     /// (paired) or dead (rotated out / expired).
     pub fn subscribe_qr(&self) -> watch::Receiver<Option<lifecycle::QrState>> {
         self.qr_tx.subscribe()
+    }
+
+    pub fn subscribe_typing(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<wasabi_domain::TypingUpdate> {
+        self.typing_tx.subscribe()
     }
 
     pub fn state(&self) -> SessionState {
@@ -254,6 +263,7 @@ impl AccountSession {
             event_rx,
             self.state_tx.clone(),
             self.qr_tx.clone(),
+            self.typing_tx.clone(),
             run_token,
         );
         // Keep the pump under the same account owner as the bot. Dropping

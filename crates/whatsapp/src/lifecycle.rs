@@ -76,6 +76,7 @@ pub(crate) fn spawn_event_pump(
     events: whatsapp_rust::async_channel::Receiver<Arc<Event>>,
     state_tx: watch::Sender<SessionState>,
     qr_tx: watch::Sender<Option<QrState>>,
+    typing_tx: tokio::sync::broadcast::Sender<wasabi_domain::TypingUpdate>,
     token: CancellationToken,
 ) -> Pump {
     let pump_token = token.clone();
@@ -90,7 +91,7 @@ pub(crate) fn spawn_event_pump(
                     Err(_) => break,
                 },
             };
-            apply_event(&event, &state_tx, &qr_tx);
+            apply_event(&event, &state_tx, &qr_tx, &typing_tx);
         }
     });
     Pump { token, join }
@@ -129,6 +130,7 @@ fn apply_event(
     event: &Event,
     state_tx: &watch::Sender<SessionState>,
     qr_tx: &watch::Sender<Option<QrState>>,
+    typing_tx: &tokio::sync::broadcast::Sender<wasabi_domain::TypingUpdate>,
 ) {
     match event {
         Event::PairingQrCode(qr) => {
@@ -222,6 +224,57 @@ fn apply_event(
                 },
             );
         }
+        Event::ChatPresence(update) => {
+            let _ = typing_tx.send(project_typing(update));
+        }
         _ => {}
+    }
+}
+
+fn project_typing(
+    update: &whatsapp_rust::types::events::ChatPresenceUpdate,
+) -> wasabi_domain::TypingUpdate {
+    use whatsapp_rust::types::presence::{ChatPresence, ChatPresenceMedia};
+
+    let state = match (update.state, update.media) {
+        (ChatPresence::Paused, _) => wasabi_domain::TypingState::Paused,
+        (ChatPresence::Composing, ChatPresenceMedia::Audio) => {
+            wasabi_domain::TypingState::RecordingAudio
+        }
+        (ChatPresence::Composing, ChatPresenceMedia::Text) => wasabi_domain::TypingState::Composing,
+    };
+    wasabi_domain::TypingUpdate {
+        chat: wasabi_domain::ChatId::new(update.source.chat.to_string()),
+        participant: update
+            .source
+            .is_group
+            .then(|| update.source.sender.to_string()),
+        state,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::project_typing;
+    use whatsapp_rust::types::events::ChatPresenceUpdate;
+    use whatsapp_rust::types::message::MessageSource;
+    use whatsapp_rust::types::presence::{ChatPresence, ChatPresenceMedia};
+
+    #[test]
+    fn group_audio_presence_projects_without_becoming_durable_state() {
+        let update = ChatPresenceUpdate::builder()
+            .source(MessageSource {
+                chat: "123@g.us".parse().unwrap(),
+                sender: "456@s.whatsapp.net".parse().unwrap(),
+                is_group: true,
+                ..Default::default()
+            })
+            .state(ChatPresence::Composing)
+            .media(ChatPresenceMedia::Audio)
+            .build();
+        let projected = project_typing(&update);
+        assert_eq!(projected.chat.as_str(), "123@g.us");
+        assert_eq!(projected.participant.as_deref(), Some("456@s.whatsapp.net"));
+        assert_eq!(projected.state, wasabi_domain::TypingState::RecordingAudio);
     }
 }

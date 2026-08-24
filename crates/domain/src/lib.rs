@@ -14,6 +14,7 @@ pub mod notification;
 pub mod page;
 pub mod pairing;
 pub mod preferences;
+pub mod presence;
 pub mod search;
 pub mod send;
 
@@ -33,5 +34,6 @@ pub use notification::NotificationCandidate;
 pub use page::{ChatPage, ChatPageCursor, ChatScope};
 pub use pairing::{PairingPhoneNumber, PhonePairCode};
 pub use preferences::Draft;
+pub use presence::{TypingState, TypingUpdate};
 pub use search::{MessageSearchHit, SearchPage};
 pub use send::{SendContent, SendReceipt, SendRequest};
