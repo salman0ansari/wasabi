@@ -11,7 +11,8 @@
 //! the core [`InvalidationPublisher`] here as well, so the UI listens to one
 //! bounded channel regardless of how many producers exist underneath.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use tokio_util::sync::CancellationToken;
@@ -22,6 +23,7 @@ use wasabi_domain::{
     GroupDetails, GroupPermissions, MediaDownloadRequest, MessageAction, MessageContext, MessageId,
     MessagePage, NotificationCandidate, PageCursor, PairingPhoneNumber, Participant,
     ParticipantRole, PhonePairCode, SearchPage, SendContent, SendReceipt, SendRequest, ServiceError,
+    StagedAttachment, TransferId, TransferJob,
 };
 use wasabi_repository::AccountStore;
 use wasabi_whatsapp::lifecycle::QrState;
@@ -92,6 +94,14 @@ pub trait DesktopBackend: Send + Sync {
         &self,
         request: MediaDownloadRequest,
     ) -> Result<CachedMedia, ServiceError>;
+    // Kept hidden from navigation/composer until media sending is wired; the
+    // service itself is complete and testable without exposing an inert icon.
+    #[allow(dead_code)]
+    async fn stage_attachment(
+        &self,
+        chat: ChatId,
+        source: PathBuf,
+    ) -> Result<StagedAttachment, ServiceError>;
     async fn set_typing(&self, chat: ChatId, composing: bool) -> Result<(), ServiceError>;
     async fn send(&self, request: SendRequest) -> Result<SendReceipt, ServiceError>;
     async fn perform_message_action(&self, action: MessageAction) -> Result<(), ServiceError>;
@@ -553,6 +563,50 @@ impl CoreBridge {
         .await
     }
 
+    #[allow(dead_code)]
+    pub async fn stage_attachment(
+        &self,
+        chat: ChatId,
+        source: PathBuf,
+    ) -> Result<StagedAttachment, ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let store = self
+            .store_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
+        let manager = self
+            .media_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
+        let cancel = self
+            .root_token
+            .get()
+            .map(CancellationToken::child_token)
+            .ok_or_else(|| ServiceError::new(ErrorKind::Internal, "no cancellation root"))?;
+        let transfer = next_transfer_id();
+        self.run_on_core_service(async move {
+            let staged = manager
+                .stage_upload(source, transfer.clone(), cancel)
+                .await
+                .map_err(map_media_error)?;
+            let mut job = TransferJob::staged_upload(
+                transfer,
+                chat,
+                staged.durable_path.clone(),
+                staged.attachment.bytes_total,
+            );
+            job.payload = Some(staged.payload);
+            if let Err(error) = store.save_transfer_job(job).await {
+                // The database row is the owner record. If it cannot commit,
+                // remove the otherwise orphaned plaintext immediately.
+                let _ = manager.discard_staged_upload(staged.durable_path).await;
+                return Err(error);
+            }
+            Ok(staged.attachment)
+        })
+        .await
+    }
+
     pub async fn set_typing(
         &self,
         chat: ChatId,
@@ -881,6 +935,22 @@ fn map_media_error(error: wasabi_media::MediaError) -> ServiceError {
     ServiceError::new(kind, error.to_string())
 }
 
+#[allow(dead_code)]
+static TRANSFER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[allow(dead_code)]
+fn next_transfer_id() -> TransferId {
+    let time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = TRANSFER_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    TransferId::new(format!(
+        "w{time:032x}{process:08x}{sequence:016x}",
+        process = std::process::id()
+    ))
+}
+
 fn role_rank(role: ParticipantRole) -> u8 {
     match role {
         ParticipantRole::Member => 0,
@@ -1021,6 +1091,14 @@ impl DesktopBackend for CoreBridge {
         CoreBridge::download_media(self, request).await
     }
 
+    async fn stage_attachment(
+        &self,
+        chat: ChatId,
+        source: PathBuf,
+    ) -> Result<StagedAttachment, ServiceError> {
+        CoreBridge::stage_attachment(self, chat, source).await
+    }
+
     async fn set_typing(&self, chat: ChatId, composing: bool) -> Result<(), ServiceError> {
         CoreBridge::set_typing(self, chat, composing).await
     }
@@ -1035,5 +1113,20 @@ impl DesktopBackend for CoreBridge {
 
     async fn perform_chat_action(&self, action: ChatAction) -> Result<(), ServiceError> {
         CoreBridge::perform_chat_action(self, action).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_transfer_ids_are_unique_and_path_free() {
+        let first = next_transfer_id();
+        let second = next_transfer_id();
+        assert_ne!(first, second);
+        assert!(first.as_str().starts_with('w'));
+        assert!(!first.as_str().contains('/'));
+        assert_eq!(format!("{first:?}"), "TransferId(<opaque>)");
     }
 }

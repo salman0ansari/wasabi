@@ -29,7 +29,7 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 - Account schema v2 stores restart-safe attachment kind, display name, MIME
   type, and caption metadata; the additive v1 migration preserves existing
   transfer rows.
-- Selected attachments can now be copied into fsync-backed Wasabi staging with
+- Outgoing attachment sources can now be copied into fsync-backed Wasabi staging with
   cancellation cleanup and a two-GiB safety ceiling; durable stages are kept
   separate from evictable received-media cache entries and temporary files.
 
