@@ -89,6 +89,7 @@ pub trait DesktopBackend: Send + Sync {
         &self,
         request: MediaDownloadRequest,
     ) -> Result<CachedMedia, ServiceError>;
+    async fn set_typing(&self, chat: ChatId, composing: bool) -> Result<(), ServiceError>;
     async fn send(&self, request: SendRequest) -> Result<SendReceipt, ServiceError>;
     async fn perform_message_action(&self, action: MessageAction) -> Result<(), ServiceError>;
     async fn perform_chat_action(&self, action: ChatAction) -> Result<(), ServiceError>;
@@ -539,6 +540,38 @@ impl CoreBridge {
         .await
     }
 
+    pub async fn set_typing(
+        &self,
+        chat: ChatId,
+        composing: bool,
+    ) -> Result<(), ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let session = self
+            .session_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::NotPaired, detail))?;
+        self.run_on_core_service(async move {
+            let chat = chat
+                .as_str()
+                .parse::<whatsapp_rust::Jid>()
+                .map_err(|error| {
+                    ServiceError::new(ErrorKind::InvalidRequest, error.to_string())
+                })?;
+            let client = session.client().await.ok_or_else(|| {
+                ServiceError::new(ErrorKind::NotConnected, "no live protocol client")
+            })?;
+            let state = client.chatstate();
+            let result = if composing {
+                state.send_composing(&chat).await
+            } else {
+                state.send_paused(&chat).await
+            };
+            result.map_err(|error| ServiceError::new(ErrorKind::Protocol, error.to_string()))
+        })
+        .await
+    }
+
     // ---- Sending ------------------------------------------------------------
 
     /// Submit an immutable product request through the durable account
@@ -963,6 +996,10 @@ impl DesktopBackend for CoreBridge {
         request: MediaDownloadRequest,
     ) -> Result<CachedMedia, ServiceError> {
         CoreBridge::download_media(self, request).await
+    }
+
+    async fn set_typing(&self, chat: ChatId, composing: bool) -> Result<(), ServiceError> {
+        CoreBridge::set_typing(self, chat, composing).await
     }
 
     async fn send(&self, request: SendRequest) -> Result<SendReceipt, ServiceError> {

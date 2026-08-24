@@ -15,6 +15,8 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
   resolution, deduplicated in-flight work, and retry feedback on the message.
 - Undecryptable, view-once, hosted, and bot messages now render distinct,
   actionable explanations instead of one generic unsupported-message label.
+- Composer typing state now sends throttled, immutable chat-bound composing
+  updates and an automatic paused update after inactivity or a chat switch.
 
 - Phone-number account linking with validated international numbers, short-lived eight-character codes, expiry countdown, cancellation, and redacted sensitive values, alongside the existing QR flow.
 - Visible, focused conversation selection now synchronizes read state through an immutable chat-bound command, with optimistic rollback on failure.

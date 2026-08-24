@@ -32,6 +32,8 @@ const CHAT_PAGE_LIMIT: usize = 100;
 const MESSAGE_PAGE_LIMIT: usize = 60;
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
 const DRAFT_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
+const TYPING_PAUSE_AFTER: std::time::Duration = std::time::Duration::from_secs(3);
+const TYPING_REFRESH_AFTER: std::time::Duration = std::time::Duration::from_secs(4);
 /// Countdown label refresh interval.
 const COUNTDOWN_TICK: std::time::Duration = std::time::Duration::from_secs(1);
 const NOTIFICATION_DEDUPE_LIMIT: usize = 4096;
@@ -109,6 +111,8 @@ pub struct MainWindow {
     notification_seen_order: VecDeque<(String, String)>,
     notifications: crate::notifications::NotificationDispatcher,
     draft_generations: HashMap<String, u64>,
+    outbound_typing_generations: HashMap<String, u64>,
+    outbound_typing_sent_at: HashMap<String, std::time::Instant>,
     chats_gen: AtomicU64,
     search_gen: AtomicU64,
     messages_gen: AtomicU64,
@@ -202,6 +206,8 @@ impl MainWindow {
                 notification_click_tx,
             ),
             draft_generations: HashMap::new(),
+            outbound_typing_generations: HashMap::new(),
+            outbound_typing_sent_at: HashMap::new(),
             chats_gen: AtomicU64::new(0),
             search_gen: AtomicU64::new(0),
             messages_gen: AtomicU64::new(0),
@@ -230,9 +236,17 @@ impl MainWindow {
         this.subscriptions.push(on_search_change);
 
         let on_composer_change = cx.subscribe_in(&this.composer_input, window, {
-            move |this, _, event: &InputEvent, _, cx| {
+            move |this, _, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.queue_draft_save(cx);
+                    if this
+                        .composer_input
+                        .read(cx)
+                        .focus_handle(cx)
+                        .is_focused(window)
+                    {
+                        this.queue_outbound_typing(cx);
+                    }
                 }
             }
         });
@@ -434,6 +448,11 @@ impl MainWindow {
         if anchor.is_none() && self.chats.selected.as_deref() == Some(chat_id.as_str()) {
             return;
         }
+        if let Some(previous) = self.chats.selected.clone()
+            && previous != chat_id
+        {
+            self.stop_outbound_typing(previous, cx);
+        }
         // Bump first so any in-flight message load is discarded as stale.
         self.messages_gen.fetch_add(1, Ordering::AcqRel);
         self.details_gen.fetch_add(1, Ordering::AcqRel);
@@ -567,6 +586,78 @@ impl MainWindow {
             }
         });
         cx.notify();
+    }
+
+    fn queue_outbound_typing(&mut self, cx: &mut Context<Self>) {
+        let Some(chat) = self.chats.selected.clone() else {
+            return;
+        };
+        if !self.session.can_send() {
+            return;
+        }
+        let empty = self.composer_input.read(cx).value().trim().is_empty();
+        let generation = {
+            let generation = self
+                .outbound_typing_generations
+                .entry(chat.clone())
+                .and_modify(|value| *value = value.saturating_add(1))
+                .or_insert(1);
+            *generation
+        };
+        if empty {
+            self.stop_outbound_typing(chat, cx);
+            return;
+        }
+
+        let now = std::time::Instant::now();
+        let should_refresh =
+            typing_refresh_due(self.outbound_typing_sent_at.get(&chat).copied(), now);
+        if should_refresh {
+            self.outbound_typing_sent_at.insert(chat.clone(), now);
+            self.dispatch_typing(chat.clone(), true, cx);
+        }
+
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            cx.background_executor().timer(TYPING_PAUSE_AFTER).await;
+            let should_pause = this
+                .update(cx, |this, _| {
+                    this.outbound_typing_generations.get(&chat).copied() == Some(generation)
+                        && this.outbound_typing_sent_at.remove(&chat).is_some()
+                })
+                .unwrap_or(false);
+            if should_pause
+                && let Err(error) = bridge
+                    .set_typing(wasabi_domain::ChatId::new(chat), false)
+                    .await
+            {
+                tracing::debug!(kind = %error.kind, "typing pause update failed");
+            }
+        });
+    }
+
+    fn stop_outbound_typing(&mut self, chat: String, cx: &mut Context<Self>) {
+        self.outbound_typing_generations
+            .entry(chat.clone())
+            .and_modify(|value| *value = value.saturating_add(1))
+            .or_insert(1);
+        if self.outbound_typing_sent_at.remove(&chat).is_some() {
+            self.dispatch_typing(chat, false, cx);
+        }
+    }
+
+    fn dispatch_typing(&self, chat: String, composing: bool, cx: &mut Context<Self>) {
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |_this, _cx| {
+            if let Err(error) = bridge
+                .set_typing(wasabi_domain::ChatId::new(chat), composing)
+                .await
+            {
+                // Presence is ephemeral and best effort; never surface a
+                // composer failure or log protocol detail for it.
+                tracing::debug!(kind = %error.kind, "typing state update failed");
+            }
+        });
     }
 
     pub(crate) fn send_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1804,6 +1895,10 @@ fn notification_chat_summary(
     }
 }
 
+fn typing_refresh_due(last_sent: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    last_sent.is_none_or(|last| now.duration_since(last) >= TYPING_REFRESH_AFTER)
+}
+
 // ---- Watch appliers --------------------------------------------------------
 
 /// Apply one session-state update plus derived side effects.
@@ -1889,4 +1984,20 @@ where
     F: AsyncFnOnce(WeakEntity<MainWindow>, &mut gpui::AsyncApp) + 'static,
 {
     cx.spawn(f).detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TYPING_REFRESH_AFTER, typing_refresh_due};
+
+    #[test]
+    fn composing_updates_are_throttled_until_refresh_interval() {
+        let now = std::time::Instant::now();
+        assert!(typing_refresh_due(None, now));
+        assert!(!typing_refresh_due(Some(now), now));
+        assert!(typing_refresh_due(
+            Some(now),
+            now + TYPING_REFRESH_AFTER
+        ));
+    }
 }
