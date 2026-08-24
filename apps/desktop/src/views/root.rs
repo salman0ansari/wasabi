@@ -40,6 +40,12 @@ enum LoadedConversation {
     Context(wasabi_domain::MessageContext),
 }
 
+#[derive(Clone)]
+pub(crate) enum MessageOverlay {
+    Actions(wasabi_domain::MessageId),
+    Confirm(wasabi_domain::MessageAction),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum NavDestination {
     Chats,
@@ -76,6 +82,7 @@ pub struct MainWindow {
     pub(crate) settings: DeviceSettings,
     pub(crate) settings_section: SettingsSection,
     pub(crate) send_error: Option<String>,
+    pub(crate) message_overlay: Option<MessageOverlay>,
     pub(crate) composer_input: gpui::Entity<InputState>,
     pub(crate) search_input: gpui::Entity<InputState>,
     pub(crate) phone_pair_input: gpui::Entity<InputState>,
@@ -160,6 +167,7 @@ impl MainWindow {
             settings: DeviceSettings::load(),
             settings_section: SettingsSection::Chats,
             send_error: None,
+            message_overlay: None,
             composer_input,
             search_input,
             phone_pair_input,
@@ -329,6 +337,7 @@ impl MainWindow {
         self.chats.loading = true;
         self.details_gen.fetch_add(1, Ordering::AcqRel);
         self.show_right_panel = false;
+        self.message_overlay = None;
         self.conversation_details = None;
         self.details_loading = false;
         self.details_error = None;
@@ -379,6 +388,7 @@ impl MainWindow {
         self.chats.selected = Some(chat_id.clone());
         self.messages.reset_for_chat(&chat_id);
         self.show_right_panel = false;
+        self.message_overlay = None;
         self.conversation_details = None;
         self.details_loading = false;
         self.details_error = None;
@@ -809,6 +819,76 @@ impl MainWindow {
             .ok();
         });
         cx.notify();
+    }
+
+    pub(crate) fn open_message_actions(
+        &mut self,
+        message: wasabi_domain::MessageId,
+        cx: &mut Context<Self>,
+    ) {
+        self.message_overlay = Some(MessageOverlay::Actions(message));
+        cx.notify();
+    }
+
+    pub(crate) fn close_message_overlay(&mut self, cx: &mut Context<Self>) {
+        self.message_overlay = None;
+        cx.notify();
+    }
+
+    pub(crate) fn confirm_message_action(
+        &mut self,
+        action: wasabi_domain::MessageAction,
+        cx: &mut Context<Self>,
+    ) {
+        self.message_overlay = Some(MessageOverlay::Confirm(action));
+        cx.notify();
+    }
+
+    pub(crate) fn run_confirmed_message_action(&mut self, cx: &mut Context<Self>) {
+        let Some(MessageOverlay::Confirm(action)) = self.message_overlay.take() else {
+            return;
+        };
+        self.perform_message_action(action, cx);
+    }
+
+    pub(crate) fn copy_message(
+        &mut self,
+        message: wasabi_domain::MessageId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(row) = self.messages.rows.iter().find(|row| row.id == message) else {
+            return;
+        };
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+            crate::state::messages::body_text(row),
+        ));
+        self.message_overlay = None;
+        cx.notify();
+    }
+
+    pub(crate) fn react_to_message(
+        &mut self,
+        message: wasabi_domain::MessageId,
+        emoji: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(row) = self.messages.rows.iter().find(|row| row.id == message) else {
+            return;
+        };
+        let action = wasabi_domain::MessageAction::React {
+            target: row.into(),
+            emoji,
+        };
+        self.message_overlay = None;
+        self.perform_message_action(action, cx);
+    }
+
+    pub(crate) fn dismiss_overlay_or_drawer(&mut self, cx: &mut Context<Self>) {
+        if self.message_overlay.take().is_some() {
+            cx.notify();
+        } else {
+            self.close_right_panel(cx);
+        }
     }
 
     pub(crate) fn perform_chat_action(
@@ -1322,7 +1402,7 @@ impl Render for MainWindow {
                 this.select_nav(NavDestination::Settings, cx);
             }))
             .on_action(cx.listener(|this, _: &CloseInfo, _, cx| {
-                this.close_right_panel(cx);
+                this.dismiss_overlay_or_drawer(cx);
             }))
             .child(main_content(self, window, cx, pairing_active))
             .into_any_element()
@@ -1508,6 +1588,9 @@ fn center_area(
         );
     } else if this.show_right_panel {
         row = row.child(right_panel::info_panel(this, cx));
+    }
+    if this.message_overlay.is_some() {
+        row = row.child(conversation::message_overlay(this, cx));
     }
     row.into_any_element()
 }

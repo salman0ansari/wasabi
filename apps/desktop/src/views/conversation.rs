@@ -337,7 +337,7 @@ fn bubble(
             .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
             .text_color(messages::status_color(row.status))
             .child(meta_ticks)
-            .child(message_star_action(&row, row_index, cx)),
+            .child(message_actions_button(&row, row_index, cx)),
     );
 
     let alignment = if outgoing {
@@ -361,30 +361,258 @@ fn bubble(
     )
 }
 
-fn message_star_action(
+fn message_actions_button(
     row: &wasabi_domain::MessageRow,
     row_index: usize,
     cx: &mut Context<MainWindow>,
 ) -> gpui::Stateful<gpui::Div> {
-    let starred = row.starred;
-    let action = wasabi_domain::MessageAction::Star {
-        target: row.into(),
-        starred: !starred,
-    };
+    let message = row.id.clone();
     gpui::div()
-        .id(("star-message", row_index))
-        .ml(px(2.0))
+        .id(("message-actions", row_index))
+        .ml(px(3.0))
         .cursor_pointer()
-        .text_color(if starred {
-            theme::accent_text()
-        } else {
-            theme::text_secondary()
-        })
+        .px(px(2.0))
+        .text_color(theme::text_secondary())
         .hover(|style| style.text_color(theme::accent_text()))
         .on_click(cx.listener(move |this, _, _, cx| {
-            this.perform_message_action(action.clone(), cx)
+            this.open_message_actions(message.clone(), cx)
         }))
-        .child(if starred { "★" } else { "☆" })
+        .child("⋯")
+}
+
+pub fn message_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
+    let Some(overlay) = this.message_overlay.clone() else {
+        return gpui::div();
+    };
+    let card = match overlay {
+        crate::views::root::MessageOverlay::Actions(message) => {
+            message_action_sheet(this, message, cx)
+        }
+        crate::views::root::MessageOverlay::Confirm(action) => {
+            message_delete_confirmation(this, action, cx)
+        }
+    };
+    gpui::div()
+        .absolute()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme::scrim())
+        .child(card)
+}
+
+fn message_action_sheet(
+    this: &mut MainWindow,
+    message: wasabi_domain::MessageId,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Div {
+    let Some(row) = this.messages.rows.iter().find(|row| row.id == message).cloned() else {
+        return action_card().child("This message is no longer available");
+    };
+    let preview = messages::body_text(&row);
+    let can_copy = matches!(
+        row.kind,
+        wasabi_domain::MessageKind::Text { .. } | wasabi_domain::MessageKind::System { .. }
+    );
+    let starred = row.starred;
+    let star_action = wasabi_domain::MessageAction::Star {
+        target: (&row).into(),
+        starred: !starred,
+    };
+    let delete_for_me = wasabi_domain::MessageAction::DeleteForMe {
+        target: (&row).into(),
+        delete_media: false,
+    };
+    let revoke = (row.direction == wasabi_domain::MessageDirection::Outgoing).then(|| {
+        wasabi_domain::MessageAction::RevokeForEveryone {
+            target: (&row).into(),
+        }
+    });
+
+    action_card()
+        .child(
+            gpui::div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    gpui::div()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme::text_primary())
+                        .child("Message actions"),
+                )
+                .child(
+                    sheet_button("close-message-actions", "Close", false)
+                        .on_click(cx.listener(|this, _, _, cx| this.close_message_overlay(cx))),
+                ),
+        )
+        .child(
+            gpui::div()
+                .max_h(px(72.0))
+                .overflow_hidden()
+                .rounded(px(theme::RADIUS_SM))
+                .bg(theme::canvas())
+                .px(px(10.0))
+                .py(px(8.0))
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .text_color(theme::text_secondary())
+                .child(preview),
+        )
+        .child(
+            gpui::div()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .children(["👍", "❤️", "😂", "😮", "😢"].into_iter().map(|emoji| {
+                    let message = message.clone();
+                    sheet_button(emoji, emoji, false).on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            this.react_to_message(message.clone(), emoji.to_string(), cx)
+                        },
+                    ))
+                })),
+        )
+        .when(can_copy, |card| {
+            let message = message.clone();
+            card.child(
+                sheet_button("copy-message", "Copy text", false)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.copy_message(message.clone(), cx)
+                    })),
+            )
+        })
+        .child(
+            sheet_button(
+                "toggle-star-from-actions",
+                if starred { "Unstar message" } else { "Star message" },
+                false,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.message_overlay = None;
+                this.perform_message_action(star_action.clone(), cx)
+            })),
+        )
+        .child(
+            sheet_button("delete-message-local", "Delete for me…", true).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    this.confirm_message_action(delete_for_me.clone(), cx)
+                },
+            )),
+        )
+        .when_some(revoke, |card, revoke| {
+            card.child(
+                sheet_button("revoke-message", "Delete for everyone…", true).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        this.confirm_message_action(revoke.clone(), cx)
+                    }),
+                ),
+            )
+        })
+}
+
+fn message_delete_confirmation(
+    this: &MainWindow,
+    action: wasabi_domain::MessageAction,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Div {
+    let target = action.target();
+    let preview = this
+        .messages
+        .rows
+        .iter()
+        .find(|row| row.id == target.message)
+        .map(messages::body_text)
+        .unwrap_or_else(|| "Selected message".to_string());
+    let (title, detail, confirm) = match action {
+        wasabi_domain::MessageAction::DeleteForMe { .. } => (
+            "Delete message for you?",
+            "This removes the message from your view. Other participants will still see it.",
+            "Delete for me",
+        ),
+        wasabi_domain::MessageAction::RevokeForEveryone { .. } => (
+            "Delete message for everyone?",
+            "WhatsApp will replace this sent message with a deletion notice when revocation is allowed.",
+            "Delete for everyone",
+        ),
+        _ => ("Confirm message action?", "This action will be synchronized.", "Confirm"),
+    };
+    action_card()
+        .child(
+            gpui::div()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme::text_primary())
+                .child(title),
+        )
+        .child(
+            gpui::div()
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .text_color(theme::text_secondary())
+                .child(detail),
+        )
+        .child(
+            gpui::div()
+                .max_h(px(64.0))
+                .overflow_hidden()
+                .rounded(px(theme::RADIUS_SM))
+                .bg(theme::canvas())
+                .px(px(10.0))
+                .py(px(8.0))
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .child(preview),
+        )
+        .child(
+            gpui::div()
+                .flex()
+                .justify_end()
+                .gap(px(8.0))
+                .child(
+                    sheet_button("cancel-message-delete", "Cancel", false)
+                        .on_click(cx.listener(|this, _, _, cx| this.close_message_overlay(cx))),
+                )
+                .child(
+                    sheet_button("confirm-message-delete", confirm, true).on_click(cx.listener(
+                        |this, _, _, cx| this.run_confirmed_message_action(cx),
+                    )),
+                ),
+        )
+}
+
+fn action_card() -> gpui::Div {
+    gpui::div()
+        .w(px(390.0))
+        .max_w_full()
+        .rounded(px(theme::RADIUS_MD))
+        .border_1()
+        .border_color(theme::border())
+        .bg(theme::surface())
+        .p(px(18.0))
+        .flex()
+        .flex_col()
+        .gap(px(10.0))
+}
+
+fn sheet_button(
+    id: &'static str,
+    label: &'static str,
+    danger: bool,
+) -> gpui::Stateful<gpui::Div> {
+    gpui::div()
+        .id(id)
+        .cursor_pointer()
+        .rounded(px(theme::RADIUS_SM))
+        .border_1()
+        .border_color(theme::border())
+        .px(px(10.0))
+        .py(px(7.0))
+        .hover(|style| style.bg(theme::row_hover()))
+        .text_size(px(theme::TEXT_SIZE_SM))
+        .text_color(if danger {
+            theme::danger()
+        } else {
+            theme::text_primary()
+        })
+        .child(label)
 }
 
 /// Width is ignored by the vertical list; only heights matter.

@@ -9,6 +9,7 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 - Phone-number account linking with validated international numbers, short-lived eight-character codes, expiry countdown, cancellation, and redacted sensitive values, alongside the existing QR flow.
 - Visible, focused conversation selection now synchronizes read state through an immutable chat-bound command, with optimistic rollback on failure.
 - Message search results now open a bounded durable context around the exact result, center it in the timeline, and apply a visible accent outline.
+- Message action sheets now expose quick reactions, text copy, star/unstar, delete-for-me, and eligible delete-for-everyone actions; destructive paths require an explicit, message-specific confirmation and Escape cancels safely.
 - Per-chat text drafts with 400 ms durable saves, chat-bound generation guards, restoration on conversation switch, visible `Draft:` previews, and a final save before shutdown.
 - Immutable message-action commands for star, react, delete-for-me, and revoke-for-everyone, with a working optimistic star/unstar bubble action.
 - Immutable chat-action commands for pin, mute, archive, and read state, with working optimistic pin/mute drawer controls.

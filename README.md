@@ -51,7 +51,8 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 - Browse cursor-paginated active chats using All, Unread, device-local Favorites, and Groups filters, with a separate Archived destination.
 - Search loaded chats and the complete local message FTS index with cancellable, paginated results that open the exact message in context.
 - Read paginated message history and send text messages.
-- Star and unstar messages with optimistic rollback if synchronization fails.
+- Copy and react to messages, or star/unstar them with optimistic rollback if synchronization fails.
+- Delete a message locally or revoke an eligible sent message through distinct, explicit confirmation dialogs.
 - Pin/unpin and mute/unmute chats from the conversation drawer.
 - Mark unread conversations read when they are opened in the active window, without cross-chat races.
 - Keep independent per-chat text drafts across conversation switches and app restarts.
