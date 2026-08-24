@@ -45,13 +45,6 @@ impl ChatSortMode {
             ChatSortMode::Name => ChatSortMode::Recent,
         }
     }
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            ChatSortMode::Recent => "Recent",
-            ChatSortMode::Name => "Name",
-        }
-    }
 }
 
 #[derive(Default)]
