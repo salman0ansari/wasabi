@@ -22,10 +22,10 @@ pub use conversation::{
     Participant, ParticipantRole,
 };
 pub use error::{ErrorKind, ServiceError};
-pub use ids::{AccountId, ChatId, LocalCursor, MessageId};
+pub use ids::{AccountId, ChatId, LocalCursor, MediaId, MessageId};
 pub use message::{
-    ChatSummary, MessageContext, MessageDirection, MessageKind, MessagePage, MessageRow,
-    MessageStatus, PageCursor, SenderJid,
+    ChatSummary, MediaAvailability, MediaDescriptor, MessageContext, MessageDirection, MessageKind,
+    MessagePage, MessageRow, MessageStatus, PageCursor, SenderJid,
 };
 pub use notification::NotificationCandidate;
 pub use page::{ChatPage, ChatPageCursor, ChatScope};

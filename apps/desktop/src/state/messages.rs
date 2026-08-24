@@ -21,7 +21,8 @@ pub const WINDOW_MAX: usize = 200;
 const CHARS_PER_LINE: f32 = 42.0;
 const LINE_H: f32 = 22.0;
 const BUBBLE_BASE_H: f32 = 54.0;
-const MEDIA_BASE_H: f32 = 248.0;
+const VISUAL_MEDIA_BASE_H: f32 = 226.0;
+const COMPACT_MEDIA_BASE_H: f32 = 112.0;
 
 /// Prepared render order: date chips between day groups, messages by index
 /// into [`MessageWindowModel::rows`].
@@ -266,15 +267,13 @@ fn row_key(row: &MessageRow) -> (wasabi_domain::MessageId, i64) {
 fn height_of(estimates: &mut HashMap<wasabi_domain::MessageId, f32>, row: &MessageRow) -> f32 {
     *estimates.entry(row.id.clone()).or_insert_with(|| {
         let text_len = body_text(row).chars().count() as f32;
-        let media = matches!(
-            row.kind,
+        let base = match row.kind {
             MessageKind::Image { .. }
-                | MessageKind::Video { .. }
-                | MessageKind::Sticker { .. }
-                | MessageKind::Audio { .. }
-                | MessageKind::Document { .. }
-        );
-        let base = if media { MEDIA_BASE_H } else { BUBBLE_BASE_H };
+            | MessageKind::Video { .. }
+            | MessageKind::Sticker { .. } => VISUAL_MEDIA_BASE_H,
+            MessageKind::Audio { .. } | MessageKind::Document { .. } => COMPACT_MEDIA_BASE_H,
+            _ => BUBBLE_BASE_H,
+        };
         base + (text_len / CHARS_PER_LINE).ceil().max(1.0) * LINE_H
     })
 }
@@ -296,9 +295,15 @@ pub fn body_text(row: &MessageRow) -> String {
         MessageKind::Text { body } => body.clone(),
         MessageKind::Image { caption, .. } => caption.clone().unwrap_or_else(|| "Photo".into()),
         MessageKind::Video { caption, .. } => caption.clone().unwrap_or_else(|| "Video".into()),
-        MessageKind::Audio { .. } => "Voice message".to_string(),
-        MessageKind::Document { file_name, .. } => {
-            file_name.clone().unwrap_or_else(|| "Document".to_string())
+        MessageKind::Audio { voice_note, .. } => {
+            if *voice_note {
+                "Voice message".to_string()
+            } else {
+                "Audio".to_string()
+            }
+        }
+        MessageKind::Document { media } => {
+            media.file_name.clone().unwrap_or_else(|| "Document".to_string())
         }
         MessageKind::Sticker { .. } => "Sticker".to_string(),
         MessageKind::Reaction { emoji } => emoji.clone(),

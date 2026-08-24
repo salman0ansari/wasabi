@@ -11,6 +11,7 @@ use chrono::{TimeZone, Utc};
 use wacore::proto_helpers::MessageBuilderExt;
 use wacore::types::events::{BatchOrigin, Event, InboundMessage, MessageBatch};
 use wacore::types::message::{MessageInfo, MessageSource};
+use waproto::buffa::MessageField;
 use waproto::whatsapp as wa;
 use wasabi_domain as domain;
 use wasabi_repository::{AccountStore, StoreTuning};
@@ -166,6 +167,55 @@ async fn notification_candidate_projects_latest_committed_incoming_message() {
     assert!(!candidate.outgoing);
     assert!(!candidate.muted);
     assert!(candidate.eligible);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn media_projection_keeps_display_metadata_and_hides_transport_secrets() {
+    let dir = TestDir::new("media-projection");
+    let store = open(&dir).await;
+    let image = wa::Message {
+        image_message: MessageField::some(wa::message::ImageMessage {
+            url: Some("https://cdn.invalid/private".to_string()),
+            direct_path: Some("/private/path".to_string()),
+            media_key: Some(vec![7; 32]),
+            file_sha256: Some(vec![8; 32]),
+            file_enc_sha256: Some(vec![9; 32]),
+            file_length: Some(12_345),
+            mimetype: Some("image/jpeg".to_string()),
+            caption: Some("sample photo".to_string()),
+            width: Some(1600),
+            height: Some(900),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    store
+        .chats()
+        .record_outgoing(&jid(PEER1), "MEDIA-1", &image, Utc::now())
+        .unwrap();
+    store.flush().await.unwrap();
+
+    let page = store.message_page(PEER1, None, 10).await.unwrap();
+    let domain::MessageKind::Image { caption, media } = &page.rows[0].kind else {
+        panic!("expected image projection")
+    };
+    assert_eq!(caption.as_deref(), Some("sample photo"));
+    assert_eq!(media.mime_type.as_deref(), Some("image/jpeg"));
+    assert_eq!(media.file_size, Some(12_345));
+    assert_eq!((media.width, media.height), (Some(1600), Some(900)));
+    assert_eq!(media.availability, domain::MediaAvailability::Remote);
+    assert_eq!(format!("{media:?}").contains("private/path"), false);
+    assert_eq!(format!("{:?}", media.id), "MediaId(<opaque>)");
+
+    let context = store
+        .message_context(PEER1, domain::MessageId::new("MEDIA-1"), 2, 2)
+        .await
+        .unwrap();
+    let domain::MessageKind::Image { media, .. } = &context.rows[0].kind else {
+        panic!("expected anchored image projection")
+    };
+    assert_eq!(media.mime_type.as_deref(), Some("image/jpeg"));
+    assert_eq!(media.file_size, Some(12_345));
 }
 
 #[tokio::test(flavor = "multi_thread")]

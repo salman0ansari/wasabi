@@ -6,6 +6,11 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 
 ### Added
 
+- Received media projections now retain display-safe MIME type, file size,
+  dimensions, duration, filename, voice/video-note state, and availability.
+- Added opaque media identities so UI and service APIs never carry CDN paths,
+  encryption keys, hashes, or raw media bytes.
+
 - Phone-number account linking with validated international numbers, short-lived eight-character codes, expiry countdown, cancellation, and redacted sensitive values, alongside the existing QR flow.
 - Visible, focused conversation selection now synchronizes read state through an immutable chat-bound command, with optimistic rollback on failure.
 - Message search results now open a bounded durable context around the exact result, center it in the timeline, and apply a visible accent outline.
@@ -24,6 +29,8 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 
 ### Changed
 
+- Normal history, anchored search history, notifications, and global search now
+  share one protocol-to-product message projection.
 - GPUI now depends on a mockable `DesktopBackend` product-service contract instead of the concrete protocol bridge.
 
 ## [0.2.0-alpha.1] - 2026-08-24

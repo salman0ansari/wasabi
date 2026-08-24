@@ -251,13 +251,38 @@ impl MainWindow {
         });
         this.subscriptions.push(on_quit);
 
-        this.spawn_hydration(cx);
-        this.spawn_invalidation_loop(cx);
-        this.spawn_state_watch(cx);
-        this.spawn_qr_watch(cx);
-        this.spawn_notification_click_watch(notification_click_rx, cx);
+        #[cfg(debug_assertions)]
+        let previewing = matches!(std::env::var("WASABI_UI_PREVIEW").as_deref(), Ok("media"));
+        #[cfg(not(debug_assertions))]
+        let previewing = false;
+
+        if previewing {
+            #[cfg(debug_assertions)]
+            this.install_media_preview();
+        } else {
+            this.spawn_hydration(cx);
+            this.spawn_invalidation_loop(cx);
+            this.spawn_state_watch(cx);
+            this.spawn_qr_watch(cx);
+            this.spawn_notification_click_watch(notification_click_rx, cx);
+        }
         window.focus(&this.focus, cx);
         this
+    }
+
+    /// Deterministic debug-only surface for screenshot and visual-regression
+    /// inspection. It never ships in release builds and never performs backend
+    /// mutations. Use `WASABI_UI_PREVIEW=media` with a debug binary.
+    #[cfg(debug_assertions)]
+    fn install_media_preview(&mut self) {
+        let preview = crate::state::preview::media_preview();
+        self.session.state = wasabi_core::state::SessionState::Connected;
+        self.session.connected_once = true;
+        self.chats.loading = false;
+        self.chats.selected = Some(preview.chat.as_str().to_string());
+        self.chats.chats = vec![preview.summary];
+        self.messages.chat_id = Some(preview.chat.as_str().to_string());
+        self.messages.anchor_newest(&preview.page);
     }
 
     // ---- User intents ------------------------------------------------------

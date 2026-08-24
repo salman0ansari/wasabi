@@ -3,6 +3,8 @@
 
 pub(crate) mod chats;
 pub(crate) mod messages;
+#[cfg(debug_assertions)]
+pub(crate) mod preview;
 pub(crate) mod session;
 pub(crate) mod settings;
 

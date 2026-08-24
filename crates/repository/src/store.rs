@@ -11,6 +11,8 @@ use diesel::prelude::*;
 use tokio::sync::broadcast;
 
 use wasabi_domain as domain;
+use whatsapp_rust::wacore::proto_helpers::MessageExt;
+use whatsapp_rust::waproto::whatsapp as wa;
 use whatsapp_rust_chat_store::{
     ChatStore,
     types::{ChatCursor, MessageCursor, StoreChange as UpstreamStoreChange},
@@ -294,7 +296,7 @@ impl AccountStore {
             .shared_db()
             .read(move |connection| {
                 let older = diesel::sql_query(
-                    "SELECT msg_id, sender_jid, from_me, timestamp_ms, kind, text_content, \
+                    "SELECT msg_id, sender_jid, from_me, timestamp_ms, kind, text_content, proto, \
                             status, starred, edited_at_ms, revoked, rowid \
                      FROM messages \
                      WHERE device_id = ? AND chat_jid = ? \
@@ -310,7 +312,7 @@ impl AccountStore {
                 .load::<MessageContextRow>(connection)
                 .map_err(context_database_error)?;
                 let newer = diesel::sql_query(
-                    "SELECT msg_id, sender_jid, from_me, timestamp_ms, kind, text_content, \
+                    "SELECT msg_id, sender_jid, from_me, timestamp_ms, kind, text_content, proto, \
                             status, starred, edited_at_ms, revoked, rowid \
                      FROM messages \
                      WHERE device_id = ? AND chat_jid = ? \
@@ -545,7 +547,7 @@ mod projection_tests {
     }
 }
 
-fn stored_to_row(
+pub(crate) fn stored_to_row(
     m: whatsapp_rust_chat_store::types::StoredMessage,
 ) -> Result<domain::MessageRow, domain::ServiceError> {
     use whatsapp_rust_chat_store::types::MessageStatus as UpStatus;
@@ -593,6 +595,8 @@ struct MessageContextRow {
     kind: String,
     #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
     text_content: Option<String>,
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Binary>)]
+    proto: Option<Vec<u8>>,
     #[diesel(sql_type = diesel::sql_types::Integer)]
     status: i32,
     #[diesel(sql_type = diesel::sql_types::Bool)]
@@ -613,7 +617,11 @@ fn context_row_to_domain(chat: &str, row: MessageContextRow) -> domain::MessageR
         4 => domain::MessageStatus::Read,
         _ => domain::MessageStatus::Pending,
     };
-    let kind = context_kind(&row.kind, row.text_content);
+    let decoded = row
+        .proto
+        .as_deref()
+        .and_then(|bytes| whatsapp_rust::waproto::codec::message_decode(bytes).ok());
+    let kind = map_kind_fields(&row.msg_id, &row.kind, row.text_content, decoded.as_ref());
     domain::MessageRow {
         id: domain::MessageId::new(row.msg_id),
         chat: domain::ChatId::new(chat),
@@ -636,43 +644,6 @@ fn context_row_to_domain(chat: &str, row: MessageContextRow) -> domain::MessageR
     }
 }
 
-fn context_kind(kind: &str, text: Option<String>) -> domain::MessageKind {
-    match kind {
-        "text" => domain::MessageKind::Text {
-            body: text.unwrap_or_default(),
-        },
-        "image" => domain::MessageKind::Image {
-            caption: text,
-            mime: None,
-            media_key: None,
-        },
-        "video" | "ptv" => domain::MessageKind::Video {
-            caption: text,
-            mime: None,
-            media_key: None,
-        },
-        "audio" | "ptt" => domain::MessageKind::Audio {
-            mime: None,
-            media_key: None,
-        },
-        "document" => domain::MessageKind::Document {
-            file_name: text,
-            mime: None,
-            media_key: None,
-        },
-        "sticker" => domain::MessageKind::Sticker {
-            mime: None,
-            media_key: None,
-        },
-        "undecryptable" | "view_once" | "hosted" | "bot" | "unknown" => {
-            domain::MessageKind::Unknown
-        }
-        _ => text.map_or(domain::MessageKind::Unknown, |text| {
-            domain::MessageKind::System { text }
-        }),
-    }
-}
-
 fn notification_preview(kind: &domain::MessageKind) -> (String, bool) {
     match kind {
         domain::MessageKind::Text { body } => (body.clone(), true),
@@ -683,8 +654,11 @@ fn notification_preview(kind: &domain::MessageKind) -> (String, bool) {
             (caption.clone().unwrap_or_else(|| "Video".to_string()), true)
         }
         domain::MessageKind::Audio { .. } => ("Voice message".to_string(), true),
-        domain::MessageKind::Document { file_name, .. } => (
-            file_name.clone().unwrap_or_else(|| "Document".to_string()),
+        domain::MessageKind::Document { media } => (
+            media
+                .file_name
+                .clone()
+                .unwrap_or_else(|| "Document".to_string()),
             true,
         ),
         domain::MessageKind::Sticker { .. } => ("Sticker".to_string(), true),
@@ -702,45 +676,222 @@ fn context_database_error(error: diesel::result::Error) -> wacore::store::error:
 /// Map the stored kind + text into the UI-facing projection. Media payloads
 /// stay behind handles added; nothing here carries bytes.
 fn map_kind(m: &whatsapp_rust_chat_store::types::StoredMessage) -> domain::MessageKind {
-    use whatsapp_rust_chat_store::types::MessageKind as K;
-    match m.kind {
-        K::Text => domain::MessageKind::Text {
-            body: m.text.clone().unwrap_or_default(),
+    map_kind_fields(&m.id, m.kind.as_str(), m.text.clone(), m.message.as_deref())
+}
+
+fn map_kind_fields(
+    message_id: &str,
+    kind: &str,
+    text: Option<String>,
+    message: Option<&wa::Message>,
+) -> domain::MessageKind {
+    let base = message.map(MessageExt::get_base_message);
+    match kind {
+        "text" => domain::MessageKind::Text {
+            body: text.unwrap_or_default(),
         },
-        K::Image => domain::MessageKind::Image {
-            caption: m.text.clone(),
-            mime: None,
-            media_key: None,
-        },
-        K::Video => domain::MessageKind::Video {
-            caption: m.text.clone(),
-            mime: None,
-            media_key: None,
-        },
-        K::Audio => domain::MessageKind::Audio {
-            mime: None,
-            media_key: None,
-        },
-        K::Document => domain::MessageKind::Document {
-            file_name: m.text.clone(),
-            mime: None,
-            media_key: None,
-        },
-        K::Sticker => domain::MessageKind::Sticker {
-            mime: None,
-            media_key: None,
-        },
-        K::Undecryptable | K::Unknown | K::Other(_) => domain::MessageKind::Unknown,
-        _ => {
-            // Reactions live in their own table (query via reactions()), and
-            // the remaining kinds have no product surface yet.
-            if m.text.is_some() {
-                domain::MessageKind::System {
-                    text: m.text.clone().unwrap_or_default(),
-                }
-            } else {
-                domain::MessageKind::Unknown
+        "image" => {
+            let wire = base.and_then(|base| base.image_message.as_option());
+            domain::MessageKind::Image {
+                caption: wire.and_then(|media| media.caption.clone()).or(text),
+                media: image_descriptor(message_id, wire),
             }
         }
+        "video" | "ptv" => {
+            let wire = base.and_then(|base| {
+                base.video_message
+                    .as_option()
+                    .or_else(|| base.ptv_message.as_option())
+            });
+            domain::MessageKind::Video {
+                caption: wire.and_then(|media| media.caption.clone()).or(text),
+                video_note: kind == "ptv",
+                media: video_descriptor(message_id, wire),
+            }
+        }
+        "audio" | "ptt" => {
+            let wire = base.and_then(|base| base.audio_message.as_option());
+            domain::MessageKind::Audio {
+                voice_note: kind == "ptt" || wire.and_then(|media| media.ptt).unwrap_or(false),
+                media: audio_descriptor(message_id, wire),
+            }
+        }
+        "document" => {
+            let wire = base.and_then(|base| base.document_message.as_option());
+            domain::MessageKind::Document {
+                media: document_descriptor(message_id, wire, text),
+            }
+        }
+        "sticker" => {
+            let wire = base.and_then(|base| base.sticker_message.as_option());
+            domain::MessageKind::Sticker {
+                animated: wire.and_then(|media| media.is_animated).unwrap_or(false),
+                media: sticker_descriptor(message_id, wire),
+            }
+        }
+        "undecryptable" | "view_once" | "hosted" | "bot" | "unknown" => {
+            domain::MessageKind::Unknown
+        }
+        _ => text.map_or(domain::MessageKind::Unknown, |text| {
+            domain::MessageKind::System { text }
+        }),
     }
+}
+
+fn media_availability(
+    url: Option<&String>,
+    direct_path: Option<&String>,
+    media_key: Option<&Vec<u8>>,
+    file_sha256: Option<&Vec<u8>>,
+) -> domain::MediaAvailability {
+    if (url.is_some() || direct_path.is_some()) && media_key.is_some() && file_sha256.is_some() {
+        domain::MediaAvailability::Remote
+    } else {
+        domain::MediaAvailability::Unavailable
+    }
+}
+
+fn media_descriptor(
+    message_id: &str,
+    mime_type: Option<String>,
+    file_name: Option<String>,
+    file_size: Option<u64>,
+    duration_seconds: Option<u32>,
+    width: Option<u32>,
+    height: Option<u32>,
+    availability: domain::MediaAvailability,
+) -> domain::MediaDescriptor {
+    domain::MediaDescriptor {
+        id: domain::MediaId::new(message_id),
+        mime_type,
+        file_name,
+        file_size,
+        duration_seconds,
+        width,
+        height,
+        availability,
+    }
+}
+
+fn image_descriptor(
+    message_id: &str,
+    media: Option<&wa::message::ImageMessage>,
+) -> domain::MediaDescriptor {
+    let availability = media.map_or(domain::MediaAvailability::Unavailable, |media| {
+        media_availability(
+            media.url.as_ref(),
+            media.direct_path.as_ref(),
+            media.media_key.as_ref(),
+            media.file_sha256.as_ref(),
+        )
+    });
+    media_descriptor(
+        message_id,
+        media.and_then(|media| media.mimetype.clone()),
+        None,
+        media.and_then(|media| media.file_length),
+        None,
+        media.and_then(|media| media.width),
+        media.and_then(|media| media.height),
+        availability,
+    )
+}
+
+fn video_descriptor(
+    message_id: &str,
+    media: Option<&wa::message::VideoMessage>,
+) -> domain::MediaDescriptor {
+    let availability = media.map_or(domain::MediaAvailability::Unavailable, |media| {
+        media_availability(
+            media.url.as_ref(),
+            media.direct_path.as_ref(),
+            media.media_key.as_ref(),
+            media.file_sha256.as_ref(),
+        )
+    });
+    media_descriptor(
+        message_id,
+        media.and_then(|media| media.mimetype.clone()),
+        None,
+        media.and_then(|media| media.file_length),
+        media.and_then(|media| media.seconds),
+        media.and_then(|media| media.width),
+        media.and_then(|media| media.height),
+        availability,
+    )
+}
+
+fn audio_descriptor(
+    message_id: &str,
+    media: Option<&wa::message::AudioMessage>,
+) -> domain::MediaDescriptor {
+    let availability = media.map_or(domain::MediaAvailability::Unavailable, |media| {
+        media_availability(
+            media.url.as_ref(),
+            media.direct_path.as_ref(),
+            media.media_key.as_ref(),
+            media.file_sha256.as_ref(),
+        )
+    });
+    media_descriptor(
+        message_id,
+        media.and_then(|media| media.mimetype.clone()),
+        None,
+        media.and_then(|media| media.file_length),
+        media.and_then(|media| media.seconds),
+        None,
+        None,
+        availability,
+    )
+}
+
+fn document_descriptor(
+    message_id: &str,
+    media: Option<&wa::message::DocumentMessage>,
+    fallback_name: Option<String>,
+) -> domain::MediaDescriptor {
+    let availability = media.map_or(domain::MediaAvailability::Unavailable, |media| {
+        media_availability(
+            media.url.as_ref(),
+            media.direct_path.as_ref(),
+            media.media_key.as_ref(),
+            media.file_sha256.as_ref(),
+        )
+    });
+    media_descriptor(
+        message_id,
+        media.and_then(|media| media.mimetype.clone()),
+        media
+            .and_then(|media| media.file_name.clone())
+            .or(fallback_name),
+        media.and_then(|media| media.file_length),
+        None,
+        None,
+        None,
+        availability,
+    )
+}
+
+fn sticker_descriptor(
+    message_id: &str,
+    media: Option<&wa::message::StickerMessage>,
+) -> domain::MediaDescriptor {
+    let availability = media.map_or(domain::MediaAvailability::Unavailable, |media| {
+        media_availability(
+            media.url.as_ref(),
+            media.direct_path.as_ref(),
+            media.media_key.as_ref(),
+            media.file_sha256.as_ref(),
+        )
+    });
+    media_descriptor(
+        message_id,
+        media.and_then(|media| media.mimetype.clone()),
+        None,
+        media.and_then(|media| media.file_length),
+        None,
+        media.and_then(|media| media.width),
+        media.and_then(|media| media.height),
+        availability,
+    )
 }

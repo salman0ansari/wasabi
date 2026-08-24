@@ -321,6 +321,8 @@ fn bubble(
                 .text_color(theme::text_secondary())
                 .child("This message was deleted"),
         );
+    } else if let Some(media) = media_content(&row.kind, text_scale) {
+        content = content.child(media);
     } else {
         content = content.child(
             gpui::div()
@@ -359,6 +361,201 @@ fn bubble(
             .bg(bubble_bg)
             .child(content),
     )
+}
+
+fn media_content(kind: &wasabi_domain::MessageKind, text_scale: u16) -> Option<gpui::Div> {
+    use wasabi_domain::{MediaAvailability, MessageKind};
+
+    let (title, caption, descriptor, visual, icon) = match kind {
+        MessageKind::Image { caption, media } => (
+            "Photo".to_string(),
+            caption.clone(),
+            media,
+            true,
+            IconName::GalleryVerticalEnd,
+        ),
+        MessageKind::Video {
+            caption,
+            video_note,
+            media,
+        } => (
+            if *video_note { "Video note" } else { "Video" }.to_string(),
+            caption.clone(),
+            media,
+            true,
+            IconName::GalleryVerticalEnd,
+        ),
+        MessageKind::Audio {
+            voice_note, media, ..
+        } => (
+            if *voice_note { "Voice message" } else { "Audio" }.to_string(),
+            None,
+            media,
+            false,
+            IconName::File,
+        ),
+        MessageKind::Document { media } => (
+            media
+                .file_name
+                .clone()
+                .unwrap_or_else(|| "Document".to_string()),
+            None,
+            media,
+            false,
+            IconName::File,
+        ),
+        MessageKind::Sticker {
+            animated, media, ..
+        } => (
+            if *animated { "Animated sticker" } else { "Sticker" }.to_string(),
+            None,
+            media,
+            true,
+            IconName::GalleryVerticalEnd,
+        ),
+        _ => return None,
+    };
+
+    let metadata = media_metadata(descriptor);
+    let unavailable = descriptor.availability == MediaAvailability::Unavailable;
+    let body = if visual {
+        gpui::div()
+            .h(px(150.0))
+            .w_full()
+            .min_w(px(240.0))
+            .rounded(px(theme::RADIUS_SM))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(7.0))
+            .bg(theme::canvas())
+            .text_color(if unavailable {
+                theme::text_secondary()
+            } else {
+                theme::accent_text()
+            })
+            .child(Icon::new(if unavailable { IconName::CircleX } else { icon }).size(px(28.0)))
+            .child(
+                gpui::div()
+                    .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(if unavailable {
+                        "Media unavailable".to_string()
+                    } else {
+                        title.clone()
+                    }),
+            )
+    } else {
+        gpui::div()
+            .min_h(px(54.0))
+            .w_full()
+            .min_w(px(240.0))
+            .rounded(px(theme::RADIUS_SM))
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .px(px(10.0))
+            .py(px(8.0))
+            .bg(theme::canvas())
+            .child(
+                gpui::div()
+                    .size(px(34.0))
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(theme::row_selected())
+                    .text_color(if unavailable {
+                        theme::text_secondary()
+                    } else {
+                        theme::accent_text()
+                    })
+                    .child(Icon::new(if unavailable { IconName::CircleX } else { icon }).size(px(18.0))),
+            )
+            .child(
+                gpui::div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        gpui::div()
+                            .truncate()
+                            .text_size(px(theme::scaled_text(theme::TEXT_SIZE, text_scale)))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme::text_primary())
+                            .child(if unavailable {
+                                "Media unavailable".to_string()
+                            } else {
+                                title.clone()
+                            }),
+                    )
+                    .when(!metadata.is_empty(), |el| {
+                        el.child(
+                            gpui::div()
+                                .truncate()
+                                .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+                                .text_color(theme::text_secondary())
+                                .child(metadata.clone()),
+                        )
+                    }),
+            )
+    };
+
+    Some(
+        gpui::div()
+            .flex()
+            .flex_col()
+            .gap(px(5.0))
+            .child(body)
+            .when(visual && !metadata.is_empty(), |el| {
+                el.child(
+                    gpui::div()
+                        .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+                        .text_color(theme::text_secondary())
+                        .child(metadata),
+                )
+            })
+            .when_some(caption, |el, caption| {
+                el.child(
+                    gpui::div()
+                        .text_size(px(theme::scaled_text(theme::TEXT_SIZE, text_scale)))
+                        .text_color(theme::text_primary())
+                        .child(caption),
+                )
+            }),
+    )
+}
+
+fn media_metadata(media: &wasabi_domain::MediaDescriptor) -> String {
+    let mut parts = Vec::with_capacity(3);
+    if let Some(seconds) = media.duration_seconds {
+        parts.push(format!("{}:{:02}", seconds / 60, seconds % 60));
+    }
+    if let (Some(width), Some(height)) = (media.width, media.height) {
+        parts.push(format!("{width}×{height}"));
+    }
+    if let Some(bytes) = media.file_size {
+        parts.push(format_bytes(bytes));
+    }
+    if let Some(mime) = media.mime_type.as_deref() {
+        parts.push(mime.to_string());
+    }
+    parts.join(" · ")
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    let bytes = bytes as f64;
+    if bytes >= MIB {
+        format!("{:.1} MB", bytes / MIB)
+    } else if bytes >= KIB {
+        format!("{:.0} KB", bytes / KIB)
+    } else {
+        format!("{bytes:.0} B")
+    }
 }
 
 fn message_actions_button(
@@ -618,4 +815,16 @@ fn sheet_button(
 /// Width is ignored by the vertical list; only heights matter.
 fn size_bare(h: f32) -> gpui::Size<gpui::Pixels> {
     gpui::size(px(1.0), px(h))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_bytes;
+
+    #[test]
+    fn formats_media_sizes_for_desktop_cards() {
+        assert_eq!(format_bytes(900), "900 B");
+        assert_eq!(format_bytes(184_000), "180 KB");
+        assert_eq!(format_bytes(2_830_000), "2.7 MB");
+    }
 }

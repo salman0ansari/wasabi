@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ChatKind;
-use crate::ids::{ChatId, LocalCursor, MessageId};
+use crate::ids::{ChatId, LocalCursor, MediaId, MessageId};
 
 /// One row of the virtualized chat list.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -72,6 +72,30 @@ pub struct MessageRow {
     pub starred: bool,
 }
 
+/// Whether a media payload can be recovered without exposing its transport
+/// credentials to the UI. `Local` is reserved for a verified cache hit;
+/// repository projections currently report `Remote` or `Unavailable`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MediaAvailability {
+    Remote,
+    Local,
+    Unavailable,
+}
+
+/// Display-safe metadata for a media payload. Download paths, encryption keys,
+/// hashes, thumbnails, and raw bytes remain owned by the media service.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaDescriptor {
+    pub id: MediaId,
+    pub mime_type: Option<String>,
+    pub file_name: Option<String>,
+    pub file_size: Option<u64>,
+    pub duration_seconds: Option<u32>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub availability: MediaAvailability,
+}
+
 /// Content kind actually rendered today. Media payloads stay behind media
 /// handles — bytes never ride through here.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,26 +105,23 @@ pub enum MessageKind {
     },
     Image {
         caption: Option<String>,
-        mime: Option<String>,
-        media_key: Option<String>,
+        media: MediaDescriptor,
     },
     Video {
         caption: Option<String>,
-        mime: Option<String>,
-        media_key: Option<String>,
+        video_note: bool,
+        media: MediaDescriptor,
     },
     Audio {
-        mime: Option<String>,
-        media_key: Option<String>,
+        voice_note: bool,
+        media: MediaDescriptor,
     },
     Document {
-        file_name: Option<String>,
-        mime: Option<String>,
-        media_key: Option<String>,
+        media: MediaDescriptor,
     },
     Sticker {
-        mime: Option<String>,
-        media_key: Option<String>,
+        animated: bool,
+        media: MediaDescriptor,
     },
     Reaction {
         emoji: String,

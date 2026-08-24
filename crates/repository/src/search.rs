@@ -78,7 +78,7 @@ impl SearchService {
             .skip(skip)
             .take(PAGE_SIZE)
             .map(|m| hit_to_search_hit(m, &terms))
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(domain::SearchPage {
             messages,
@@ -103,88 +103,15 @@ fn map_store_error(e: ChatStoreError) -> domain::ServiceError {
     }
 }
 
-fn hit_to_search_hit(m: StoredMessage, terms: &[String]) -> domain::MessageSearchHit {
+fn hit_to_search_hit(
+    m: StoredMessage,
+    terms: &[String],
+) -> Result<domain::MessageSearchHit, domain::ServiceError> {
     let snippet = build_snippet(m.text.as_deref().unwrap_or(""), terms);
-    domain::MessageSearchHit {
-        row: stored_to_row(m),
+    Ok(domain::MessageSearchHit {
+        row: crate::store::stored_to_row(m)?,
         snippet,
-    }
-}
-
-// Local copy of the facade's StoredMessage → MessageRow projection (store.rs
-// keeps its own private one); duplicating the tiny mapping avoids widening the
-// facade's surface for a single consumer.
-fn stored_to_row(m: StoredMessage) -> domain::MessageRow {
-    use whatsapp_rust_chat_store::types::MessageStatus as UpStatus;
-    let status = match m.status {
-        UpStatus::Error => domain::MessageStatus::Failed,
-        UpStatus::Pending => domain::MessageStatus::Pending,
-        UpStatus::ServerAck => domain::MessageStatus::ServerAck,
-        UpStatus::Delivered | UpStatus::Played => domain::MessageStatus::Delivered,
-        UpStatus::Read => domain::MessageStatus::Read,
-    };
-    let kind = map_kind(&m);
-    domain::MessageRow {
-        id: domain::MessageId::new(m.id),
-        chat: domain::ChatId::new(m.chat_jid.to_string()),
-        direction: if m.from_me {
-            domain::MessageDirection::Outgoing
-        } else {
-            domain::MessageDirection::Incoming
-        },
-        sender: domain::SenderJid {
-            bare: m.sender_jid.to_string(),
-            push_name: None,
-        },
-        timestamp_ms: m.timestamp.timestamp_millis(),
-        seq: domain::LocalCursor(m.seq),
-        kind,
-        status,
-        edited_at_ms: m.edited_at.map(|t| t.timestamp_millis()),
-        revoked: m.revoked,
-        starred: m.starred,
-    }
-}
-
-fn map_kind(m: &StoredMessage) -> domain::MessageKind {
-    use whatsapp_rust_chat_store::types::MessageKind as K;
-    match m.kind {
-        K::Text => domain::MessageKind::Text {
-            body: m.text.clone().unwrap_or_default(),
-        },
-        K::Image => domain::MessageKind::Image {
-            caption: m.text.clone(),
-            mime: None,
-            media_key: None,
-        },
-        K::Video => domain::MessageKind::Video {
-            caption: m.text.clone(),
-            mime: None,
-            media_key: None,
-        },
-        K::Audio => domain::MessageKind::Audio {
-            mime: None,
-            media_key: None,
-        },
-        K::Document => domain::MessageKind::Document {
-            file_name: m.text.clone(),
-            mime: None,
-            media_key: None,
-        },
-        K::Sticker => domain::MessageKind::Sticker {
-            mime: None,
-            media_key: None,
-        },
-        K::Undecryptable | K::Unknown | K::Other(_) => domain::MessageKind::Unknown,
-        _ => {
-            // Reactions live in their own table; remaining kinds have no
-            // product surface yet, but their text still deserves display.
-            match m.text.clone() {
-                Some(text) => domain::MessageKind::System { text },
-                None => domain::MessageKind::Unknown,
-            }
-        }
-    }
+    })
 }
 
 /// Snippet around the first case-insensitive occurrence of any query term:

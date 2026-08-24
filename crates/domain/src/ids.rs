@@ -36,6 +36,31 @@ impl fmt::Display for MessageId {
     }
 }
 
+/// Opaque identity for one media payload inside a conversation.
+///
+/// The current repository derives this from the durable message identity. The
+/// UI must treat it as an uninterpreted handle and always use it together with
+/// the row's chat identity; CDN paths, media keys, and bytes never cross the
+/// product boundary.
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct MediaId(String);
+
+impl MediaId {
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for MediaId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("MediaId(<opaque>)")
+    }
+}
+
 /// A conversation key as seen by the domain. The repository normalizes
 /// PN↔LID before persisting; the domain sees one canonical thread id.
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
