@@ -4,9 +4,10 @@
 use gpui::prelude::*;
 use gpui::{Context, px};
 
+use crate::state::settings::CACHE_QUOTA_CHOICES_MB;
 use crate::state::{SettingsSection, ThemePreference};
 use crate::theme;
-use crate::views::root::MainWindow;
+use crate::views::root::{MainWindow, SettingsFeedback, SettingsOverlay};
 
 pub fn settings_page(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl IntoElement {
     gpui::div()
@@ -14,10 +15,14 @@ pub fn settings_page(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> imp
         .flex_1()
         .min_w(px(0.0))
         .h_full()
+        .relative()
         .flex()
         .bg(theme::surface())
         .child(settings_navigation(this, cx))
         .child(settings_content(this, cx))
+        .when(this.settings_overlay.is_some(), |page| {
+            page.child(settings_overlay(this, cx))
+        })
 }
 
 fn settings_navigation(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
@@ -119,17 +124,45 @@ fn settings_content(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl
                         .text_color(theme::text_primary())
                         .child(section.label()),
                 )
+                .when_some(this.settings_feedback.clone(), |content, feedback| {
+                    content.child(feedback_banner(feedback))
+                })
                 .child(match section {
                     SettingsSection::General => general(this, cx),
                     SettingsSection::Account => account(this, cx),
                     SettingsSection::Privacy => privacy(this, cx),
                     SettingsSection::Chats => chats(this, cx),
                     SettingsSection::Notifications => notifications(this, cx),
-                    SettingsSection::Storage => storage(this),
+                    SettingsSection::Storage => storage(this, cx),
                     SettingsSection::Shortcuts => shortcuts(),
                     SettingsSection::Help => help(),
                 }),
         )
+}
+
+fn feedback_banner(feedback: SettingsFeedback) -> gpui::Div {
+    let (message, success) = match feedback {
+        SettingsFeedback::Success(message) => (message, true),
+        SettingsFeedback::Error(message) => (message, false),
+    };
+    gpui::div()
+        .mb(px(14.0))
+        .px(px(12.0))
+        .py(px(9.0))
+        .rounded(px(theme::RADIUS_MD))
+        .border_1()
+        .border_color(if success {
+            theme::accent()
+        } else {
+            theme::danger()
+        })
+        .text_size(px(theme::TEXT_SIZE_SM))
+        .text_color(if success {
+            theme::accent_text()
+        } else {
+            theme::danger()
+        })
+        .child(message)
 }
 
 fn card(title: &'static str) -> gpui::Div {
@@ -236,6 +269,69 @@ fn toggle_row(
         }))
 }
 
+fn action_row(
+    id: &'static str,
+    label: impl Into<String>,
+    description: impl Into<String>,
+    action_label: &'static str,
+    danger: bool,
+    cx: &mut Context<MainWindow>,
+    action: impl Fn(&mut MainWindow, &mut Context<MainWindow>) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    gpui::div()
+        .id(id)
+        .min_h(px(62.0))
+        .px(px(18.0))
+        .py(px(9.0))
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .gap(px(16.0))
+        .border_t_1()
+        .border_color(theme::border())
+        .hover(|style| style.bg(theme::row_hover()))
+        .child(
+            gpui::div()
+                .flex_1()
+                .min_w(px(0.0))
+                .child(
+                    gpui::div()
+                        .text_size(px(theme::TEXT_SIZE))
+                        .text_color(theme::text_primary())
+                        .child(label.into()),
+                )
+                .child(
+                    gpui::div()
+                        .mt(px(2.0))
+                        .truncate()
+                        .text_size(px(theme::TEXT_SIZE_SM))
+                        .text_color(theme::text_secondary())
+                        .child(description.into()),
+                ),
+        )
+        .child(
+            gpui::div()
+                .px(px(10.0))
+                .py(px(5.0))
+                .rounded(px(theme::RADIUS_SM))
+                .border_1()
+                .border_color(if danger {
+                    theme::danger()
+                } else {
+                    theme::border()
+                })
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .text_color(if danger {
+                    theme::danger()
+                } else {
+                    theme::accent_text()
+                })
+                .child(action_label),
+        )
+        .on_click(cx.listener(move |this, _, _, cx| action(this, cx)))
+}
+
 fn general(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElement {
     card("APPLICATION")
         .child(value_row("Language", this.settings.language.clone()))
@@ -248,38 +344,16 @@ fn general(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElem
             |this| this.settings.launch_at_startup = !this.settings.launch_at_startup,
         ))
         .child(value_row("Close behavior", "Close the window"))
-        .child(toggle_row(
-            "setting-diagnostics",
-            "Share diagnostic data",
-            "Content-free technical diagnostics only.",
-            this.settings.diagnostics,
-            cx,
-            |this| this.settings.diagnostics = !this.settings.diagnostics,
-        ))
         .into_any_element()
 }
 
-fn account(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElement {
+fn account(this: &mut MainWindow, _cx: &mut Context<MainWindow>) -> gpui::AnyElement {
     card("LINKED ACCOUNT")
         .child(value_row("Connection", this.session.status_label()))
-        .child(value_row("Profile", "Local account profile"))
-        .child(
-            gpui::div()
-                .id("settings-link-device")
-                .min_h(px(54.0))
-                .px(px(18.0))
-                .cursor_pointer()
-                .flex()
-                .items_center()
-                .border_t_1()
-                .border_color(theme::border())
-                .text_size(px(theme::TEXT_SIZE))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(theme::accent_text())
-                .hover(|style| style.bg(theme::row_hover()))
-                .child("Link another device with QR")
-                .on_click(cx.listener(|this, _, _, cx| this.request_pairing(cx))),
-        )
+        .child(value_row(
+            "Local data",
+            "Cached chats remain on this computer when offline",
+        ))
         .into_any_element()
 }
 
@@ -293,8 +367,6 @@ fn privacy(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElem
             cx,
             |this| this.settings.notification_previews = !this.settings.notification_previews,
         ))
-        .child(value_row("Default disappearing messages", "Off"))
-        .child(value_row("Blocked contacts", "Managed by the linked account"))
         .into_any_element()
 }
 
@@ -398,22 +470,6 @@ fn chats(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElemen
             cx,
             |this| this.settings.enter_to_send = !this.settings.enter_to_send,
         ))
-        .child(toggle_row(
-            "setting-spellcheck",
-            "Spellcheck",
-            "Use the desktop spellchecker while composing.",
-            this.settings.spellcheck,
-            cx,
-            |this| this.settings.spellcheck = !this.settings.spellcheck,
-        ))
-        .child(toggle_row(
-            "setting-link-preview",
-            "Link previews",
-            "Create a preview when a supported link is pasted.",
-            this.settings.link_previews,
-            cx,
-            |this| this.settings.link_previews = !this.settings.link_previews,
-        ))
         .into_any_element()
 }
 
@@ -446,18 +502,89 @@ fn notifications(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::A
         .into_any_element()
 }
 
-fn storage(this: &MainWindow) -> gpui::AnyElement {
+fn storage(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElement {
+    let usage = if this.media_cache_loading && this.media_cache_usage_bytes.is_none() {
+        "Calculating…".to_string()
+    } else {
+        this.media_cache_usage_bytes
+            .map(format_bytes)
+            .unwrap_or_else(|| "Not calculated".to_string())
+    };
+    let mut quota_choices = gpui::div().flex().gap(px(8.0));
+    for (index, quota_mb) in CACHE_QUOTA_CHOICES_MB.into_iter().enumerate() {
+        let selected = this.settings.cache_quota_mb == quota_mb;
+        quota_choices = quota_choices.child(
+            gpui::div()
+                .id(("cache-quota", index))
+                .px(px(14.0))
+                .py(px(7.0))
+                .rounded(px(theme::RADIUS_MD))
+                .cursor_pointer()
+                .border_1()
+                .when(selected, |el| {
+                    el.border_color(theme::accent()).text_color(theme::accent_text())
+                })
+                .when(!selected, |el| {
+                    el.border_color(theme::border())
+                        .text_color(theme::text_secondary())
+                        .hover(|style| style.bg(theme::row_hover()))
+                })
+                .child(if quota_mb >= 1024 {
+                    format!("{} GB", quota_mb / 1024)
+                } else {
+                    format!("{quota_mb} MB")
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.set_media_cache_quota(quota_mb, cx)
+                })),
+        );
+    }
+
     card("DOWNLOADS AND CACHE")
-        .child(value_row(
+        .child(action_row(
+            "setting-download-location",
             "Download location",
             this.settings.download_path.clone(),
+            "Choose",
+            false,
+            cx,
+            |this, cx| this.choose_download_directory(cx),
         ))
-        .child(value_row(
-            "Cache quota",
-            format!("{} MB", this.settings.cache_quota_mb),
+        .child(value_row("Media cache in use", usage))
+        .child(
+            gpui::div()
+                .px(px(18.0))
+                .py(px(12.0))
+                .border_t_1()
+                .border_color(theme::border())
+                .child(
+                    gpui::div()
+                        .mb(px(8.0))
+                        .text_size(px(theme::TEXT_SIZE))
+                        .child("Cache quota"),
+                )
+                .child(quota_choices),
+        )
+        .child(action_row(
+            "setting-clear-cache",
+            "Clear media cache",
+            "Downloaded media can be fetched again when needed.",
+            "Clear…",
+            true,
+            cx,
+            |this, cx| this.confirm_clear_media_cache(cx),
         ))
-        .child(value_row("Automatic downloads", "Photos on any network"))
         .into_any_element()
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+    if bytes as f64 >= GIB {
+        format!("{:.1} GB", bytes as f64 / GIB)
+    } else {
+        format!("{:.1} MB", bytes as f64 / MIB)
+    }
 }
 
 fn shortcuts() -> gpui::AnyElement {
@@ -480,4 +607,104 @@ fn help() -> gpui::AnyElement {
         ))
         .child(value_row("Logs", "Content-free and identity-redacted"))
         .into_any_element()
+}
+
+fn settings_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
+    let Some(overlay) = this.settings_overlay else {
+        return gpui::div();
+    };
+    let (title, detail, confirm) = match overlay {
+        SettingsOverlay::ClearMediaCache => (
+            "Clear downloaded media?",
+            "Cached photos, videos, audio, and documents will be removed from this computer. Messages remain available and media can be downloaded again.",
+            "Clear cache",
+        ),
+    };
+    gpui::div()
+        .absolute()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme::scrim())
+        .child(
+            gpui::div()
+                .w(px(410.0))
+                .max_w_full()
+                .rounded(px(theme::RADIUS_MD))
+                .border_1()
+                .border_color(theme::border())
+                .bg(theme::surface())
+                .p(px(18.0))
+                .flex()
+                .flex_col()
+                .gap(px(12.0))
+                .child(
+                    gpui::div()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme::text_primary())
+                        .child(title),
+                )
+                .child(
+                    gpui::div()
+                        .text_size(px(theme::TEXT_SIZE_SM))
+                        .text_color(theme::text_secondary())
+                        .child(detail),
+                )
+                .child(
+                    gpui::div()
+                        .flex()
+                        .justify_end()
+                        .gap(px(8.0))
+                        .child(
+                            overlay_button("cancel-settings-action", "Cancel", false).on_click(
+                                cx.listener(|this, _, _, cx| this.close_settings_overlay(cx)),
+                            ),
+                        )
+                        .child(
+                            overlay_button("confirm-settings-action", confirm, true).on_click(
+                                cx.listener(|this, _, _, cx| this.run_clear_media_cache(cx)),
+                            ),
+                        ),
+                ),
+        )
+}
+
+fn overlay_button(
+    id: &'static str,
+    label: &'static str,
+    danger: bool,
+) -> gpui::Stateful<gpui::Div> {
+    gpui::div()
+        .id(id)
+        .px(px(12.0))
+        .py(px(7.0))
+        .rounded(px(theme::RADIUS_SM))
+        .cursor_pointer()
+        .border_1()
+        .border_color(if danger {
+            theme::danger()
+        } else {
+            theme::border()
+        })
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(if danger {
+            theme::danger()
+        } else {
+            theme::text_primary()
+        })
+        .hover(|style| style.bg(theme::row_hover()))
+        .child(label)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_bytes;
+
+    #[test]
+    fn cache_usage_is_human_readable() {
+        assert_eq!(format_bytes(0), "0.0 MB");
+        assert_eq!(format_bytes(512 * 1024 * 1024), "512.0 MB");
+        assert_eq!(format_bytes(1536 * 1024 * 1024), "1.5 GB");
+    }
 }

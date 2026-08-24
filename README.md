@@ -30,11 +30,15 @@ Selected files are copied into restart-safe Wasabi staging before upload. The co
 
 ### Settings
 
-![Wasabi Settings in the light theme](docs/screenshots/settings-light.png)
+Settings are persistent and operational: the Storage surface reports live
+cache use, enforces the selected quota, opens the Linux folder picker, and
+requires confirmation before clearing downloaded media.
+
+![Wasabi Storage settings in the light theme](docs/screenshots/settings-storage-light.png)
 
 ### Dark theme
 
-![Wasabi Settings in the dark theme](docs/screenshots/settings-dark.png)
+![Wasabi Storage settings in the dark theme](docs/screenshots/settings-storage-dark.png)
 
 ### Responsive contact information
 
@@ -65,7 +69,8 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 - Mark unread conversations read when they are opened in the active window, without cross-chat races.
 - Keep independent per-chat text drafts across conversation switches and app restarts.
 - Use light, dark, or Linux system appearance.
-- Configure text size, Enter-to-send, spellcheck, link previews, notifications, download location, and cache quota.
+- Configure text size, Enter-to-send, notifications, download location, and an actively enforced media-cache quota.
+- Inspect current media-cache usage and clear downloaded media through an explicit confirmation flow.
 - Receive standard Linux desktop notifications that respect mute, focus, sound, and preview-privacy settings; clicking one focuses its conversation.
 - Persist device settings independently from the linked account.
 - Enable standards-based XDG autostart.

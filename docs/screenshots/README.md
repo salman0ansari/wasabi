@@ -7,8 +7,8 @@ These images are captures of the native GPUI application—not design mockups or
 | Primary chat workspace | Light | 1280×922 | [`chat-workspace-light.png`](chat-workspace-light.png) |
 | Durable attachment composer | Light | 1280×922 | [`attachment-composer-light.png`](attachment-composer-light.png) |
 | Archived conversations | Light | 1280×922 | [`archived-empty.png`](archived-empty.png) |
-| Settings | Light | 1280×922 | [`settings-light.png`](settings-light.png) |
-| Settings | Dark | 1280×922 | [`settings-dark.png`](settings-dark.png) |
+| Operational Storage settings | Light | 1280×922 | [`settings-storage-light.png`](settings-storage-light.png) |
+| Operational Storage settings | Dark | 1280×922 | [`settings-storage-dark.png`](settings-storage-dark.png) |
 | Contact drawer overlay | Light | 980×700 | [`contact-drawer-compact.png`](contact-drawer-compact.png) |
 | Group information and real participant roles | Light | 1280×922 | [`group-info-light.png`](group-info-light.png) |
 

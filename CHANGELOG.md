@@ -6,6 +6,11 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 
 ### Added
 
+- Storage settings now report live media-cache usage, enforce persisted
+  256 MiB/1 GiB/4 GiB quotas, open the native Linux directory picker, and
+  clear downloaded media through an explicit confirmation flow.
+- Device-settings loading now recovers safely from corrupt JSON and
+  normalizes invalid persisted text-scale, quota, version, and path values.
 - Received media projections now retain display-safe MIME type, file size,
   dimensions, duration, filename, voice/video-note state, and availability.
 - Added opaque media identities so UI and service APIs never carry CDN paths,
@@ -60,6 +65,11 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 
 ### Changed
 
+- Removed visible diagnostics, spellcheck, link-preview, automatic-download,
+  disappearing-message, and blocklist controls until each has a working
+  product service; Settings no longer promises behavior it cannot execute.
+- The configured cache quota is now applied when the media service opens,
+  instead of being a display-only preference.
 - Normal history, anchored search history, notifications, and global search now
   share one protocol-to-product message projection.
 - Removed unverified placeholder values for shared media, starred messages,
@@ -77,7 +87,7 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 - Native GPUI desktop shell with a compact icon-only navigation rail.
 - Chat-owned search and All, Unread, Favorites, and Groups filters.
 - Responsive direct-contact and group information drawers.
-- Two-pane Settings covering General, Account, Privacy, Chats, Notifications, Storage and data, Keyboard shortcuts, Help, and Log out.
+- Two-pane Settings covering General, Account, Privacy, Chats, Notifications, Storage and data, Keyboard shortcuts, and Help.
 - Persistent light, dark, and Linux system themes, text sizing, send behavior, notification preferences, download location, cache quota, and XDG autostart.
 - Honest pairing, loading, empty, offline, and unavailable states without invented contacts or participant data.
 

@@ -47,9 +47,13 @@ fn main() -> anyhow::Result<()> {
     // in-window instead of aborting the process.
     let layout = StorageLayout::new(data_dir);
     let opened = supervisor.handle().block_on(open_session(&layout));
+    let settings = DeviceSettings::load();
     let media_cache = supervisor
         .handle()
-        .block_on(wasabi_media::DiskCache::open(layout.media_cache()))
+        .block_on(wasabi_media::DiskCache::open_with_quota(
+            layout.media_cache(),
+            settings.cache_quota_mb.saturating_mul(1024 * 1024),
+        ))
         .context("open media cache")?;
     let open_error = opened.as_ref().err().map(|e| e.to_string());
 
@@ -72,7 +76,15 @@ fn main() -> anyhow::Result<()> {
         .with_assets(gpui_component_assets::Assets)
         .run(move |cx| {
             gpui_component::init(cx);
-            let preference = DeviceSettings::load().theme;
+            let preference = if cfg!(debug_assertions)
+                && matches!(
+                    std::env::var("WASABI_UI_PREVIEW").as_deref(),
+                    Ok("settings-dark")
+                ) {
+                ThemePreference::Dark
+            } else {
+                DeviceSettings::load().theme
+            };
             let mode = match preference {
                 ThemePreference::Light => gpui_component::theme::ThemeMode::Light,
                 ThemePreference::Dark => gpui_component::theme::ThemeMode::Dark,

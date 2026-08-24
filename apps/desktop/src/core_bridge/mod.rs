@@ -53,6 +53,9 @@ pub trait DesktopBackend: Send + Sync {
     async fn cancel_phone_pairing(&self) -> Result<(), String>;
     async fn stop_session(&self) -> Result<(), String>;
     async fn flush_storage(&self) -> Result<(), String>;
+    async fn media_cache_usage(&self) -> Result<u64, ServiceError>;
+    async fn set_media_cache_quota(&self, bytes: u64) -> Result<u64, ServiceError>;
+    async fn clear_media_cache(&self) -> Result<(), ServiceError>;
     async fn load_chat_page(
         &self,
         scope: ChatScope,
@@ -309,6 +312,41 @@ impl CoreBridge {
         let session = self.session_snapshot()?;
         self.run_on_core(async move { session.store.flush().await.map_err(|e| e.to_string()) })
             .await
+    }
+
+    pub async fn media_cache_usage(&self) -> Result<u64, ServiceError> {
+        let cache = self.media_cache.clone();
+        self.run_on_core_service(async move {
+            cache
+                .total_bytes()
+                .await
+                .map_err(|error| ServiceError::new(ErrorKind::Internal, error.to_string()))
+        })
+        .await
+    }
+
+    pub async fn set_media_cache_quota(&self, bytes: u64) -> Result<u64, ServiceError> {
+        let cache = self.media_cache.clone();
+        self.run_on_core_service(async move {
+            cache.set_quota(bytes);
+            cache
+                .evict_to(bytes)
+                .await
+                .map_err(|error| ServiceError::new(ErrorKind::Internal, error.to_string()))
+        })
+        .await
+    }
+
+    pub async fn clear_media_cache(&self) -> Result<(), ServiceError> {
+        let cache = self.media_cache.clone();
+        self.run_on_core_service(async move {
+            cache
+                .evict_to(0)
+                .await
+                .map(|_| ())
+                .map_err(|error| ServiceError::new(ErrorKind::Internal, error.to_string()))
+        })
+        .await
     }
 
     // ---- Queries ------------------------------------------------------------
@@ -1378,6 +1416,18 @@ impl DesktopBackend for CoreBridge {
 
     async fn flush_storage(&self) -> Result<(), String> {
         CoreBridge::flush_storage(self).await
+    }
+
+    async fn media_cache_usage(&self) -> Result<u64, ServiceError> {
+        CoreBridge::media_cache_usage(self).await
+    }
+
+    async fn set_media_cache_quota(&self, bytes: u64) -> Result<u64, ServiceError> {
+        CoreBridge::set_media_cache_quota(self, bytes).await
+    }
+
+    async fn clear_media_cache(&self) -> Result<(), ServiceError> {
+        CoreBridge::clear_media_cache(self).await
     }
 
     async fn load_chat_page(

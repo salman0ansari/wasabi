@@ -50,6 +50,17 @@ pub(crate) enum MessageOverlay {
     Confirm(wasabi_domain::MessageAction),
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum SettingsOverlay {
+    ClearMediaCache,
+}
+
+#[derive(Clone)]
+pub(crate) enum SettingsFeedback {
+    Success(String),
+    Error(String),
+}
+
 #[derive(Clone)]
 pub(crate) enum MediaDownloadUi {
     Downloading,
@@ -118,6 +129,10 @@ pub struct MainWindow {
     pub(crate) details_error: Option<String>,
     pub(crate) settings: DeviceSettings,
     pub(crate) settings_section: SettingsSection,
+    pub(crate) settings_overlay: Option<SettingsOverlay>,
+    pub(crate) settings_feedback: Option<SettingsFeedback>,
+    pub(crate) media_cache_usage_bytes: Option<u64>,
+    pub(crate) media_cache_loading: bool,
     pub(crate) send_error: Option<String>,
     pub(crate) message_overlay: Option<MessageOverlay>,
     pub(crate) media_downloads:
@@ -217,6 +232,10 @@ impl MainWindow {
             details_error: None,
             settings: DeviceSettings::load(),
             settings_section: SettingsSection::Chats,
+            settings_overlay: None,
+            settings_feedback: None,
+            media_cache_usage_bytes: None,
+            media_cache_loading: false,
             send_error: None,
             message_overlay: None,
             media_downloads: HashMap::new(),
@@ -317,13 +336,13 @@ impl MainWindow {
         this.subscriptions.push(on_quit);
 
         #[cfg(debug_assertions)]
-        let previewing = matches!(std::env::var("WASABI_UI_PREVIEW").as_deref(), Ok("media"));
+        let preview_mode = std::env::var("WASABI_UI_PREVIEW").ok();
         #[cfg(not(debug_assertions))]
-        let previewing = false;
+        let preview_mode: Option<String> = None;
 
-        if previewing {
+        if let Some(preview_mode) = preview_mode {
             #[cfg(debug_assertions)]
-            this.install_media_preview();
+            this.install_preview(&preview_mode);
         } else {
             this.spawn_hydration(cx);
             this.spawn_invalidation_loop(cx);
@@ -338,9 +357,10 @@ impl MainWindow {
 
     /// Deterministic debug-only surface for screenshot and visual-regression
     /// inspection. It never ships in release builds and never performs backend
-    /// mutations. Use `WASABI_UI_PREVIEW=media` with a debug binary.
+    /// mutations. Use `WASABI_UI_PREVIEW=media` or `settings` with a debug
+    /// binary.
     #[cfg(debug_assertions)]
-    fn install_media_preview(&mut self) {
+    fn install_preview(&mut self, mode: &str) {
         let preview = crate::state::preview::media_preview();
         self.session.state = wasabi_core::state::SessionState::Connected;
         self.session.connected_once = true;
@@ -367,6 +387,11 @@ impl MainWindow {
                 generation: 1,
             },
         );
+        if matches!(mode, "settings" | "settings-dark") {
+            self.nav_destination = NavDestination::Settings;
+            self.settings_section = SettingsSection::Storage;
+            self.media_cache_usage_bytes = Some(187 * 1024 * 1024);
+        }
     }
 
     // ---- User intents ------------------------------------------------------
@@ -1282,7 +1307,7 @@ impl MainWindow {
     }
 
     pub(crate) fn dismiss_overlay_or_drawer(&mut self, cx: &mut Context<Self>) {
-        if self.message_overlay.take().is_some() {
+        if self.settings_overlay.take().is_some() || self.message_overlay.take().is_some() {
             cx.notify();
         } else {
             self.close_right_panel(cx);
@@ -1404,13 +1429,149 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         self.settings_section = section;
+        self.settings_feedback = None;
+        if section == SettingsSection::Storage {
+            self.refresh_media_cache_usage(cx);
+        }
         cx.notify();
     }
 
     pub(crate) fn save_settings(&mut self, cx: &mut Context<Self>) {
         if let Err(error) = self.settings.save() {
-            self.send_error = Some(format!("Could not save settings: {error}"));
+            self.settings_feedback = Some(SettingsFeedback::Error(format!(
+                "Could not save settings: {error}"
+            )));
         }
+        cx.notify();
+    }
+
+    pub(crate) fn choose_download_directory(&mut self, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Choose download folder".into()),
+        });
+        spawn_main(cx, async move |this, cx| {
+            let selected = paths.await.ok().and_then(Result::ok).flatten();
+            let Some(path) = selected.and_then(|paths| paths.into_iter().next()) else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                this.settings.download_path = path.to_string_lossy().into_owned();
+                this.settings_feedback = Some(SettingsFeedback::Success(
+                    "Download folder updated".to_string(),
+                ));
+                this.save_settings(cx);
+            })
+            .ok();
+        });
+    }
+
+    pub(crate) fn refresh_media_cache_usage(&mut self, cx: &mut Context<Self>) {
+        if self.media_cache_loading {
+            return;
+        }
+        self.media_cache_loading = true;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.media_cache_usage().await;
+            this.update(cx, |this, cx| {
+                this.media_cache_loading = false;
+                match result {
+                    Ok(bytes) => this.media_cache_usage_bytes = Some(bytes),
+                    Err(error) => {
+                        tracing::warn!(kind = %error.kind, "media cache usage failed");
+                        this.settings_feedback = Some(SettingsFeedback::Error(
+                            error.ui_message().to_string(),
+                        ));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn set_media_cache_quota(&mut self, quota_mb: u64, cx: &mut Context<Self>) {
+        if self.media_cache_loading
+            || !crate::state::settings::CACHE_QUOTA_CHOICES_MB.contains(&quota_mb)
+        {
+            return;
+        }
+        self.media_cache_loading = true;
+        self.settings_feedback = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge
+                .set_media_cache_quota(quota_mb.saturating_mul(1024 * 1024))
+                .await;
+            this.update(cx, |this, cx| {
+                this.media_cache_loading = false;
+                match result {
+                    Ok(bytes) => {
+                        this.settings.cache_quota_mb = quota_mb;
+                        this.media_cache_usage_bytes = Some(bytes);
+                        this.settings_feedback = Some(SettingsFeedback::Success(format!(
+                            "Cache quota set to {quota_mb} MB"
+                        )));
+                        this.save_settings(cx);
+                    }
+                    Err(error) => {
+                        tracing::warn!(kind = %error.kind, "media cache quota failed");
+                        this.settings_feedback = Some(SettingsFeedback::Error(
+                            error.ui_message().to_string(),
+                        ));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn confirm_clear_media_cache(&mut self, cx: &mut Context<Self>) {
+        self.settings_overlay = Some(SettingsOverlay::ClearMediaCache);
+        cx.notify();
+    }
+
+    pub(crate) fn close_settings_overlay(&mut self, cx: &mut Context<Self>) {
+        self.settings_overlay = None;
+        cx.notify();
+    }
+
+    pub(crate) fn run_clear_media_cache(&mut self, cx: &mut Context<Self>) {
+        if self.media_cache_loading {
+            return;
+        }
+        self.settings_overlay = None;
+        self.media_cache_loading = true;
+        self.settings_feedback = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.clear_media_cache().await;
+            this.update(cx, |this, cx| {
+                this.media_cache_loading = false;
+                match result {
+                    Ok(()) => {
+                        this.media_cache_usage_bytes = Some(0);
+                        this.settings_feedback = Some(SettingsFeedback::Success(
+                            "Media cache cleared".to_string(),
+                        ));
+                    }
+                    Err(error) => {
+                        tracing::warn!(kind = %error.kind, "media cache clear failed");
+                        this.settings_feedback = Some(SettingsFeedback::Error(
+                            error.ui_message().to_string(),
+                        ));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
         cx.notify();
     }
 

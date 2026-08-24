@@ -7,6 +7,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub const SETTINGS_VERSION: u32 = 1;
+pub const CACHE_QUOTA_CHOICES_MB: [u64; 3] = [256, 1024, 4096];
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThemePreference {
@@ -34,12 +37,9 @@ pub struct DeviceSettings {
     pub version: u32,
     pub language: String,
     pub launch_at_startup: bool,
-    pub diagnostics: bool,
     pub theme: ThemePreference,
     pub text_scale: u16,
     pub enter_to_send: bool,
-    pub spellcheck: bool,
-    pub link_previews: bool,
     pub desktop_notifications: bool,
     pub notification_sound: bool,
     pub notification_previews: bool,
@@ -55,15 +55,12 @@ impl Default for DeviceSettings {
             .to_string_lossy()
             .into_owned();
         Self {
-            version: 1,
+            version: SETTINGS_VERSION,
             language: "System default".into(),
             launch_at_startup: false,
-            diagnostics: false,
             theme: ThemePreference::System,
             text_scale: 100,
             enter_to_send: true,
-            spellcheck: true,
-            link_previews: true,
             desktop_notifications: true,
             notification_sound: true,
             notification_previews: true,
@@ -83,11 +80,15 @@ impl DeviceSettings {
     }
 
     pub fn load() -> Self {
-        let path = Self::path();
-        fs::read(&path)
+        Self::load_from(Self::path())
+    }
+
+    fn load_from(path: impl AsRef<std::path::Path>) -> Self {
+        fs::read(path)
             .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .and_then(|bytes| serde_json::from_slice::<Self>(&bytes).ok())
             .unwrap_or_default()
+            .normalized()
     }
 
     pub fn save(&self) -> io::Result<()> {
@@ -101,6 +102,20 @@ impl DeviceSettings {
         fs::write(&temporary, bytes)?;
         fs::rename(temporary, path)?;
         self.sync_autostart()
+    }
+
+    fn normalized(mut self) -> Self {
+        self.version = SETTINGS_VERSION;
+        if !matches!(self.text_scale, 100 | 125 | 150) {
+            self.text_scale = 100;
+        }
+        if !CACHE_QUOTA_CHOICES_MB.contains(&self.cache_quota_mb) {
+            self.cache_quota_mb = 1024;
+        }
+        if self.download_path.trim().is_empty() {
+            self.download_path = DeviceSettings::default().download_path;
+        }
+        self
     }
 
     fn sync_autostart(&self) -> io::Result<()> {
@@ -172,7 +187,7 @@ impl SettingsSection {
 
 #[cfg(test)]
 mod tests {
-    use super::DeviceSettings;
+    use super::{DeviceSettings, SETTINGS_VERSION};
 
     #[test]
     fn settings_json_is_backward_compatible_via_defaults() {
@@ -180,5 +195,31 @@ mod tests {
         assert!(!parsed.enter_to_send);
         assert_eq!(parsed.text_scale, 100);
         assert!(parsed.desktop_notifications);
+    }
+
+    #[test]
+    fn corrupt_settings_recover_to_defaults() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        std::fs::write(&path, b"{ definitely not json").unwrap();
+
+        assert_eq!(DeviceSettings::load_from(path).version, SETTINGS_VERSION);
+    }
+
+    #[test]
+    fn invalid_bounded_values_are_normalized() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        std::fs::write(
+            &path,
+            br#"{"version":99,"text_scale":999,"cache_quota_mb":7,"download_path":""}"#,
+        )
+        .unwrap();
+
+        let settings = DeviceSettings::load_from(path);
+        assert_eq!(settings.version, SETTINGS_VERSION);
+        assert_eq!(settings.text_scale, 100);
+        assert_eq!(settings.cache_quota_mb, 1024);
+        assert!(!settings.download_path.is_empty());
     }
 }
