@@ -1,4 +1,4 @@
-measured_at_utc=2026-08-24T13:26:37Z
+measured_at_utc=2026-08-24T14:30:12Z
 kernel=Linux 6.12.44-1-lts
 architecture=x86_64
 cpu=AMD Ryzen 5 5600X 6-Core Processor
@@ -6,6 +6,6 @@ logical_cpus=12
 memory_kib=16275676
 display_server=X11
 wasabi_version=0.2.0-alpha.1
-wasabi_binary_bytes=68391104
+wasabi_binary_bytes=69018880
 electron_version=v41.3.0
 electron_binary=/usr/bin/electron41
