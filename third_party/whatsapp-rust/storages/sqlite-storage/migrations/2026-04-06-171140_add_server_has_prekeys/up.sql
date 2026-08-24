@@ -1,1 +1,0 @@
-ALTER TABLE device ADD COLUMN server_has_prekeys BOOLEAN NOT NULL DEFAULT 0;

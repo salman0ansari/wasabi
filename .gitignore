@@ -2,6 +2,7 @@
 /target/
 apps/desktop/target/
 benchmarks/*/target/
+/third_party/
 
 # Cargo lockfiles: root + nested workspaces commit theirs.
 # (Cargo.lock files are tracked; do not ignore them.)
