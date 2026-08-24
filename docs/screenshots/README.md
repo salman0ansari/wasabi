@@ -8,6 +8,7 @@ These images are captures of the native GPUI application—not design mockups or
 | Measured timeline at minimum width | Light | 980×700 | [`timeline-measured-compact.png`](timeline-measured-compact.png) |
 | New-message affordance while reading history | Light | 1280×922 | [`new-messages-affordance.png`](new-messages-affordance.png) |
 | Durable failed-message retry | Light | 1280×850 | [`failed-message-retry.png`](failed-message-retry.png) |
+| Protocol reply and composer context | Light | 1280×850 | [`reply-flow.png`](reply-flow.png) |
 | Durable attachment composer | Light | 1280×922 | [`attachment-composer-light.png`](attachment-composer-light.png) |
 | Archived conversations | Light | 1280×922 | [`archived-empty.png`](archived-empty.png) |
 | Operational Storage settings | Light | 1280×922 | [`settings-storage-light.png`](settings-storage-light.png) |

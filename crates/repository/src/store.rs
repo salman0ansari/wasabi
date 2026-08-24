@@ -529,6 +529,7 @@ impl AccountStore {
                 continue;
             };
             chat.favorite = preference.favorite;
+            chat.draft = preference.draft.clone();
             chat.draft_preview = preference
                 .draft
                 .as_ref()
@@ -587,6 +588,7 @@ fn chat_entry_to_summary(e: whatsapp_rust_chat_store::types::ChatEntry) -> domai
         archived: e.archived,
         favorite: false,
         draft_preview: None,
+        draft: None,
     }
 }
 
@@ -604,8 +606,12 @@ fn chat_kind(jid: &str) -> domain::ChatKind {
 
 #[cfg(test)]
 mod projection_tests {
-    use super::{chat_kind, map_kind_fields};
+    use super::{chat_kind, map_kind_fields, map_quoted_message};
     use wasabi_domain::{ChatKind, MessageKind, UnavailableMessageReason};
+    use whatsapp_rust::wacore::proto_helpers::{
+        MessageBuilderExt, build_quote_context,
+    };
+    use whatsapp_rust::waproto::whatsapp as wa;
 
     #[test]
     fn chat_kind_is_derived_from_stable_jid_server() {
@@ -637,6 +643,29 @@ mod projection_tests {
             MessageKind::Unknown
         );
     }
+
+    #[test]
+    fn quote_projection_is_bounded_and_keeps_the_original_identity() {
+        let original = wa::Message::text(format!("first line\n{}", "界".repeat(200)));
+        let reply = wa::Message::text_with_context(
+            "reply",
+            build_quote_context(
+                "ORIGINAL-ID",
+                "15550000000@s.whatsapp.net",
+                &original,
+            ),
+        );
+        let quoted = map_quoted_message(&reply).expect("quoted projection");
+
+        assert_eq!(quoted.id.as_str(), "ORIGINAL-ID");
+        assert_eq!(
+            quoted.sender.as_deref(),
+            Some("15550000000@s.whatsapp.net")
+        );
+        assert!(!quoted.preview.contains('\n'));
+        assert!(quoted.preview.ends_with('…'));
+        assert!(quoted.preview.chars().count() <= 161);
+    }
 }
 
 pub(crate) fn stored_to_row(
@@ -651,6 +680,7 @@ pub(crate) fn stored_to_row(
         UpStatus::Read => domain::MessageStatus::Read,
     };
     let kind = map_kind(&m);
+    let quoted = m.message.as_deref().and_then(map_quoted_message);
     Ok(domain::MessageRow {
         id: domain::MessageId::new(m.id),
         chat: domain::ChatId::new(m.chat_jid.to_string()),
@@ -666,6 +696,7 @@ pub(crate) fn stored_to_row(
         timestamp_ms: m.timestamp.timestamp_millis(),
         seq: domain::LocalCursor(m.seq),
         kind,
+        quoted,
         status,
         edited_at_ms: m.edited_at.map(|t| t.timestamp_millis()),
         revoked: m.revoked,
@@ -714,6 +745,7 @@ fn context_row_to_domain(chat: &str, row: MessageContextRow) -> domain::MessageR
         .as_deref()
         .and_then(|bytes| whatsapp_rust::waproto::codec::message_decode(bytes).ok());
     let kind = map_kind_fields(&row.msg_id, &row.kind, row.text_content, decoded.as_ref());
+    let quoted = decoded.as_ref().and_then(map_quoted_message);
     domain::MessageRow {
         id: domain::MessageId::new(row.msg_id),
         chat: domain::ChatId::new(chat),
@@ -729,10 +761,95 @@ fn context_row_to_domain(chat: &str, row: MessageContextRow) -> domain::MessageR
         timestamp_ms: row.timestamp_ms,
         seq: domain::LocalCursor(row.rowid),
         kind,
+        quoted,
         status,
         edited_at_ms: row.edited_at_ms,
         revoked: row.revoked,
         starred: row.starred,
+    }
+}
+
+fn map_quoted_message(message: &wa::Message) -> Option<domain::QuotedMessage> {
+    let context = first_context_info(message)?;
+    let id = context.stanza_id.as_ref()?.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let quoted = context.quoted_message.as_option();
+    let preview = quoted.map_or_else(
+        || "Original message unavailable".to_string(),
+        quoted_preview,
+    );
+    Some(domain::QuotedMessage {
+        id: domain::MessageId::new(id),
+        sender: context.participant.clone().filter(|sender| !sender.is_empty()),
+        preview,
+    })
+}
+
+fn first_context_info(message: &wa::Message) -> Option<&wa::ContextInfo> {
+    let base = message.get_base_message();
+    base.extended_text_message
+        .as_option()
+        .and_then(|message| message.context_info.as_option())
+        .or_else(|| {
+            base.image_message
+                .as_option()
+                .and_then(|message| message.context_info.as_option())
+        })
+        .or_else(|| {
+            base.video_message
+                .as_option()
+                .and_then(|message| message.context_info.as_option())
+        })
+        .or_else(|| {
+            base.ptv_message
+                .as_option()
+                .and_then(|message| message.context_info.as_option())
+        })
+        .or_else(|| {
+            base.audio_message
+                .as_option()
+                .and_then(|message| message.context_info.as_option())
+        })
+        .or_else(|| {
+            base.document_message
+                .as_option()
+                .and_then(|message| message.context_info.as_option())
+        })
+        .or_else(|| {
+            base.sticker_message
+                .as_option()
+                .and_then(|message| message.context_info.as_option())
+        })
+}
+
+fn quoted_preview(message: &wa::Message) -> String {
+    if let Some(text) = message.text_content().or_else(|| message.get_caption()) {
+        let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !normalized.is_empty() {
+            let mut chars = normalized.chars();
+            let preview = chars.by_ref().take(160).collect::<String>();
+            return if chars.next().is_some() {
+                format!("{preview}…")
+            } else {
+                preview
+            };
+        }
+    }
+    let base = message.get_base_message();
+    if base.image_message.is_set() {
+        "Photo".to_string()
+    } else if base.video_message.is_set() || base.ptv_message.is_set() {
+        "Video".to_string()
+    } else if base.audio_message.is_set() {
+        "Audio".to_string()
+    } else if base.document_message.is_set() {
+        "Document".to_string()
+    } else if base.sticker_message.is_set() {
+        "Sticker".to_string()
+    } else {
+        "Message".to_string()
     }
 }
 

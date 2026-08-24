@@ -8047,6 +8047,7 @@ dependencies = [
  "wasabi-repository",
  "wasabi-whatsapp",
  "whatsapp-rust",
+ "whatsapp-rust-chat-store",
 ]
 
 [[package]]

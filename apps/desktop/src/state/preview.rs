@@ -46,6 +46,7 @@ pub(crate) fn media_preview() -> MediaPreview {
             timestamp_ms: now - (6 - seq) * 60_000,
             seq: LocalCursor(seq),
             kind,
+            quoted: None,
             status: MessageStatus::Read,
             edited_at_ms: None,
             revoked: false,
@@ -67,6 +68,7 @@ pub(crate) fn media_preview() -> MediaPreview {
             archived: false,
             favorite: true,
             draft_preview: None,
+            draft: None,
         },
         page: MessagePage {
             // Repository page order is newest to oldest.

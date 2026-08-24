@@ -31,7 +31,8 @@ pub use media::{
 };
 pub use message::{
     ChatSummary, MediaAvailability, MediaDescriptor, MessageContext, MessageDirection, MessageKind,
-    MessagePage, MessageRow, MessageStatus, PageCursor, SenderJid, UnavailableMessageReason,
+    MessagePage, MessageRow, MessageStatus, PageCursor, QuotedMessage, SenderJid,
+    UnavailableMessageReason,
 };
 pub use notification::NotificationCandidate;
 pub use page::{ChatPage, ChatPageCursor, ChatScope};

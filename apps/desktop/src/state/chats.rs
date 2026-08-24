@@ -218,6 +218,7 @@ mod tests {
             archived: false,
             favorite: false,
             draft_preview: None,
+            draft: None,
         }
     }
 

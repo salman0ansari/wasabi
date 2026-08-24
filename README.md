@@ -37,6 +37,13 @@ ambiguous earlier attempt cannot turn into a duplicate.
 
 ![Wasabi failed-message retry](docs/screenshots/failed-message-retry.png)
 
+Replies are real protocol replies, not visual-only decorations. Reply context
+is restored with each per-chat draft, works for text and attachments, and a
+quoted card navigates back to the original message even when Wasabi must load
+an anchored history window first.
+
+![Wasabi reply flow](docs/screenshots/reply-flow.png)
+
 ### Attachments
 
 Selected files are copied into restart-safe Wasabi staging before upload. The composer shows the real filename, media class, and size without exposing local paths.
@@ -84,6 +91,8 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 - Read actually measured multiline and multilingual bubbles that reflow across supported window sizes and text scaling without overlap.
 - Keep the current history anchor when older pages prepend or new messages arrive, with an explicit jump-to-newest affordance.
 - Retry failed outgoing messages from the bubble or message-action menu without creating a second message identity.
+- Restore composer text when a send fails before durable acceptance; committed failures remain represented by their retryable bubble.
+- Reply to text or media with restart-safe per-chat context, render received quotes, and navigate quoted cards to their original messages.
 - Stage outgoing files durably, recover interrupted composer attachments after restart, cancel them safely, and stream encryption/upload without buffering entire files in memory.
 - Download received media on demand into a bounded, content-addressed, SHA-256-verified cache.
 - Copy and react to messages, or star/unstar them with optimistic rollback if synchronization fails.
@@ -103,7 +112,7 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 
 ## Native footprint
 
-On the current Linux reference machine, five fresh-profile launches of Wasabi `0.2.0-alpha.1` opened the window in a mean 228.0 ms and settled at 223.5 MiB proportional set size (PSS). A blank Electron 41 window on the same machine took 458.6 ms and settled at 320.8 MiB PSS. Wasabi used one process versus Electron's six. Startup medians were 134 ms and 352 ms respectively; every raw sample, including the first cold-launch outliers, is retained.
+On the current Linux reference machine, five fresh-profile launches of Wasabi `0.2.0-alpha.1` had a 132 ms startup median and settled at 237.2 MiB proportional set size (PSS). A blank Electron 41 window had a 536 ms median and settled at 334.5 MiB PSS. Wasabi used one process versus Electron's six. A retained 3,776 ms first Wasabi launch raised its mean to 860.8 ms versus Electron's 685.0 ms; all four subsequent Wasabi samples were 130–135 ms. Every raw sample is committed.
 
 This is a reproducible runtime-baseline comparison, not a fabricated measurement of the official WhatsApp app. There is no official Linux desktop binary to measure locally, and Meta's current Windows and Mac apps should not be described as the old Electron client. Read the complete methodology, raw results, package-size context, limitations, and rerun instructions in [`benchmarks/desktop`](benchmarks/desktop/README.md).
 

@@ -355,6 +355,9 @@ fn bubble(
                 .child(sender_label),
         );
     }
+    if let Some(quoted) = row.quoted.clone() {
+        content = content.child(quoted_message(quoted, row_index, text_scale, cx));
+    }
     if row.revoked {
         content = content.child(
             gpui::div()
@@ -444,6 +447,50 @@ fn bubble(
             .bg(bubble_bg)
             .child(content),
     )
+}
+
+fn quoted_message(
+    quoted: wasabi_domain::QuotedMessage,
+    row_index: usize,
+    text_scale: u16,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Stateful<gpui::Div> {
+    let message = quoted.id.clone();
+    gpui::div()
+        .id(("quoted-message", row_index))
+        .cursor_pointer()
+        .rounded(px(theme::RADIUS_SM))
+        .border_l_2()
+        .border_color(theme::accent())
+        .bg(theme::canvas())
+        .px(px(8.0))
+        .py(px(5.0))
+        .mb(px(3.0))
+        .flex()
+        .flex_col()
+        .hover(|style| style.bg(theme::chip_idle()))
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.reveal_quoted_message(message.clone(), window, cx)
+        }))
+        .child(
+            gpui::div()
+                .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme::accent_text())
+                .child(
+                    quoted
+                        .sender
+                        .unwrap_or_else(|| "Original message".to_string()),
+                ),
+        )
+        .child(
+            gpui::div()
+                .max_h(px(38.0))
+                .overflow_hidden()
+                .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+                .text_color(theme::text_secondary())
+                .child(quoted.preview),
+        )
 }
 
 fn media_content(
@@ -769,6 +816,8 @@ fn message_action_sheet(
     let retry = (row.direction == wasabi_domain::MessageDirection::Outgoing
         && row.status == wasabi_domain::MessageStatus::Failed)
         .then(|| row.id.clone());
+    let reply = (!row.revoked && !matches!(row.kind, wasabi_domain::MessageKind::System { .. }))
+        .then(|| row.id.clone());
 
     action_card()
         .child(
@@ -820,6 +869,15 @@ fn message_action_sheet(
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.copy_message(message.clone(), cx)
                     })),
+            )
+        })
+        .when_some(reply, |card, message| {
+            card.child(
+                sheet_button("reply-to-message", "Reply", false).on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        this.begin_reply(message.clone(), window, cx)
+                    },
+                )),
             )
         })
         .when_some(retry, |card, message| {

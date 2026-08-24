@@ -6,6 +6,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{Disableable as _, Icon, IconName};
 use gpui_component::button::{Button, ButtonVariants as _};
 
+use crate::state::messages;
 use crate::theme;
 use crate::views::root::MainWindow;
 
@@ -46,6 +47,26 @@ pub fn composer_bar(
         .as_ref()
         .and_then(|chat| this.staged_attachments.get(chat))
         .cloned();
+    let reply = this.active_draft.reply_to.as_ref().map(|message| {
+        this.messages
+            .rows
+            .iter()
+            .find(|row| &row.id == message)
+            .map(|row| {
+                let sender = if row.direction == wasabi_domain::MessageDirection::Outgoing {
+                    "You".to_string()
+                } else {
+                    messages::sender_display(row)
+                };
+                (sender, compact_preview(&messages::body_text(row)))
+            })
+            .unwrap_or_else(|| {
+                (
+                    "Original message".to_string(),
+                    "Preview unavailable in this history window".to_string(),
+                )
+            })
+    });
     let can_send = session_can_send && selected.is_some() && !staging && !sending;
     let send_label = if sending {
         "Sending…"
@@ -109,6 +130,10 @@ pub fn composer_bar(
         .border_t_1()
         .border_color(theme::border());
 
+    if let Some((sender, preview)) = reply {
+        bar = bar.child(reply_preview(sender, preview, cx));
+    }
+
     if staging {
         bar = bar.child(attachment_preview(
             "Preparing attachment…".to_string(),
@@ -154,6 +179,71 @@ pub fn composer_bar(
         );
     }
     bar
+}
+
+fn reply_preview(
+    sender: String,
+    preview: String,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Div {
+    gpui::div()
+        .min_h(px(48.0))
+        .rounded(px(theme::RADIUS_MD))
+        .border_l_2()
+        .border_color(theme::accent())
+        .bg(theme::chip_idle())
+        .px(px(10.0))
+        .py(px(6.0))
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .child(
+            gpui::div()
+                .flex_1()
+                .min_w(px(0.0))
+                .flex()
+                .flex_col()
+                .child(
+                    gpui::div()
+                        .text_size(px(theme::TEXT_SIZE_SM))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme::accent_text())
+                        .child(sender),
+                )
+                .child(
+                    gpui::div()
+                        .whitespace_nowrap()
+                        .overflow_hidden()
+                        .text_size(px(theme::TEXT_SIZE_SM))
+                        .text_color(theme::text_secondary())
+                        .child(preview),
+                ),
+        )
+        .child(
+            gpui::div()
+                .id("cancel-reply")
+                .cursor_pointer()
+                .rounded_full()
+                .px(px(7.0))
+                .py(px(3.0))
+                .text_color(theme::text_secondary())
+                .hover(|style| style.bg(theme::surface()).text_color(theme::text_primary()))
+                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                    this.cancel_reply(cx)
+                }))
+                .child("×"),
+        )
+}
+
+fn compact_preview(text: &str) -> String {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = normalized.chars();
+    let preview = chars.by_ref().take(120).collect::<String>();
+    if chars.next().is_some() {
+        format!("{preview}…")
+    } else {
+        preview
+    }
 }
 
 fn attachment_preview(
@@ -244,5 +334,14 @@ mod tests {
             attachment_kind_label(wasabi_domain::AttachmentKind::Document),
             "Document"
         );
+    }
+
+    #[test]
+    fn reply_preview_normalizes_lines_and_respects_unicode_boundaries() {
+        let source = format!("first\n{} tail", "界".repeat(130));
+        let preview = compact_preview(&source);
+        assert!(!preview.contains('\n'));
+        assert!(preview.ends_with('…'));
+        assert!(preview.is_char_boundary(preview.len()));
     }
 }

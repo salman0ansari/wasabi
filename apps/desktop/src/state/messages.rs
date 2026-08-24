@@ -428,6 +428,7 @@ mod tests {
             kind: MessageKind::Text {
                 body: id.to_string(),
             },
+            quoted: None,
             status: MessageStatus::Delivered,
             edited_at_ms: None,
             revoked: false,

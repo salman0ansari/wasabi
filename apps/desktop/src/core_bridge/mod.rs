@@ -26,6 +26,7 @@ use wasabi_domain::{
     StagedAttachment, TransferId, TransferJob,
 };
 use wasabi_repository::AccountStore;
+use whatsapp_rust::wacore::proto_helpers::MessageBuilderExt;
 use wasabi_whatsapp::lifecycle::QrState;
 use wasabi_whatsapp::outbox::Outbox;
 use wasabi_whatsapp::session::{AccountSession, SessionConfig};
@@ -842,13 +843,32 @@ impl CoreBridge {
                     ServiceError::new(ErrorKind::InvalidRequest, format!("bad chat id: {e}"))
                 })?;
             let receipt = match request.content {
-                SendContent::Text { body } => {
+                SendContent::Text { body, reply_to } => {
                     let client = session.client().await.ok_or_else(|| {
                         ServiceError::new(ErrorKind::NotConnected, "no live protocol client")
                     })?;
-                    outbox.send_text(&client, to, body).await
+                    let context = load_reply_context(&session.chats, &to, reply_to).await?;
+                    let mut message = whatsapp_rust::waproto::whatsapp::Message::text(body);
+                    attach_reply_context(&mut message, context)?;
+                    match outbox.send_message(&client, to, message).await {
+                        Ok(receipt) => Ok(receipt),
+                        Err(wasabi_whatsapp::outbox::OutboxError::Send {
+                            message_id,
+                            source: _,
+                        }) => {
+                            // The commit barrier passed and the durable failed
+                            // row owns Retry. Returning an error here would
+                            // restore the composer and invite a duplicate send.
+                            Ok(wasabi_whatsapp::outbox::SentReceipt { message_id })
+                        }
+                        Err(error) => Err(error),
+                    }
                 }
-                SendContent::Attachment { transfer, caption } => {
+                SendContent::Attachment {
+                    transfer,
+                    caption,
+                    reply_to,
+                } => {
                     let mut job = store
                         .transfer_job(transfer.clone())
                         .await?
@@ -864,6 +884,8 @@ impl CoreBridge {
                             "attachment transfer belongs to a different chat",
                         ));
                     }
+                    let reply_context =
+                        load_reply_context(&session.chats, &to, reply_to).await?;
                     if !matches!(
                         job.state,
                         wasabi_domain::TransferState::Staged
@@ -967,7 +989,8 @@ impl CoreBridge {
                             )
                             .await;
                     }
-                    let message = attachment_message(upload, &payload);
+                    let mut message = attachment_message(upload, &payload);
+                    attach_reply_context(&mut message, reply_context)?;
                     match outbox.send_message(&client, to, message).await {
                         Ok(receipt) => {
                             // The outbox owns a committed proto from here, so
@@ -1297,6 +1320,50 @@ fn normalized_caption(caption: Option<String>) -> Result<Option<String>, Service
     Ok(caption)
 }
 
+async fn load_reply_context(
+    chats: &whatsapp_rust_chat_store::ChatStore,
+    target_chat: &whatsapp_rust::Jid,
+    reply_to: Option<MessageId>,
+) -> Result<Option<whatsapp_rust::waproto::whatsapp::ContextInfo>, ServiceError> {
+    use whatsapp_rust::wacore::proto_helpers::build_quote_context_with_info;
+
+    let Some(reply_to) = reply_to else {
+        return Ok(None);
+    };
+    let quoted = chats
+        .message(target_chat, reply_to.as_str())
+        .await
+        .map_err(|error| ServiceError::new(ErrorKind::Database, error.to_string()))?
+        .ok_or_else(|| {
+            ServiceError::new(ErrorKind::InvalidRequest, "reply target no longer exists")
+        })?;
+    let quoted_message = quoted.message.as_deref().ok_or_else(|| {
+        ServiceError::new(ErrorKind::InvalidRequest, "reply target content is unavailable")
+    })?;
+    Ok(Some(build_quote_context_with_info(
+        quoted.id,
+        &quoted.sender_jid,
+        &quoted.chat_jid,
+        target_chat,
+        quoted_message,
+    )))
+}
+
+fn attach_reply_context(
+    message: &mut whatsapp_rust::waproto::whatsapp::Message,
+    context: Option<whatsapp_rust::waproto::whatsapp::ContextInfo>,
+) -> Result<(), ServiceError> {
+    use whatsapp_rust::wacore::proto_helpers::MessageExt;
+
+    if context.is_some_and(|context| !message.set_context_info(context)) {
+        return Err(ServiceError::new(
+            ErrorKind::Unsupported,
+            "this message type cannot carry reply context",
+        ));
+    }
+    Ok(())
+}
+
 fn attachment_message(
     upload: wasabi_media::UploadResponse,
     payload: &wasabi_domain::TransferPayload,
@@ -1567,6 +1634,7 @@ impl DesktopBackend for CoreBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use whatsapp_rust::wacore::proto_helpers::MessageExt;
 
     #[test]
     fn generated_transfer_ids_are_unique_and_path_free() {
@@ -1576,6 +1644,27 @@ mod tests {
         assert!(first.as_str().starts_with('w'));
         assert!(!first.as_str().contains('/'));
         assert_eq!(format!("{first:?}"), "TransferId(<opaque>)");
+    }
+
+    #[test]
+    fn reply_context_promotes_plain_text_without_losing_its_body() {
+        let mut message = whatsapp_rust::waproto::whatsapp::Message::text("answer");
+        let context = whatsapp_rust::waproto::whatsapp::ContextInfo {
+            stanza_id: Some("ORIGINAL".to_string()),
+            ..Default::default()
+        };
+
+        attach_reply_context(&mut message, Some(context)).unwrap();
+
+        assert_eq!(message.text_content(), Some("answer"));
+        assert_eq!(
+            message
+                .extended_text_message
+                .as_option()
+                .and_then(|message| message.context_info.as_option())
+                .and_then(|context| context.stanza_id.as_deref()),
+            Some("ORIGINAL")
+        );
     }
 
     #[test]

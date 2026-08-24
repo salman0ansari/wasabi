@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ChatKind;
+use crate::{ChatKind, Draft};
 use crate::ids::{ChatId, LocalCursor, MediaId, MessageId};
 
 /// One row of the virtualized chat list.
@@ -25,6 +25,9 @@ pub struct ChatSummary {
     pub favorite: bool,
     /// Non-empty draft body preview, hydrated with the chat page.
     pub draft_preview: Option<String>,
+    /// Full device-local composer state for restoring reply/edit context.
+    #[serde(default)]
+    pub draft: Option<Draft>,
 }
 
 /// Direction of a message relative to this account.
@@ -66,10 +69,22 @@ pub struct MessageRow {
     /// Arrival-order tiebreak within the same millisecond (session-local).
     pub seq: LocalCursor,
     pub kind: MessageKind,
+    #[serde(default)]
+    pub quoted: Option<QuotedMessage>,
     pub status: MessageStatus,
     pub edited_at_ms: Option<i64>,
     pub revoked: bool,
     pub starred: bool,
+}
+
+/// Display-safe reply context projected from a message's protocol context.
+/// The quoted payload is reduced to a short preview; nested protobuf content
+/// and transport metadata never cross the product boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuotedMessage {
+    pub id: MessageId,
+    pub sender: Option<String>,
+    pub preview: String,
 }
 
 /// Whether a media payload can be recovered without exposing its transport

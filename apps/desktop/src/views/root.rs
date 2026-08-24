@@ -136,6 +136,7 @@ pub struct MainWindow {
     pub(crate) media_cache_loading: bool,
     pub(crate) logout_in_progress: bool,
     pub(crate) send_error: Option<String>,
+    pub(crate) active_draft: wasabi_domain::Draft,
     pub(crate) message_overlay: Option<MessageOverlay>,
     pub(crate) media_downloads:
         HashMap<(wasabi_domain::ChatId, wasabi_domain::MediaId), MediaDownloadUi>,
@@ -242,6 +243,7 @@ impl MainWindow {
             media_cache_loading: false,
             logout_in_progress: false,
             send_error: None,
+            active_draft: wasabi_domain::Draft::default(),
             message_overlay: None,
             media_downloads: HashMap::new(),
             staged_attachments: HashMap::new(),
@@ -338,13 +340,14 @@ impl MainWindow {
                     .get(&chat)
                     .map(|attachment| vec![attachment.transfer.as_str().to_string()])
                     .unwrap_or_default();
-                let draft = (!body.trim().is_empty() || !staged_attachments.is_empty()).then(|| {
-                    wasabi_domain::Draft {
-                        body,
-                        staged_attachments,
-                        ..wasabi_domain::Draft::default()
-                    }
-                });
+                let mut draft = this.active_draft.clone();
+                draft.body = body;
+                draft.staged_attachments = staged_attachments;
+                let draft = (!draft.body.trim().is_empty()
+                    || !draft.staged_attachments.is_empty()
+                    || draft.reply_to.is_some()
+                    || draft.edit_target.is_some())
+                .then_some(draft);
                 (wasabi_domain::ChatId::new(chat), draft)
             });
             async move {
@@ -401,6 +404,23 @@ impl MainWindow {
                 .find(|row| row.direction == wasabi_domain::MessageDirection::Outgoing)
         {
             row.status = wasabi_domain::MessageStatus::Failed;
+            self.messages.rebuild();
+        }
+        if mode == "reply" {
+            let quoted = wasabi_domain::QuotedMessage {
+                id: wasabi_domain::MessageId::new("PREVIEW-DOC"),
+                sender: Some("Avery Chen".to_string()),
+                preview: "Quarterly report.pdf".to_string(),
+            };
+            if let Some(row) = self
+                .messages
+                .rows
+                .iter_mut()
+                .find(|row| row.id.as_str() == "PREVIEW-MULTILINE")
+            {
+                row.quoted = Some(quoted);
+            }
+            self.active_draft.reply_to = Some(wasabi_domain::MessageId::new("PREVIEW-DOC"));
             self.messages.rebuild();
         }
         self.msg_scroll.reset(self.messages.items.len());
@@ -539,6 +559,7 @@ impl MainWindow {
         self.details_gen.fetch_add(1, Ordering::AcqRel);
         self.show_right_panel = false;
         self.message_overlay = None;
+        self.active_draft = wasabi_domain::Draft::default();
         self.conversation_details = None;
         self.details_loading = false;
         self.details_error = None;
@@ -610,10 +631,12 @@ impl MainWindow {
             .chats
             .iter()
             .find(|chat| chat.id.as_str() == chat_id)
-            .and_then(|chat| chat.draft_preview.clone())
+            .and_then(|chat| chat.draft.clone())
             .unwrap_or_default();
+        let draft_body = draft.body.clone();
+        self.active_draft = draft;
         self.composer_input
-            .update(cx, |input, cx| input.set_value(draft, window, cx));
+            .update(cx, |input, cx| input.set_value(draft_body, window, cx));
         let should_mark_read = window.is_window_active()
             && self.session.can_send()
             && self
@@ -690,6 +713,13 @@ impl MainWindow {
             .get(&chat)
             .map(|attachment| vec![attachment.transfer.as_str().to_string()])
             .unwrap_or_default();
+        self.active_draft.body = body.clone();
+        self.active_draft.staged_attachments = staged_attachments.clone();
+        let draft = (!body.trim().is_empty()
+            || !staged_attachments.is_empty()
+            || self.active_draft.reply_to.is_some()
+            || self.active_draft.edit_target.is_some())
+        .then(|| self.active_draft.clone());
         let generation = {
             let generation = self
                 .draft_generations
@@ -710,7 +740,14 @@ impl MainWindow {
                 self.staged_attachments
                     .get(&chat)
                     .map(|attachment| format!("Attachment: {}", attachment.display_name))
+                    .or_else(|| {
+                        self.active_draft
+                            .reply_to
+                            .as_ref()
+                            .map(|_| "Replying to a message".to_string())
+                    })
             };
+            summary.draft = draft.clone();
         }
         self.refresh_visible();
         let bridge = Arc::clone(&self.bridge);
@@ -724,13 +761,6 @@ impl MainWindow {
             if !current {
                 return;
             }
-            let draft = (!body.trim().is_empty() || !staged_attachments.is_empty()).then(|| {
-                wasabi_domain::Draft {
-                    body,
-                    staged_attachments,
-                    ..wasabi_domain::Draft::default()
-                }
-            });
             if let Err(error) = bridge
                 .save_draft(wasabi_domain::ChatId::new(chat), draft)
                 .await
@@ -840,6 +870,7 @@ impl MainWindow {
             return;
         };
         let text = self.composer_input.read(cx).value().trim().to_string();
+        let reply_to = self.active_draft.reply_to.clone();
         let attachment = self.staged_attachments.get(&chat_id).cloned();
         if text.is_empty() && attachment.is_none() {
             return;
@@ -850,29 +881,54 @@ impl MainWindow {
         self.send_error = None;
         let request = attachment.as_ref().map_or_else(
             || {
-                // Text has no staged retry surface, so clear immediately; the
-                // durable row arrives via invalidation.
+                // Clear optimistically; the durable row arrives through an
+                // invalidation and a failed row retains its same-ID retry.
                 self.composer_input
                     .update(cx, |state, cx| state.set_value("", window, cx));
-                wasabi_domain::SendRequest::text(
-                    wasabi_domain::ChatId::new(chat_id.clone()),
-                    text.clone(),
+                reply_to.clone().map_or_else(
+                    || {
+                        wasabi_domain::SendRequest::text(
+                            wasabi_domain::ChatId::new(chat_id.clone()),
+                            text.clone(),
+                        )
+                    },
+                    |reply_to| {
+                        wasabi_domain::SendRequest::reply(
+                            wasabi_domain::ChatId::new(chat_id.clone()),
+                            text.clone(),
+                            reply_to,
+                        )
+                    },
                 )
             },
             |attachment| {
                 let caption = (attachment.kind != wasabi_domain::AttachmentKind::Audio)
                     .then(|| text.clone());
-                wasabi_domain::SendRequest::attachment(
-                    wasabi_domain::ChatId::new(chat_id.clone()),
-                    attachment.transfer.clone(),
-                    caption,
+                reply_to.clone().map_or_else(
+                    || {
+                        wasabi_domain::SendRequest::attachment(
+                            wasabi_domain::ChatId::new(chat_id.clone()),
+                            attachment.transfer.clone(),
+                            caption.clone(),
+                        )
+                    },
+                    |reply_to| {
+                        wasabi_domain::SendRequest::attachment_reply(
+                            wasabi_domain::ChatId::new(chat_id.clone()),
+                            attachment.transfer.clone(),
+                            caption.clone(),
+                            reply_to,
+                        )
+                    },
                 )
             },
         );
         let bridge = Arc::clone(&self.bridge);
         spawn_main(cx, async move |this, cx| {
-            let mut result = bridge.send(request).await;
-            if result.is_ok()
+            let primary_result = bridge.send(request).await;
+            let primary_accepted = primary_result.is_ok();
+            let mut result = primary_result;
+            if primary_accepted
                 && attachment
                     .as_ref()
                     .is_some_and(|attachment| attachment.kind == wasabi_domain::AttachmentKind::Audio)
@@ -886,10 +942,11 @@ impl MainWindow {
                     .await;
             }
             let accepted = result.is_ok();
+            let text_only = attachment.is_none();
             let transfer = attachment.as_ref().map(|attachment| attachment.transfer.clone());
             let update = this.update(cx, |this, cx| {
                 this.attachment_sending.remove(&chat_id);
-                if accepted
+                if primary_accepted
                     && transfer.as_ref().is_some_and(|transfer| {
                         this.staged_attachments
                             .get(&chat_id)
@@ -898,6 +955,17 @@ impl MainWindow {
                 {
                     this.staged_attachments.remove(&chat_id);
                 }
+                if primary_accepted
+                    && this.chats.selected.as_deref() == Some(chat_id.as_str())
+                    && this.active_draft.reply_to == reply_to
+                    && {
+                        let current = this.composer_input.read(cx).value().trim().to_string();
+                        current.is_empty() || current == text
+                    }
+                {
+                    this.active_draft.reply_to = None;
+                    this.queue_draft_save(cx);
+                }
                 if let Err(error) = &result {
                     tracing::warn!(kind = %error.kind, "send failed");
                     this.send_error = Some(error.ui_message().to_string());
@@ -905,14 +973,21 @@ impl MainWindow {
                 cx.notify();
                 (this.window_handle, this.composer_input.clone())
             });
-            if accepted
-                && let Ok((window_handle, input)) = update
-            {
+            if let Ok((window_handle, input)) = update {
                 window_handle
                     .update(cx, |_, window, cx| {
                         input.update(cx, |state, cx| {
-                            if state.value().trim() == text {
+                            if accepted && state.value().trim() == text {
                                 state.set_value("", window, cx);
+                            } else if should_restore_composer(
+                                accepted,
+                                text_only,
+                                &state.value(),
+                            ) {
+                                // This failure happened before a durable row
+                                // was accepted, so there is no bubble Retry to
+                                // own the user's text.
+                                state.set_value(text.clone(), window, cx);
                             }
                         });
                     })
@@ -1379,6 +1454,44 @@ impl MainWindow {
         self.perform_message_action(action, cx);
     }
 
+    pub(crate) fn begin_reply(
+        &mut self,
+        message: wasabi_domain::MessageId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.messages.rows.iter().any(|row| row.id == message) {
+            return;
+        }
+        self.active_draft.reply_to = Some(message);
+        self.message_overlay = None;
+        self.queue_draft_save(cx);
+        self.composer_input.update(cx, |input, cx| input.focus(window, cx));
+        cx.notify();
+    }
+
+    pub(crate) fn cancel_reply(&mut self, cx: &mut Context<Self>) {
+        if self.active_draft.reply_to.take().is_some() {
+            self.queue_draft_save(cx);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn reveal_quoted_message(
+        &mut self,
+        message: wasabi_domain::MessageId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(index) = self.messages.timeline_index_for_message(&message) {
+            self.messages.highlighted = Some(message);
+            self.msg_scroll.scroll_to_reveal_item(index);
+            cx.notify();
+        } else if let Some(chat) = self.chats.selected.clone() {
+            self.open_search_result(chat, message, window, cx);
+        }
+    }
+
     pub(crate) fn retry_message(
         &mut self,
         message: wasabi_domain::MessageId,
@@ -1705,6 +1818,7 @@ impl MainWindow {
                         this.show_right_panel = false;
                         this.message_overlay = None;
                         this.settings_overlay = None;
+                        this.active_draft = wasabi_domain::Draft::default();
                         this.typing.clear();
                         this.notification_seen.clear();
                         this.notification_seen_order.clear();
@@ -2520,11 +2634,16 @@ fn notification_chat_summary(
         archived: false,
         favorite: false,
         draft_preview: None,
+        draft: None,
     }
 }
 
 fn typing_refresh_due(last_sent: Option<std::time::Instant>, now: std::time::Instant) -> bool {
     last_sent.is_none_or(|last| now.duration_since(last) >= TYPING_REFRESH_AFTER)
+}
+
+fn should_restore_composer(accepted: bool, text_only: bool, current: &str) -> bool {
+    !accepted && text_only && current.trim().is_empty()
 }
 
 fn timeline_splice<T: PartialEq>(before: &[T], after: &[T]) -> (std::ops::Range<usize>, usize) {
@@ -2639,7 +2758,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{TYPING_REFRESH_AFTER, TypingDisplay, timeline_splice, typing_refresh_due};
+    use super::{
+        TYPING_REFRESH_AFTER, TypingDisplay, should_restore_composer, timeline_splice,
+        typing_refresh_due,
+    };
 
     #[test]
     fn composing_updates_are_throttled_until_refresh_interval() {
@@ -2677,5 +2799,13 @@ mod tests {
             (1..3, 2)
         );
         assert_eq!(timeline_splice(&["date", "m1"], &["date", "m1"]), (2..2, 0));
+    }
+
+    #[test]
+    fn only_pre_durable_text_failure_restores_an_untouched_composer() {
+        assert!(should_restore_composer(false, true, ""));
+        assert!(!should_restore_composer(true, true, ""));
+        assert!(!should_restore_composer(false, false, ""));
+        assert!(!should_restore_composer(false, true, "new draft"));
     }
 }

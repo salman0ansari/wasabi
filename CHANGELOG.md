@@ -6,6 +6,14 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 
 ### Added
 
+- Message actions now start real WhatsApp-compatible replies for text and
+  attachments. Reply targets persist in per-chat drafts, outgoing context is
+  built from the exact durable original message, received quotes render as
+  bounded safe projections, and quoted cards navigate to anchored history.
+- Text failures before the durable commit barrier now restore an untouched
+  composer draft; failures after the barrier stay cleared because the durable
+  failed bubble owns same-ID Retry. Compound audio-plus-text sends clean up an
+  accepted attachment independently from a failed follow-up text send.
 - Failed outgoing messages now expose inline and message-menu Retry actions.
   Retry republishes the durable stored proto under its original message ID,
   rejects incoming/non-failed/missing-content rows, prevents duplicate clicks,
@@ -92,8 +100,9 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
   notification overrides, disappearing messages, and groups in common from the
   conversation information drawer until their real data sources are wired.
 - Refreshed the reproducible native-versus-blank-Electron benchmark after
-  adding notifications, downloads, typing, durable uploads, and the attachment
-  composer; raw samples and cold-start outliers remain committed.
+  adding notifications, downloads, typing, durable uploads, attachments,
+  measured timelines, safe retry, and protocol replies; raw samples and
+  cold-start outliers remain committed.
 - GPUI now depends on a mockable `DesktopBackend` product-service contract instead of the concrete protocol bridge.
 
 ## [0.2.0-alpha.1] - 2026-08-24

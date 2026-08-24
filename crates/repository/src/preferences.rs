@@ -194,6 +194,7 @@ mod tests {
             chat.clone(),
             Some(Draft {
                 body: "unfinished reply".to_string(),
+                reply_to: Some(wasabi_domain::MessageId::new("ORIGINAL")),
                 ..Draft::default()
             }),
         )
@@ -202,7 +203,9 @@ mod tests {
 
         let preference = load(sqlite.shared(), 7, chat.clone()).await.unwrap();
         assert!(preference.favorite);
-        assert_eq!(preference.draft.unwrap().body, "unfinished reply");
+        let draft = preference.draft.unwrap();
+        assert_eq!(draft.body, "unfinished reply");
+        assert_eq!(draft.reply_to.unwrap().as_str(), "ORIGINAL");
 
         save_draft(sqlite.shared(), 7, chat.clone(), None)
             .await

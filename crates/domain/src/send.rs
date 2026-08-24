@@ -20,14 +20,47 @@ impl SendRequest {
     pub fn text(chat: ChatId, body: impl Into<String>) -> Self {
         Self {
             chat,
-            content: SendContent::Text { body: body.into() },
+            content: SendContent::Text {
+                body: body.into(),
+                reply_to: None,
+            },
+        }
+    }
+
+    pub fn reply(chat: ChatId, body: impl Into<String>, reply_to: MessageId) -> Self {
+        Self {
+            chat,
+            content: SendContent::Text {
+                body: body.into(),
+                reply_to: Some(reply_to),
+            },
         }
     }
 
     pub fn attachment(chat: ChatId, transfer: TransferId, caption: Option<String>) -> Self {
         Self {
             chat,
-            content: SendContent::Attachment { transfer, caption },
+            content: SendContent::Attachment {
+                transfer,
+                caption,
+                reply_to: None,
+            },
+        }
+    }
+
+    pub fn attachment_reply(
+        chat: ChatId,
+        transfer: TransferId,
+        caption: Option<String>,
+        reply_to: MessageId,
+    ) -> Self {
+        Self {
+            chat,
+            content: SendContent::Attachment {
+                transfer,
+                caption,
+                reply_to: Some(reply_to),
+            },
         }
     }
 }
@@ -41,10 +74,14 @@ impl SendRequest {
 pub enum SendContent {
     Text {
         body: String,
+        #[serde(default)]
+        reply_to: Option<MessageId>,
     },
     Attachment {
         transfer: TransferId,
         caption: Option<String>,
+        #[serde(default)]
+        reply_to: Option<MessageId>,
     },
 }
 
@@ -66,7 +103,8 @@ mod tests {
         assert_eq!(
             request.content,
             SendContent::Text {
-                body: "hello".to_string()
+                body: "hello".to_string(),
+                reply_to: None,
             }
         );
     }
@@ -84,6 +122,23 @@ mod tests {
             SendContent::Attachment {
                 transfer: TransferId::new("transfer-a"),
                 caption: Some("caption".to_string()),
+                reply_to: None,
+            }
+        );
+    }
+
+    #[test]
+    fn reply_request_captures_target_with_destination() {
+        let request = SendRequest::reply(
+            ChatId::new("group-a@g.us"),
+            "answer",
+            MessageId::new("quoted-a"),
+        );
+        assert_eq!(
+            request.content,
+            SendContent::Text {
+                body: "answer".to_string(),
+                reply_to: Some(MessageId::new("quoted-a")),
             }
         );
     }

@@ -19,6 +19,7 @@ whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust.git", rev = "
     "ureq-client",
     "signal",
 ] }
+whatsapp-rust-chat-store = { git = "https://github.com/oxidezap/whatsapp-rust.git", rev = "1489b7da9a6a7e3cadc4337ee46399da7de25915", features = ["search"] }
 gpui = { git = "https://github.com/zed-industries/zed", package = "gpui" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", package = "gpui_platform", features = ["font-kit", "x11"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component.git", rev = "0775df394083c1ed74f36f846b78868d1267398f" }
