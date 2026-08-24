@@ -358,6 +358,44 @@ impl AccountStore {
         })
     }
 
+    /// Latest committed message plus chat-level notification policy inputs.
+    /// No protocol/store type crosses the repository facade.
+    pub async fn notification_candidate(
+        &self,
+        chat: &str,
+    ) -> Result<Option<domain::NotificationCandidate>, domain::ServiceError> {
+        let jid = parse_jid(chat)?;
+        let Some(entry) = self.chats.chat(&jid).await.map_err(database_error)? else {
+            return Ok(None);
+        };
+        let Some(message) = self
+            .chats
+            .messages(&jid, None, 1)
+            .await
+            .map_err(database_error)?
+            .into_iter()
+            .next()
+        else {
+            return Ok(None);
+        };
+        let row = stored_to_row(message)?;
+        let now = chrono::Utc::now().timestamp_millis();
+        let muted = entry
+            .muted_until
+            .is_some_and(|until| until.timestamp_millis() == 0 || until.timestamp_millis() > now);
+        let (preview, eligible) = notification_preview(&row.kind);
+        Ok(Some(domain::NotificationCandidate {
+            chat: row.chat.clone(),
+            message: row.id.clone(),
+            title: entry.name.unwrap_or_else(|| jid.user.to_string()),
+            preview,
+            timestamp_ms: row.timestamp_ms,
+            outgoing: row.direction == domain::MessageDirection::Outgoing,
+            muted,
+            eligible,
+        }))
+    }
+
     /// Cached identity fields for a direct contact. Privacy-controlled About
     /// and profile-photo data remain `None` until their dedicated cache is
     /// populated; the projection never invents values for them.
@@ -632,6 +670,28 @@ fn context_kind(kind: &str, text: Option<String>) -> domain::MessageKind {
         _ => text.map_or(domain::MessageKind::Unknown, |text| {
             domain::MessageKind::System { text }
         }),
+    }
+}
+
+fn notification_preview(kind: &domain::MessageKind) -> (String, bool) {
+    match kind {
+        domain::MessageKind::Text { body } => (body.clone(), true),
+        domain::MessageKind::Image { caption, .. } => {
+            (caption.clone().unwrap_or_else(|| "Photo".to_string()), true)
+        }
+        domain::MessageKind::Video { caption, .. } => {
+            (caption.clone().unwrap_or_else(|| "Video".to_string()), true)
+        }
+        domain::MessageKind::Audio { .. } => ("Voice message".to_string(), true),
+        domain::MessageKind::Document { file_name, .. } => (
+            file_name.clone().unwrap_or_else(|| "Document".to_string()),
+            true,
+        ),
+        domain::MessageKind::Sticker { .. } => ("Sticker".to_string(), true),
+        domain::MessageKind::Unknown => ("Unsupported message".to_string(), true),
+        domain::MessageKind::Reaction { .. } | domain::MessageKind::System { .. } => {
+            (String::new(), false)
+        }
     }
 }
 

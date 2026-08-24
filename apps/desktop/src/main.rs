@@ -9,6 +9,7 @@
 //! through the bridge.
 
 mod core_bridge;
+mod notifications;
 mod state;
 mod theme;
 mod views;

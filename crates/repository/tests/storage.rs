@@ -137,6 +137,38 @@ async fn event_delivery_is_idempotent_under_replay() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn notification_candidate_projects_latest_committed_incoming_message() {
+    let dir = TestDir::new("notification-candidate");
+    let store = open(&dir).await;
+    enqueue_inbound(
+        store.chats(),
+        vec![
+            InboundMessage::builder()
+                .message(Arc::new(wa::Message::text("private preview")))
+                .info(Arc::new(incoming_info(
+                    PEER2,
+                    PEER2,
+                    "NOTIFY-1",
+                    1_700_000_050,
+                )))
+                .build(),
+        ],
+    );
+    store.flush().await.unwrap();
+
+    let candidate = store
+        .notification_candidate(PEER2)
+        .await
+        .unwrap()
+        .expect("candidate");
+    assert_eq!(candidate.message.as_str(), "NOTIFY-1");
+    assert_eq!(candidate.preview, "private preview");
+    assert!(!candidate.outgoing);
+    assert!(!candidate.muted);
+    assert!(candidate.eligible);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn keyset_pagination_no_overlap_no_gap() {
     let dir = TestDir::new("pagination");
     let store = open(&dir).await;

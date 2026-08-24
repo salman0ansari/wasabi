@@ -9,6 +9,7 @@ pub mod conversation;
 pub mod error;
 pub mod ids;
 pub mod message;
+pub mod notification;
 pub mod page;
 pub mod pairing;
 pub mod preferences;
@@ -26,6 +27,7 @@ pub use message::{
     ChatSummary, MessageContext, MessageDirection, MessageKind, MessagePage, MessageRow,
     MessageStatus, PageCursor, SenderJid,
 };
+pub use notification::NotificationCandidate;
 pub use page::{ChatPage, ChatPageCursor, ChatScope};
 pub use pairing::{PairingPhoneNumber, PhonePairCode};
 pub use preferences::Draft;

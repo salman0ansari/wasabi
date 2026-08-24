@@ -58,6 +58,7 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 - Keep independent per-chat text drafts across conversation switches and app restarts.
 - Use light, dark, or Linux system appearance.
 - Configure text size, Enter-to-send, spellcheck, link previews, notifications, download location, and cache quota.
+- Receive standard Linux desktop notifications that respect mute, focus, sound, and preview-privacy settings; clicking one focuses its conversation.
 - Persist device settings independently from the linked account.
 - Enable standards-based XDG autostart.
 - Open direct-contact information without incorrect participant rows.

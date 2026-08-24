@@ -464,7 +464,7 @@ fn shortcuts() -> gpui::AnyElement {
     card("ACTIVE BINDINGS")
         .child(value_row("Focus chat search", "Ctrl+K"))
         .child(value_row("Open Settings", "Ctrl+,"))
-        .child(value_row("Close info panel", "Escape"))
+        .child(value_row("Close dialog or info", "Escape"))
         .child(value_row("Send message", "Enter"))
         .child(value_row("New line", "Shift+Enter"))
         .into_any_element()

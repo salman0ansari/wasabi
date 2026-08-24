@@ -33,6 +33,7 @@ dirs = "6"
 qrcode = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+notify-rust = "4.18.0"
 
 [profile.dev.package.gpui]
 opt-level = 3

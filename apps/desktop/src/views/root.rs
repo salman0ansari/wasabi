@@ -5,14 +5,14 @@
 //! a weak handle; every wake-up re-checks `upgrade()` before touching state,
 //! and stale async results are dropped via per-view generation counters.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui::prelude::*;
 use gpui::{
-    Context, FocusHandle, Focusable, Global, KeyBinding, ScrollStrategy, Subscription, WeakEntity,
-    Window, div, px,
+    AnyWindowHandle, Context, FocusHandle, Focusable, Global, KeyBinding, ScrollStrategy,
+    Subscription, WeakEntity, Window, div, px,
 };
 use gpui_component::VirtualListScrollHandle;
 use gpui_component::input::{InputEvent, InputState};
@@ -34,6 +34,7 @@ const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(25
 const DRAFT_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
 /// Countdown label refresh interval.
 const COUNTDOWN_TICK: std::time::Duration = std::time::Duration::from_secs(1);
+const NOTIFICATION_DEDUPE_LIMIT: usize = 4096;
 
 enum LoadedConversation {
     Newest(wasabi_domain::MessagePage),
@@ -92,6 +93,12 @@ pub struct MainWindow {
     pub(crate) first_visible: usize,
     /// Whether the last frame showed the newest end of the timeline.
     pub(crate) near_bottom: bool,
+    window_handle: AnyWindowHandle,
+    window_active: bool,
+    notification_started_at_ms: i64,
+    notification_seen: HashSet<(String, String)>,
+    notification_seen_order: VecDeque<(String, String)>,
+    notifications: crate::notifications::NotificationDispatcher,
     draft_generations: HashMap<String, u64>,
     chats_gen: AtomicU64,
     search_gen: AtomicU64,
@@ -151,6 +158,7 @@ impl MainWindow {
         let phone_pair_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Country code and phone number")
         });
+        let (notification_click_tx, notification_click_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let mut this = Self {
             bridge,
@@ -175,6 +183,14 @@ impl MainWindow {
             msg_scroll: VirtualListScrollHandle::new(),
             first_visible: 0,
             near_bottom: true,
+            window_handle: window.window_handle(),
+            window_active: window.is_window_active(),
+            notification_started_at_ms: chrono::Utc::now().timestamp_millis(),
+            notification_seen: HashSet::new(),
+            notification_seen_order: VecDeque::new(),
+            notifications: crate::notifications::NotificationDispatcher::new(
+                notification_click_tx,
+            ),
             draft_generations: HashMap::new(),
             chats_gen: AtomicU64::new(0),
             search_gen: AtomicU64::new(0),
@@ -239,6 +255,7 @@ impl MainWindow {
         this.spawn_invalidation_loop(cx);
         this.spawn_state_watch(cx);
         this.spawn_qr_watch(cx);
+        this.spawn_notification_click_watch(notification_click_rx, cx);
         window.focus(&this.focus, cx);
         this
     }
@@ -891,6 +908,48 @@ impl MainWindow {
         }
     }
 
+    fn consider_notification(&mut self, chat: String, cx: &mut Context<Self>) {
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let candidate = bridge.notification_candidate(chat).await;
+            this.update(cx, |this, _cx| {
+                let Ok(Some(candidate)) = candidate else {
+                    return;
+                };
+                let identity = (
+                    candidate.chat.as_str().to_string(),
+                    candidate.message.as_str().to_string(),
+                );
+                if !this.remember_notification(identity) {
+                    return;
+                }
+                if !crate::notifications::should_deliver(
+                    &candidate,
+                    &this.settings,
+                    this.window_active,
+                    this.notification_started_at_ms,
+                ) {
+                    return;
+                }
+                this.notifications.show(candidate, &this.settings);
+            })
+            .ok();
+        });
+    }
+
+    fn remember_notification(&mut self, identity: (String, String)) -> bool {
+        if !self.notification_seen.insert(identity.clone()) {
+            return false;
+        }
+        self.notification_seen_order.push_back(identity);
+        while self.notification_seen_order.len() > NOTIFICATION_DEDUPE_LIMIT {
+            if let Some(expired) = self.notification_seen_order.pop_front() {
+                self.notification_seen.remove(&expired);
+            }
+        }
+        true
+    }
+
     pub(crate) fn perform_chat_action(
         &mut self,
         action: wasabi_domain::ChatAction,
@@ -1211,6 +1270,7 @@ impl MainWindow {
                             if this.chats.selected.as_deref() == Some(chat.as_str()) {
                                 this.refresh_current_messages(cx);
                             }
+                            this.consider_notification(chat, cx);
                         }
                     }
                 });
@@ -1253,6 +1313,39 @@ impl MainWindow {
                 if apply_qr(this.clone(), cx, qr).is_err() {
                     break;
                 }
+            }
+        });
+    }
+
+    fn spawn_notification_click_watch(
+        &mut self,
+        mut receiver: tokio::sync::mpsc::UnboundedReceiver<wasabi_domain::NotificationCandidate>,
+        cx: &mut Context<Self>,
+    ) {
+        let window_handle = self.window_handle;
+        spawn_main(cx, async move |this, cx| {
+            while let Some(candidate) = receiver.recv().await {
+                let Some(entity) = this.upgrade() else {
+                    break;
+                };
+                cx.update_window(window_handle, |_, window, cx| {
+                    window.activate_window();
+                    entity.update(cx, |this, cx| {
+                        let chat = candidate.chat.as_str().to_string();
+                        if !this
+                            .chats
+                            .chats
+                            .iter()
+                            .any(|summary| summary.id == candidate.chat)
+                        {
+                            this.chats.chats.push(notification_chat_summary(&candidate));
+                            this.refresh_visible();
+                        }
+                        this.select_nav(NavDestination::Chats, cx);
+                        this.select_chat(chat, window, cx);
+                    })
+                })
+                .ok();
             }
         });
     }
@@ -1366,6 +1459,7 @@ impl MainWindow {
 
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.window_active = window.is_window_active();
         // Keep the filtered projection in sync before any list reads it.
         self.refresh_visible();
 
@@ -1605,6 +1699,34 @@ fn opening_storage() -> gpui::Div {
         .justify_center()
         .text_color(theme::text_secondary())
         .child("Opening storage…")
+}
+
+fn notification_chat_summary(
+    candidate: &wasabi_domain::NotificationCandidate,
+) -> wasabi_domain::ChatSummary {
+    let raw = candidate.chat.as_str();
+    let kind = if raw.ends_with("@g.us") {
+        wasabi_domain::ChatKind::Group
+    } else if raw.ends_with("@newsletter") {
+        wasabi_domain::ChatKind::Newsletter
+    } else if raw.ends_with("@broadcast") {
+        wasabi_domain::ChatKind::System
+    } else {
+        wasabi_domain::ChatKind::Direct
+    };
+    wasabi_domain::ChatSummary {
+        id: candidate.chat.clone(),
+        kind,
+        display_name: Some(candidate.title.clone()),
+        last_activity_ms: candidate.timestamp_ms,
+        last_message_preview: Some(candidate.preview.clone()),
+        unread_count: 1,
+        pinned_at_ms: None,
+        muted_until_ms: None,
+        archived: false,
+        favorite: false,
+        draft_preview: None,
+    }
 }
 
 // ---- Watch appliers --------------------------------------------------------

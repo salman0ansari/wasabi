@@ -19,9 +19,9 @@ use wasabi_core::events::{Invalidation, InvalidationPublisher};
 use wasabi_core::state::SessionState;
 use wasabi_domain::{
     ChatAction, ChatId, ChatPage, ChatScope, DirectContactDetails, ErrorKind, GroupDetails,
-    GroupPermissions, MessageAction, MessageContext, MessageId, MessagePage, PageCursor,
-    PairingPhoneNumber, Participant, ParticipantRole, PhonePairCode, SearchPage, SendContent,
-    SendReceipt, SendRequest, ServiceError,
+    GroupPermissions, MessageAction, MessageContext, MessageId, MessagePage, NotificationCandidate,
+    PageCursor, PairingPhoneNumber, Participant, ParticipantRole, PhonePairCode, SearchPage,
+    SendContent, SendReceipt, SendRequest, ServiceError,
 };
 use wasabi_repository::AccountStore;
 use wasabi_whatsapp::lifecycle::QrState;
@@ -67,6 +67,10 @@ pub trait DesktopBackend: Send + Sync {
         before: usize,
         after: usize,
     ) -> Result<MessageContext, String>;
+    async fn notification_candidate(
+        &self,
+        chat: String,
+    ) -> Result<Option<NotificationCandidate>, String>;
     async fn search_messages(
         &self,
         query: String,
@@ -296,6 +300,20 @@ impl CoreBridge {
         self.run_on_core(async move {
             store
                 .message_context(&chat, anchor, before, after)
+                .await
+                .map_err(service_message)
+        })
+        .await
+    }
+
+    pub async fn notification_candidate(
+        &self,
+        chat: String,
+    ) -> Result<Option<NotificationCandidate>, String> {
+        let store = self.store_snapshot()?;
+        self.run_on_core(async move {
+            store
+                .notification_candidate(&chat)
                 .await
                 .map_err(service_message)
         })
@@ -797,6 +815,13 @@ impl DesktopBackend for CoreBridge {
         after: usize,
     ) -> Result<MessageContext, String> {
         CoreBridge::load_message_context(self, chat, anchor, before, after).await
+    }
+
+    async fn notification_candidate(
+        &self,
+        chat: String,
+    ) -> Result<Option<NotificationCandidate>, String> {
+        CoreBridge::notification_candidate(self, chat).await
     }
 
     async fn search_messages(
