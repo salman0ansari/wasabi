@@ -4,7 +4,7 @@
 
 Wasabi is a fast, native Linux desktop messenger for WhatsApp accounts. It is built in Rust with GPUI and is designed to feel at home on the desktop without shipping an Electron runtime.
 
-> **Developer preview:** Wasabi already supports pairing, cached conversations, message history, chat filtering, text messaging, responsive contact information, and persistent desktop settings. Media, notifications, full message actions, and several account-management workflows are still being completed before the first stable release.
+> **Developer preview:** Wasabi already supports pairing, cached conversations, message history, chat filtering, text and media messaging, responsive contact/group information, privacy-aware Linux notifications, message actions, and persistent desktop settings. Live-account media interoperability, deeper account management, and recovery hardening are still being completed before the first stable release.
 
 ## A focused Linux messenger
 
@@ -21,6 +21,12 @@ Wasabi is being built around a few straightforward principles:
 ### Chats
 
 ![Wasabi chat workspace](docs/screenshots/chat-workspace-light.png)
+
+### Attachments
+
+Selected files are copied into restart-safe Wasabi staging before upload. The composer shows the real filename, media class, and size without exposing local paths.
+
+![Wasabi durable attachment composer](docs/screenshots/attachment-composer-light.png)
 
 ### Settings
 
@@ -50,7 +56,9 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 - Reopen cached chats immediately while reconnecting in the background.
 - Browse cursor-paginated active chats using All, Unread, device-local Favorites, and Groups filters, with a separate Archived destination.
 - Search loaded chats and the complete local message FTS index with cancellable, paginated results that open the exact message in context.
-- Read paginated message history and send text messages.
+- Read paginated message history and send text, image, video, audio, and document messages with optional supported captions.
+- Stage outgoing files durably, recover interrupted composer attachments after restart, cancel them safely, and stream encryption/upload without buffering entire files in memory.
+- Download received media on demand into a bounded, content-addressed, SHA-256-verified cache.
 - Copy and react to messages, or star/unstar them with optimistic rollback if synchronization fails.
 - Delete a message locally or revoke an eligible sent message through distinct, explicit confirmation dialogs.
 - Pin/unpin and mute/unmute chats from the conversation drawer.
@@ -72,7 +80,7 @@ This is a reproducible runtime-baseline comparison, not a fabricated measurement
 
 ## Before the stable release
 
-The stable release is gated on reliable media attachments and downloads, complete search and message actions, durable contact/group metadata refresh, desktop notifications, account controls, recovery tests, and performance validation on large histories.
+The stable release is gated on live-account media interoperability testing, durable contact/group metadata refresh, remaining account controls, expanded recovery/interaction tests, and performance validation on large synchronized histories.
 
 Calls, Status, Channels, and Communities remain hidden until their complete workflows are ready. Wasabi does not ship placeholder destinations.
 

@@ -38,6 +38,9 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
   captions, stream encrypted uploads, build image/video/audio/document
   messages, publish through the durable outbox, retain retryable plaintext,
   and erase staged plaintext only after the message is durably recorded.
+- The composer now opens the Linux XDG file portal, shows honest preparation
+  and per-chat attachment cards, prevents duplicate sends, supports removal,
+  and recovers staged or interrupted attachments after restart.
 
 - Phone-number account linking with validated international numbers, short-lived eight-character codes, expiry countdown, cancellation, and redacted sensitive values, alongside the existing QR flow.
 - Visible, focused conversation selection now synchronizes read state through an immutable chat-bound command, with optimistic rollback on failure.

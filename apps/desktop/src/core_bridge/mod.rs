@@ -102,6 +102,10 @@ pub trait DesktopBackend: Send + Sync {
         chat: ChatId,
         source: PathBuf,
     ) -> Result<StagedAttachment, ServiceError>;
+    async fn cancel_transfer(&self, transfer: TransferId) -> Result<(), ServiceError>;
+    async fn recover_staged_attachments(
+        &self,
+    ) -> Result<Vec<(ChatId, StagedAttachment)>, ServiceError>;
     async fn set_typing(&self, chat: ChatId, composing: bool) -> Result<(), ServiceError>;
     async fn send(&self, request: SendRequest) -> Result<SendReceipt, ServiceError>;
     async fn perform_message_action(&self, action: MessageAction) -> Result<(), ServiceError>;
@@ -607,6 +611,117 @@ impl CoreBridge {
         .await
     }
 
+    pub async fn cancel_transfer(&self, transfer: TransferId) -> Result<(), ServiceError> {
+        let store = self
+            .store_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
+        let manager = self
+            .media_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
+        self.run_on_core_service(async move {
+            let job = store
+                .transfer_job(transfer.clone())
+                .await?
+                .ok_or_else(|| {
+                    ServiceError::new(ErrorKind::InvalidRequest, "attachment transfer not found")
+                })?;
+            if !job.state.is_terminal()
+                && !store
+                    .set_transfer_state(
+                        transfer,
+                        wasabi_domain::TransferState::Cancelled,
+                        None,
+                    )
+                    .await?
+            {
+                return Err(ServiceError::new(
+                    ErrorKind::InvalidRequest,
+                    "attachment transfer could not be cancelled",
+                ));
+            }
+            if let Some(source) = job.source_path {
+                manager.discard_staged_upload(source).await.map_err(map_media_error)?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn recover_staged_attachments(
+        &self,
+    ) -> Result<Vec<(ChatId, StagedAttachment)>, ServiceError> {
+        let store = self
+            .store_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
+        self.run_on_core_service(async move {
+            let jobs = store.transfer_jobs(false).await?;
+            let mut recovered = Vec::new();
+            for job in jobs {
+                if job.direction != wasabi_domain::TransferDirection::OutgoingUpload {
+                    continue;
+                }
+                let Some(source) = job.source_path.as_ref() else {
+                    let _ = store
+                        .set_transfer_state(
+                            job.transfer,
+                            wasabi_domain::TransferState::FailedPermanent,
+                            Some(ErrorKind::MediaUnavailable),
+                        )
+                        .await;
+                    continue;
+                };
+                if tokio::fs::metadata(source)
+                    .await
+                    .map(|metadata| !metadata.is_file())
+                    .unwrap_or(true)
+                {
+                    let _ = store
+                        .set_transfer_state(
+                            job.transfer,
+                            wasabi_domain::TransferState::FailedPermanent,
+                            Some(ErrorKind::MediaUnavailable),
+                        )
+                        .await;
+                    continue;
+                }
+                if matches!(
+                    job.state,
+                    wasabi_domain::TransferState::Queued | wasabi_domain::TransferState::Running
+                ) {
+                    let _ = store
+                        .set_transfer_state(
+                            job.transfer.clone(),
+                            wasabi_domain::TransferState::FailedRetryable,
+                            Some(ErrorKind::NotConnected),
+                        )
+                        .await;
+                }
+                let Some(payload) = job.payload else {
+                    let _ = store
+                        .set_transfer_state(
+                            job.transfer,
+                            wasabi_domain::TransferState::FailedPermanent,
+                            Some(ErrorKind::InvalidRequest),
+                        )
+                        .await;
+                    continue;
+                };
+                recovered.push((
+                    job.chat,
+                    StagedAttachment {
+                        transfer: job.transfer,
+                        kind: payload.kind,
+                        display_name: payload.display_name,
+                        mime_type: payload.mime_type,
+                        bytes_total: job.bytes_total.unwrap_or_default(),
+                    },
+                ));
+            }
+            Ok(recovered)
+        })
+        .await
+    }
+
     pub async fn set_typing(
         &self,
         chat: ChatId,
@@ -800,12 +915,10 @@ impl CoreBridge {
                             .await;
                     }
                     let message = attachment_message(upload, &payload);
-                    let outcome = outbox.send_message(&client, to, message).await;
-                    match &outcome {
-                        Ok(_) | Err(wasabi_whatsapp::outbox::OutboxError::Send { .. }) => {
-                            // A Send error occurs after the proto is committed
-                            // durably. The ordinary message retry path owns it
-                            // from here, so plaintext staging can be erased.
+                    match outbox.send_message(&client, to, message).await {
+                        Ok(receipt) => {
+                            // The outbox owns a committed proto from here, so
+                            // plaintext staging can be erased.
                             let _ = store
                                 .set_transfer_state(
                                     transfer,
@@ -814,9 +927,27 @@ impl CoreBridge {
                                 )
                                 .await;
                             let _ = manager.discard_staged_upload(source).await;
+                            Ok(receipt)
+                        }
+                        Err(wasabi_whatsapp::outbox::OutboxError::Send {
+                            message_id,
+                            source: _,
+                        }) => {
+                            let _ = store
+                                .set_transfer_state(
+                                    transfer,
+                                    wasabi_domain::TransferState::Succeeded,
+                                    None,
+                                )
+                                .await;
+                            let _ = manager.discard_staged_upload(source).await;
+                            // Publication failed after the message proto was
+                            // committed. Treat composer submission as accepted;
+                            // the durable message row owns Retry/Delete now.
+                            Ok(wasabi_whatsapp::outbox::SentReceipt { message_id })
                         }
                         Err(error) => {
-                            let service = map_outbox_error_ref(error);
+                            let service = map_outbox_error_ref(&error);
                             let state = transfer_failure_state(service.kind);
                             let persisted_kind = (state
                                 != wasabi_domain::TransferState::Cancelled)
@@ -824,9 +955,9 @@ impl CoreBridge {
                             let _ = store
                                 .set_transfer_state(transfer, state, persisted_kind)
                                 .await;
+                            Err(error)
                         }
                     }
-                    outcome
                 }
                 _ => {
                     return Err(ServiceError::new(
@@ -1326,6 +1457,16 @@ impl DesktopBackend for CoreBridge {
         source: PathBuf,
     ) -> Result<StagedAttachment, ServiceError> {
         CoreBridge::stage_attachment(self, chat, source).await
+    }
+
+    async fn cancel_transfer(&self, transfer: TransferId) -> Result<(), ServiceError> {
+        CoreBridge::cancel_transfer(self, transfer).await
+    }
+
+    async fn recover_staged_attachments(
+        &self,
+    ) -> Result<Vec<(ChatId, StagedAttachment)>, ServiceError> {
+        CoreBridge::recover_staged_attachments(self).await
     }
 
     async fn set_typing(&self, chat: ChatId, composing: bool) -> Result<(), ServiceError> {

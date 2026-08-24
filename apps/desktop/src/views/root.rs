@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use gpui::prelude::*;
 use gpui::{
     AnyWindowHandle, Context, FocusHandle, Focusable, Global, KeyBinding, ScrollStrategy,
-    Subscription, WeakEntity, Window, div, px,
+    PathPromptOptions, Subscription, WeakEntity, Window, div, px,
 };
 use gpui_component::VirtualListScrollHandle;
 use gpui_component::input::{InputEvent, InputState};
@@ -122,6 +122,9 @@ pub struct MainWindow {
     pub(crate) message_overlay: Option<MessageOverlay>,
     pub(crate) media_downloads:
         HashMap<(wasabi_domain::ChatId, wasabi_domain::MediaId), MediaDownloadUi>,
+    pub(crate) staged_attachments: HashMap<String, wasabi_domain::StagedAttachment>,
+    pub(crate) attachment_staging: HashSet<String>,
+    pub(crate) attachment_sending: HashSet<String>,
     pub(crate) composer_input: gpui::Entity<InputState>,
     pub(crate) search_input: gpui::Entity<InputState>,
     pub(crate) phone_pair_input: gpui::Entity<InputState>,
@@ -217,6 +220,9 @@ impl MainWindow {
             send_error: None,
             message_overlay: None,
             media_downloads: HashMap::new(),
+            staged_attachments: HashMap::new(),
+            attachment_staging: HashSet::new(),
+            attachment_sending: HashSet::new(),
             composer_input,
             search_input,
             phone_pair_input,
@@ -286,9 +292,17 @@ impl MainWindow {
             let bridge = Arc::clone(&this.bridge);
             let pending_draft = this.chats.selected.clone().map(|chat| {
                 let body = this.composer_input.read(_cx).value().to_string();
-                let draft = (!body.trim().is_empty()).then(|| wasabi_domain::Draft {
-                    body,
-                    ..wasabi_domain::Draft::default()
+                let staged_attachments = this
+                    .staged_attachments
+                    .get(&chat)
+                    .map(|attachment| vec![attachment.transfer.as_str().to_string()])
+                    .unwrap_or_default();
+                let draft = (!body.trim().is_empty() || !staged_attachments.is_empty()).then(|| {
+                    wasabi_domain::Draft {
+                        body,
+                        staged_attachments,
+                        ..wasabi_domain::Draft::default()
+                    }
                 });
                 (wasabi_domain::ChatId::new(chat), draft)
             });
@@ -335,6 +349,16 @@ impl MainWindow {
         self.chats.chats = vec![preview.summary];
         self.messages.chat_id = Some(preview.chat.as_str().to_string());
         self.messages.anchor_newest(&preview.page);
+        self.staged_attachments.insert(
+            preview.chat.as_str().to_string(),
+            wasabi_domain::StagedAttachment {
+                transfer: wasabi_domain::TransferId::new("preview-transfer"),
+                kind: wasabi_domain::AttachmentKind::Document,
+                display_name: "Wasabi product brief.pdf".to_string(),
+                mime_type: "application/pdf".to_string(),
+                bytes_total: 2_621_440,
+            },
+        );
         self.typing.insert(
             preview.chat.as_str().to_string(),
             TypingDisplay {
@@ -582,6 +606,11 @@ impl MainWindow {
             return;
         };
         let body = self.composer_input.read(cx).value().to_string();
+        let staged_attachments = self
+            .staged_attachments
+            .get(&chat)
+            .map(|attachment| vec![attachment.transfer.as_str().to_string()])
+            .unwrap_or_default();
         let generation = {
             let generation = self
                 .draft_generations
@@ -596,7 +625,13 @@ impl MainWindow {
             .iter_mut()
             .find(|summary| summary.id.as_str() == chat)
         {
-            summary.draft_preview = (!body.trim().is_empty()).then(|| body.clone());
+            summary.draft_preview = if !body.trim().is_empty() {
+                Some(body.clone())
+            } else {
+                self.staged_attachments
+                    .get(&chat)
+                    .map(|attachment| format!("Attachment: {}", attachment.display_name))
+            };
         }
         self.refresh_visible();
         let bridge = Arc::clone(&self.bridge);
@@ -610,9 +645,12 @@ impl MainWindow {
             if !current {
                 return;
             }
-            let draft = (!body.trim().is_empty()).then(|| wasabi_domain::Draft {
-                body,
-                ..wasabi_domain::Draft::default()
+            let draft = (!body.trim().is_empty() || !staged_attachments.is_empty()).then(|| {
+                wasabi_domain::Draft {
+                    body,
+                    staged_attachments,
+                    ..wasabi_domain::Draft::default()
+                }
             });
             if let Err(error) = bridge
                 .save_draft(wasabi_domain::ChatId::new(chat), draft)
@@ -723,27 +761,146 @@ impl MainWindow {
             return;
         };
         let text = self.composer_input.read(cx).value().trim().to_string();
-        if text.is_empty() {
+        let attachment = self.staged_attachments.get(&chat_id).cloned();
+        if text.is_empty() && attachment.is_none() {
+            return;
+        }
+        if attachment.is_some() && !self.attachment_sending.insert(chat_id.clone()) {
             return;
         }
         self.send_error = None;
-        // Clear immediately; the durable row arrives via invalidation.
-        self.composer_input
-            .update(cx, |state, cx| state.set_value("", window, cx));
-
-        let request = wasabi_domain::SendRequest::text(
-            wasabi_domain::ChatId::new(chat_id),
-            text,
+        let request = attachment.as_ref().map_or_else(
+            || {
+                // Text has no staged retry surface, so clear immediately; the
+                // durable row arrives via invalidation.
+                self.composer_input
+                    .update(cx, |state, cx| state.set_value("", window, cx));
+                wasabi_domain::SendRequest::text(
+                    wasabi_domain::ChatId::new(chat_id.clone()),
+                    text.clone(),
+                )
+            },
+            |attachment| {
+                let caption = (attachment.kind != wasabi_domain::AttachmentKind::Audio)
+                    .then(|| text.clone());
+                wasabi_domain::SendRequest::attachment(
+                    wasabi_domain::ChatId::new(chat_id.clone()),
+                    attachment.transfer.clone(),
+                    caption,
+                )
+            },
         );
         let bridge = Arc::clone(&self.bridge);
         spawn_main(cx, async move |this, cx| {
-            if let Err(err) = bridge.send(request).await {
-                tracing::warn!(error = %err, "send failed");
-                this.update(cx, |this, cx| {
-                    this.send_error = Some(err.ui_message().to_string());
-                    cx.notify();
-                })
-                .ok();
+            let mut result = bridge.send(request).await;
+            if result.is_ok()
+                && attachment
+                    .as_ref()
+                    .is_some_and(|attachment| attachment.kind == wasabi_domain::AttachmentKind::Audio)
+                && !text.is_empty()
+            {
+                result = bridge
+                    .send(wasabi_domain::SendRequest::text(
+                        wasabi_domain::ChatId::new(chat_id.clone()),
+                        text.clone(),
+                    ))
+                    .await;
+            }
+            let accepted = result.is_ok();
+            let transfer = attachment.as_ref().map(|attachment| attachment.transfer.clone());
+            let update = this.update(cx, |this, cx| {
+                this.attachment_sending.remove(&chat_id);
+                if accepted
+                    && transfer.as_ref().is_some_and(|transfer| {
+                        this.staged_attachments
+                            .get(&chat_id)
+                            .is_some_and(|current| current.transfer == *transfer)
+                    })
+                {
+                    this.staged_attachments.remove(&chat_id);
+                }
+                if let Err(error) = &result {
+                    tracing::warn!(kind = %error.kind, "send failed");
+                    this.send_error = Some(error.ui_message().to_string());
+                }
+                cx.notify();
+                (this.window_handle, this.composer_input.clone())
+            });
+            if accepted
+                && let Ok((window_handle, input)) = update
+            {
+                window_handle
+                    .update(cx, |_, window, cx| {
+                        input.update(cx, |state, cx| {
+                            if state.value().trim() == text {
+                                state.set_value("", window, cx);
+                            }
+                        });
+                    })
+                    .ok();
+            }
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn choose_attachment(&mut self, cx: &mut Context<Self>) {
+        let Some(chat) = self.chats.selected.clone() else {
+            return;
+        };
+        if self.staged_attachments.contains_key(&chat)
+            || !self.attachment_staging.insert(chat.clone())
+        {
+            return;
+        }
+        self.send_error = None;
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Attach".into()),
+        });
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let selected = paths.await.ok().and_then(Result::ok).flatten();
+            let result = match selected.and_then(|mut paths| paths.pop()) {
+                Some(path) => bridge
+                    .stage_attachment(wasabi_domain::ChatId::new(chat.clone()), path)
+                    .await
+                    .map(Some),
+                None => Ok(None),
+            };
+            this.update(cx, |this, cx| {
+                this.attachment_staging.remove(&chat);
+                match result {
+                    Ok(Some(attachment)) => {
+                        this.staged_attachments.insert(chat.clone(), attachment);
+                        if this.chats.selected.as_deref() == Some(chat.as_str()) {
+                            this.queue_draft_save(cx);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(kind = %error.kind, "attachment staging failed");
+                        this.send_error = Some(error.ui_message().to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn remove_attachment(&mut self, chat: String, cx: &mut Context<Self>) {
+        let Some(attachment) = self.staged_attachments.remove(&chat) else {
+            return;
+        };
+        self.attachment_sending.remove(&chat);
+        self.queue_draft_save(cx);
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |_this, _cx| {
+            if let Err(error) = bridge.cancel_transfer(attachment.transfer).await {
+                tracing::warn!(kind = %error.kind, "attachment cleanup failed");
             }
         });
         cx.notify();
@@ -1441,6 +1598,7 @@ impl MainWindow {
     fn spawn_hydration(&mut self, cx: &mut Context<Self>) {
         let bridge = Arc::clone(&self.bridge);
         spawn_main(cx, async move |this, cx| {
+            let recovered = bridge.recover_staged_attachments().await;
             let page = bridge
                 .load_chat_page(ChatScope::Active, None, CHAT_PAGE_LIMIT)
                 .await;
@@ -1456,6 +1614,12 @@ impl MainWindow {
                         this.refresh_visible();
                     }
                     Err(err) => this.chats.set_error(err.clone()),
+                }
+                if let Ok(recovered) = &recovered {
+                    for (chat, attachment) in recovered {
+                        this.staged_attachments
+                            .insert(chat.as_str().to_string(), attachment.clone());
+                    }
                 }
                 cx.notify();
             })
