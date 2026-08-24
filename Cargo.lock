@@ -2057,6 +2057,7 @@ version = "0.2.0-alpha.1"
 dependencies = [
  "chrono",
  "diesel",
+ "futures",
  "serde_json",
  "tempfile",
  "thiserror",

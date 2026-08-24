@@ -252,10 +252,11 @@ impl AccountStore {
             timestamp_ms: m.timestamp.timestamp_millis(),
             seq: domain::LocalCursor(m.seq),
         });
-        let out = rows
+        let mut out = rows
             .into_iter()
             .map(stored_to_row)
             .collect::<Result<Vec<_>, domain::ServiceError>>()?;
+        self.attach_reaction_summaries(&mut out).await?;
         Ok(domain::MessagePage {
             rows: out,
             next_before,
@@ -352,12 +353,53 @@ impl AccountStore {
                 .into_iter()
                 .map(|row| context_row_to_domain(&actual_chat, row)),
         );
+        self.attach_reaction_summaries(&mut rows).await?;
         Ok(domain::MessageContext {
             rows,
             anchor,
             has_more_older,
             has_more_newer,
         })
+    }
+
+    async fn attach_reaction_summaries(
+        &self,
+        rows: &mut [domain::MessageRow],
+    ) -> Result<(), domain::ServiceError> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let device = self
+            .sqlite
+            .load_device_data_for_device(self.device_id())
+            .await
+            .map_err(|error| {
+                domain::ServiceError::new(domain::ErrorKind::Database, error.to_string())
+            })?;
+        let own_jids = device
+            .into_iter()
+            .flat_map(|device| [device.pn, device.lid])
+            .flatten()
+            .map(|jid| jid.to_non_ad().to_string())
+            .collect::<std::collections::HashSet<_>>();
+        let reactions = futures::future::try_join_all(rows.iter().map(|row| {
+            let chat = row.chat.as_str().parse::<whatsapp_rust::Jid>();
+            let message = row.id.as_str().to_string();
+            async move {
+                let chat = chat.map_err(|error| {
+                    domain::ServiceError::new(domain::ErrorKind::InvalidRequest, error.to_string())
+                })?;
+                self.chats
+                    .reactions(&chat, &message)
+                    .await
+                    .map_err(database_error)
+            }
+        }))
+        .await?;
+        for (row, entries) in rows.iter_mut().zip(reactions) {
+            row.reactions = aggregate_reactions(entries, &own_jids);
+        }
+        Ok(())
     }
 
     /// Latest committed message plus chat-level notification policy inputs.
@@ -606,8 +648,11 @@ fn chat_kind(jid: &str) -> domain::ChatKind {
 
 #[cfg(test)]
 mod projection_tests {
-    use super::{chat_kind, map_kind_fields, map_quoted_message};
+    use std::collections::HashSet;
+
+    use super::{aggregate_reactions, chat_kind, map_kind_fields, map_quoted_message};
     use wasabi_domain::{ChatKind, MessageKind, UnavailableMessageReason};
+    use whatsapp_rust::chrono::Utc;
     use whatsapp_rust::wacore::proto_helpers::{MessageBuilderExt, build_quote_context};
     use whatsapp_rust::waproto::whatsapp as wa;
 
@@ -657,6 +702,58 @@ mod projection_tests {
         assert!(quoted.preview.ends_with('…'));
         assert!(quoted.preview.chars().count() <= 161);
     }
+
+    #[test]
+    fn reactions_aggregate_in_first_seen_order_and_mark_own_choice() {
+        let entry = |sender: &str, emoji: &str| whatsapp_rust_chat_store::ReactionEntry {
+            sender_jid: sender.parse().unwrap(),
+            emoji: emoji.to_string(),
+            timestamp: Utc::now(),
+        };
+        let own = HashSet::from(["15550000001@s.whatsapp.net".to_string()]);
+        let summaries = aggregate_reactions(
+            vec![
+                entry("15550000000@s.whatsapp.net", "👍"),
+                entry("15550000001@s.whatsapp.net", "❤️"),
+                entry("15550000002@s.whatsapp.net", "👍"),
+            ],
+            &own,
+        );
+
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].emoji, "👍");
+        assert_eq!(summaries[0].count, 2);
+        assert!(!summaries[0].reacted_by_me);
+        assert_eq!(summaries[1].emoji, "❤️");
+        assert!(summaries[1].reacted_by_me);
+    }
+}
+
+fn aggregate_reactions(
+    entries: Vec<whatsapp_rust_chat_store::ReactionEntry>,
+    own_jids: &std::collections::HashSet<String>,
+) -> Vec<domain::ReactionSummary> {
+    let mut summaries = Vec::<domain::ReactionSummary>::new();
+    for entry in entries {
+        if entry.emoji.is_empty() {
+            continue;
+        }
+        let own = own_jids.contains(&entry.sender_jid.to_non_ad().to_string());
+        if let Some(summary) = summaries
+            .iter_mut()
+            .find(|summary| summary.emoji == entry.emoji)
+        {
+            summary.count = summary.count.saturating_add(1);
+            summary.reacted_by_me |= own;
+        } else {
+            summaries.push(domain::ReactionSummary {
+                emoji: entry.emoji,
+                count: 1,
+                reacted_by_me: own,
+            });
+        }
+    }
+    summaries
 }
 
 pub(crate) fn stored_to_row(
@@ -688,6 +785,7 @@ pub(crate) fn stored_to_row(
         seq: domain::LocalCursor(m.seq),
         kind,
         quoted,
+        reactions: Vec::new(),
         status,
         edited_at_ms: m.edited_at.map(|t| t.timestamp_millis()),
         revoked: m.revoked,
@@ -753,6 +851,7 @@ fn context_row_to_domain(chat: &str, row: MessageContextRow) -> domain::MessageR
         seq: domain::LocalCursor(row.rowid),
         kind,
         quoted,
+        reactions: Vec::new(),
         status,
         edited_at_ms: row.edited_at_ms,
         revoked: row.revoked,

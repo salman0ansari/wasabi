@@ -71,10 +71,22 @@ pub struct MessageRow {
     pub kind: MessageKind,
     #[serde(default)]
     pub quoted: Option<QuotedMessage>,
+    #[serde(default)]
+    pub reactions: Vec<ReactionSummary>,
     pub status: MessageStatus,
     pub edited_at_ms: Option<i64>,
     pub revoked: bool,
     pub starred: bool,
+}
+
+/// One display aggregate for all active reactions using the same emoji.
+/// Sender identities stay behind the repository boundary; the UI only needs
+/// a count and whether the linked account owns one of them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReactionSummary {
+    pub emoji: String,
+    pub count: u32,
+    pub reacted_by_me: bool,
 }
 
 /// Conservative WhatsApp Web edit entry-point window. The server remains
@@ -205,6 +217,7 @@ mod edit_tests {
                 body: "before".to_string(),
             },
             quoted: None,
+            reactions: Vec::new(),
             status: MessageStatus::Delivered,
             edited_at_ms: None,
             revoked: false,

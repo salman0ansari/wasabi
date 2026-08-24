@@ -441,8 +441,37 @@ impl MainWindow {
             });
             self.messages.rebuild();
         }
+        if mode == "reactions"
+            && let Some(row) = self
+                .messages
+                .rows
+                .iter_mut()
+                .find(|row| row.id.as_str() == "PREVIEW-MULTILINE")
+        {
+            row.reactions = vec![
+                wasabi_domain::ReactionSummary {
+                    emoji: "👍".to_string(),
+                    count: 4,
+                    reacted_by_me: true,
+                },
+                wasabi_domain::ReactionSummary {
+                    emoji: "❤️".to_string(),
+                    count: 2,
+                    reacted_by_me: false,
+                },
+                wasabi_domain::ReactionSummary {
+                    emoji: "🎉".to_string(),
+                    count: 1,
+                    reacted_by_me: false,
+                },
+            ];
+            self.messages.rebuild();
+        }
         self.msg_scroll.reset(self.messages.items.len());
         self.msg_scroll.scroll_to_end();
+        if mode == "reactions" {
+            self.msg_scroll.remeasure();
+        }
         if mode == "media" {
             self.staged_attachments.insert(
                 preview.chat.as_str().to_string(),
@@ -1366,6 +1395,19 @@ impl MainWindow {
             wasabi_domain::MessageAction::Star { starred, .. } => Some(*starred),
             _ => None,
         };
+        let reaction_change = match &action {
+            wasabi_domain::MessageAction::React { emoji, .. } => self
+                .messages
+                .rows
+                .iter()
+                .find(|row| row.chat == target.chat && row.id == target.message)
+                .map(|row| {
+                    let previous = row.reactions.clone();
+                    let optimistic = optimistic_own_reaction(&previous, emoji);
+                    (previous, optimistic)
+                }),
+            _ => None,
+        };
         let retry_key = matches!(action, wasabi_domain::MessageAction::Retry { .. }).then(|| {
             (
                 target.chat.as_str().to_string(),
@@ -1386,6 +1428,17 @@ impl MainWindow {
         {
             row.starred = starred;
         }
+        if let Some((_, optimistic)) = &reaction_change
+            && let Some(row) = self
+                .messages
+                .rows
+                .iter_mut()
+                .find(|row| row.chat == target.chat && row.id == target.message)
+        {
+            row.reactions = optimistic.clone();
+            self.messages.rebuild();
+            self.msg_scroll.remeasure();
+        }
         let bridge = Arc::clone(&self.bridge);
         spawn_main(cx, async move |this, cx| {
             let result = bridge.perform_message_action(action).await;
@@ -1401,6 +1454,16 @@ impl MainWindow {
                         && row.starred == starred
                     {
                         row.starred = !starred;
+                    }
+                    if let Some((previous, optimistic)) = &reaction_change
+                        && let Some(row) = this.messages.rows.iter_mut().find(|row| {
+                            row.chat == target.chat && row.id == target.message
+                        })
+                        && row.reactions == *optimistic
+                    {
+                        row.reactions = previous.clone();
+                        this.messages.rebuild();
+                        this.msg_scroll.remeasure();
                     }
                     this.send_error = Some(error.ui_message().to_string());
                 }
@@ -1467,6 +1530,15 @@ impl MainWindow {
     ) {
         let Some(row) = self.messages.rows.iter().find(|row| row.id == message) else {
             return;
+        };
+        let emoji = if row
+            .reactions
+            .iter()
+            .any(|reaction| reaction.emoji == emoji && reaction.reacted_by_me)
+        {
+            String::new()
+        } else {
+            emoji
         };
         let action = wasabi_domain::MessageAction::React {
             target: row.into(),
@@ -2077,6 +2149,14 @@ impl MainWindow {
         let after = self.messages.timeline_keys();
         if self.msg_scroll.item_count() != before.len() {
             self.msg_scroll.reset(after.len());
+            return;
+        }
+        if before == after {
+            // Stable message identities can still change rendered geometry
+            // through an edit, revoke, reaction aggregate, or media state.
+            // The bounded 200-row window makes an explicit native remeasure
+            // cheap while keeping unchanged scroll identities intact.
+            self.msg_scroll.remeasure();
             return;
         }
 
@@ -2878,6 +2958,33 @@ fn should_restore_composer(accepted: bool, text_only: bool, current: &str) -> bo
     !accepted && text_only && current.trim().is_empty()
 }
 
+fn optimistic_own_reaction(
+    current: &[wasabi_domain::ReactionSummary],
+    emoji: &str,
+) -> Vec<wasabi_domain::ReactionSummary> {
+    let mut next = current.to_vec();
+    for reaction in &mut next {
+        if reaction.reacted_by_me {
+            reaction.reacted_by_me = false;
+            reaction.count = reaction.count.saturating_sub(1);
+        }
+    }
+    next.retain(|reaction| reaction.count > 0);
+    if !emoji.is_empty() {
+        if let Some(reaction) = next.iter_mut().find(|reaction| reaction.emoji == emoji) {
+            reaction.count = reaction.count.saturating_add(1);
+            reaction.reacted_by_me = true;
+        } else {
+            next.push(wasabi_domain::ReactionSummary {
+                emoji: emoji.to_string(),
+                count: 1,
+                reacted_by_me: true,
+            });
+        }
+    }
+    next
+}
+
 fn submitted_edit_matches(
     draft: Option<&wasabi_domain::Draft>,
     target: &wasabi_domain::MessageId,
@@ -3015,7 +3122,7 @@ where
 mod tests {
     use super::{
         TYPING_REFRESH_AFTER, TypingDisplay, should_restore_composer, submitted_edit_matches,
-        should_clear_visible_edit, timeline_splice, typing_refresh_due,
+        should_clear_visible_edit, optimistic_own_reaction, timeline_splice, typing_refresh_due,
     };
 
     #[test]
@@ -3109,5 +3216,30 @@ mod tests {
             "corrected",
             "corrected",
         ));
+    }
+
+    #[test]
+    fn optimistic_reaction_replaces_or_removes_only_our_choice() {
+        let existing = vec![
+            wasabi_domain::ReactionSummary {
+                emoji: "👍".to_string(),
+                count: 2,
+                reacted_by_me: true,
+            },
+            wasabi_domain::ReactionSummary {
+                emoji: "❤️".to_string(),
+                count: 3,
+                reacted_by_me: false,
+            },
+        ];
+        let changed = optimistic_own_reaction(&existing, "❤️");
+        assert_eq!(changed[0].count, 1);
+        assert!(!changed[0].reacted_by_me);
+        assert_eq!(changed[1].count, 4);
+        assert!(changed[1].reacted_by_me);
+
+        let removed = optimistic_own_reaction(&changed, "");
+        assert_eq!(removed[1].count, 3);
+        assert!(!removed[1].reacted_by_me);
     }
 }

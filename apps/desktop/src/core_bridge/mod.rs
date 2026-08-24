@@ -1115,6 +1115,12 @@ impl CoreBridge {
                     })?;
                 }
                 MessageAction::React { target, emoji } => {
+                    if emoji.chars().count() > 16 || emoji.chars().any(char::is_whitespace) {
+                        return Err(ServiceError::new(
+                            ErrorKind::InvalidRequest,
+                            "reaction must be one compact emoji sequence",
+                        ));
+                    }
                     let key = whatsapp_rust::message_key(
                         target.message.as_str(),
                         &chat,
@@ -1122,11 +1128,23 @@ impl CoreBridge {
                         participant.as_ref(),
                     );
                     client
-                        .send_reaction(chat, key, &emoji)
+                        .send_reaction(chat.clone(), key.clone(), &emoji)
                         .await
+                        .map_err(map_protocol_send_error)?;
+                    session
+                        .chats
+                        .record_reaction(
+                            &chat,
+                            &key,
+                            &emoji,
+                            whatsapp_rust::chrono::Utc::now(),
+                        )
                         .map_err(|error| {
-                            ServiceError::new(ErrorKind::Protocol, error.to_string())
+                            ServiceError::new(ErrorKind::Database, error.to_string())
                         })?;
+                    session.chats.flush().await.map_err(|error| {
+                        ServiceError::new(ErrorKind::Database, error.to_string())
+                    })?;
                 }
                 MessageAction::Edit { target, body } => {
                     if !target.from_me {

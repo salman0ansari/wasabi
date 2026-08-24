@@ -394,6 +394,15 @@ fn bubble(
                 .child(messages::body_text(&row)),
         );
     }
+    if !row.reactions.is_empty() {
+        content = content.child(reaction_chips(
+            row.id.clone(),
+            row_index,
+            row.reactions.clone(),
+            text_scale,
+            cx,
+        ));
+    }
     content = content.child(
         gpui::div()
             .flex()
@@ -448,6 +457,53 @@ fn bubble(
             .bg(bubble_bg)
             .child(content),
     )
+}
+
+fn reaction_chips(
+    message: wasabi_domain::MessageId,
+    row_index: usize,
+    reactions: Vec<wasabi_domain::ReactionSummary>,
+    text_scale: u16,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Div {
+    gpui::div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(4.0))
+        .pt(px(3.0))
+        .children(reactions.into_iter().enumerate().map(|(reaction_index, reaction)| {
+            let selected = reaction.reacted_by_me;
+            let emoji = reaction.emoji.clone();
+            let target = message.clone();
+            gpui::div()
+                .id(("reaction-chip", row_index * 32 + reaction_index))
+                .cursor_pointer()
+                .h(px(26.0))
+                .flex()
+                .items_center()
+                .rounded_full()
+                .border_1()
+                .border_color(if selected {
+                    theme::accent()
+                } else {
+                    theme::border()
+                })
+                .bg(if selected {
+                    theme::bubble_out()
+                } else {
+                    theme::surface()
+                })
+                .px(px(7.0))
+                .py(px(2.0))
+                .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+                .text_color(theme::text_primary())
+                .hover(|style| style.border_color(theme::accent()))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.react_to_message(target.clone(), emoji.clone(), cx)
+                }))
+                .child(format!("{} {}", reaction.emoji, reaction.count))
+        }))
 }
 
 fn quoted_message(

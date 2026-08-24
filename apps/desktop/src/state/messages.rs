@@ -429,6 +429,7 @@ mod tests {
                 body: id.to_string(),
             },
             quoted: None,
+            reactions: Vec::new(),
             status: MessageStatus::Delivered,
             edited_at_ms: None,
             revoked: false,

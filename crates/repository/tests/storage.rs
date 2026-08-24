@@ -108,6 +108,58 @@ async fn outgoing_roundtrip_via_flush_barrier() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn message_pages_project_durable_reaction_aggregates() {
+    let dir = TestDir::new("reaction-projection");
+    let store = open(&dir).await;
+    let reaction = wa::Message {
+        reaction_message: MessageField::some(wa::message::ReactionMessage {
+            key: MessageField::some(wa::MessageKey {
+                id: Some("TARGET-R".to_string()),
+                ..Default::default()
+            }),
+            text: Some("👍".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    enqueue_inbound(
+        store.chats(),
+        vec![
+            InboundMessage::builder()
+                .message(Arc::new(wa::Message::text("react to this")))
+                .info(Arc::new(incoming_info(
+                    PEER1,
+                    PEER1,
+                    "TARGET-R",
+                    1_700_000_000,
+                )))
+                .build(),
+            InboundMessage::builder()
+                .message(Arc::new(reaction))
+                .info(Arc::new(incoming_info(
+                    PEER1,
+                    PEER1,
+                    "REACTION-R",
+                    1_700_000_001,
+                )))
+                .build(),
+        ],
+    );
+    store.flush().await.unwrap();
+
+    let page = store.message_page(PEER1, None, 10).await.unwrap();
+    assert_eq!(
+        page.rows.len(),
+        1,
+        "reaction events are not message bubbles"
+    );
+    assert_eq!(page.rows[0].reactions.len(), 1);
+    assert_eq!(page.rows[0].reactions[0].emoji, "👍");
+    assert_eq!(page.rows[0].reactions[0].count, 1);
+    assert!(!page.rows[0].reactions[0].reacted_by_me);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn event_delivery_is_idempotent_under_replay() {
     let dir = TestDir::new("replay");
     let store = open(&dir).await;

@@ -6,6 +6,11 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 
 ### Added
 
+- Message bubbles now project durable reactions into per-emoji counts, mark
+  the linked account's own choice, and expose compact toggle chips. Reaction
+  events remain hidden from the timeline; optimistic replace/remove updates
+  roll back on failure, and successful sends materialize locally only after
+  protocol acceptance.
 - Acknowledged outgoing text messages can now be edited inside the protocol
   window. The action captures its immutable chat/message identity, persists
   edit mode in the per-chat draft, refuses to overwrite active composer work,

@@ -47,6 +47,7 @@ pub(crate) fn media_preview() -> MediaPreview {
             seq: LocalCursor(seq),
             kind,
             quoted: None,
+            reactions: Vec::new(),
             status: MessageStatus::Read,
             edited_at_ms: None,
             revoked: false,

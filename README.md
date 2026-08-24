@@ -50,6 +50,12 @@ attachment, and rolls the optimistic bubble back if synchronization fails.
 
 ![Wasabi message editing](docs/screenshots/edit-message-flow.png)
 
+Reaction chips come from the durable per-sender aggregate, show real counts,
+highlight the linked account's own choice, and can be clicked to replace or
+remove that reaction without creating standalone reaction bubbles.
+
+![Wasabi reaction summaries](docs/screenshots/message-reactions.png)
+
 ### Attachments
 
 Selected files are copied into restart-safe Wasabi staging before upload. The composer shows the real filename, media class, and size without exposing local paths.
@@ -102,7 +108,7 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 - Edit acknowledged outgoing text inside the protocol window with a chat-bound, restart-safe composer and failure rollback.
 - Stage outgoing files durably, recover interrupted composer attachments after restart, cancel them safely, and stream encryption/upload without buffering entire files in memory.
 - Download received media on demand into a bounded, content-addressed, SHA-256-verified cache.
-- Copy and react to messages, or star/unstar them with optimistic rollback if synchronization fails.
+- Copy and react to messages, see durable reaction counts, replace/remove your own choice, or star/unstar with optimistic rollback if synchronization fails.
 - Delete a message locally or revoke an eligible sent message through distinct, explicit confirmation dialogs.
 - Pin/unpin and mute/unmute chats from the conversation drawer.
 - Mark unread conversations read when they are opened in the active window, without cross-chat races.
