@@ -191,8 +191,8 @@ async fn store_change_invalidation_emitted_after_commit() {
     assert!(
         matches!(
             change,
-            whatsapp_rust_chat_store::StoreChange::Chats
-                | whatsapp_rust_chat_store::StoreChange::Messages { .. }
+            wasabi_repository::StoreChange::Chats
+                | wasabi_repository::StoreChange::Messages { .. }
         ),
         "unexpected change: {change:?}"
     );

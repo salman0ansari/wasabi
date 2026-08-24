@@ -12,7 +12,7 @@ use tokio::sync::broadcast;
 use wasabi_domain as domain;
 use whatsapp_rust_chat_store::{
     ChatStore,
-    types::{ChatCursor, MessageCursor, StoreChange},
+    types::{ChatCursor, MessageCursor, StoreChange as UpstreamStoreChange},
 };
 use whatsapp_rust_sqlite_storage::{SqliteStore, SqliteStoreConfig, Synchronous};
 
@@ -24,6 +24,31 @@ pub enum OpenError {
     Sqlite(String),
     #[error("chat store: {0}")]
     ChatStore(#[from] whatsapp_rust_chat_store::ChatStoreError),
+}
+
+/// Repository-owned durable invalidation. Upstream JIDs and store types do
+/// not cross this facade.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StoreChange {
+    Chats,
+    Messages { chat: String },
+    Contacts,
+}
+
+pub struct StoreChangeFeed {
+    inner: broadcast::Receiver<UpstreamStoreChange>,
+}
+
+impl StoreChangeFeed {
+    pub async fn recv(&mut self) -> Result<StoreChange, broadcast::error::RecvError> {
+        self.inner.recv().await.map(|change| match change {
+            UpstreamStoreChange::Chats => StoreChange::Chats,
+            UpstreamStoreChange::Contacts => StoreChange::Contacts,
+            UpstreamStoreChange::Messages { chat } => StoreChange::Messages {
+                chat: chat.to_string(),
+            },
+        })
+    }
 }
 
 pub struct AccountStore {
@@ -85,8 +110,10 @@ impl AccountStore {
 
     /// Subscribe to durable-change invalidations (bounded broadcast,
     /// capacity 256; lag ⇒ re-query —.
-    pub fn subscribe_changes(&self) -> broadcast::Receiver<StoreChange> {
-        self.chats.subscribe()
+    pub fn subscribe_changes(&self) -> StoreChangeFeed {
+        StoreChangeFeed {
+            inner: self.chats.subscribe(),
+        }
     }
 
     /// Barrier: every write enqueued before this call is committed when this

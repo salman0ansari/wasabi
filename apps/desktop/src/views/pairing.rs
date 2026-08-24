@@ -40,8 +40,8 @@ pub fn pairing_panel(session: &SessionMirror, cx: &mut Context<MainWindow>) -> g
             .rounded(px(theme::RADIUS_MD))
             .px(px(20.0))
             .py(px(10.0))
-            .bg(theme::ROW_SELECTED)
-            .text_color(theme::TEXT_SECONDARY)
+            .bg(theme::row_selected())
+            .text_color(theme::text_secondary())
             .child("Starting…")
     } else if matches!(session.state, SessionState::Connecting) {
         gpui::div()
@@ -49,8 +49,8 @@ pub fn pairing_panel(session: &SessionMirror, cx: &mut Context<MainWindow>) -> g
             .rounded(px(theme::RADIUS_MD))
             .px(px(20.0))
             .py(px(10.0))
-            .bg(theme::ROW_SELECTED)
-            .text_color(theme::TEXT_SECONDARY)
+            .bg(theme::row_selected())
+            .text_color(theme::text_secondary())
             .child("Connecting…")
     } else {
         let mut button = gpui::div()
@@ -59,8 +59,8 @@ pub fn pairing_panel(session: &SessionMirror, cx: &mut Context<MainWindow>) -> g
             .rounded(px(theme::RADIUS_MD))
             .px(px(20.0))
             .py(px(10.0))
-            .bg(theme::ACCENT)
-            .text_color(theme::TEXT_ON_ACCENT)
+            .bg(theme::accent())
+            .text_color(theme::text_on_accent())
             .child(if session.pairing_error.is_some() {
                 "Try again"
             } else {
@@ -77,15 +77,15 @@ pub fn pairing_panel(session: &SessionMirror, cx: &mut Context<MainWindow>) -> g
             .max_w(px(360.0))
             .rounded(px(theme::RADIUS_MD))
             .border_1()
-            .border_color(theme::DANGER)
-            .bg(theme::SURFACE)
+            .border_color(theme::danger())
+            .bg(theme::surface())
             .px(px(12.0))
             .py(px(10.0))
             .flex()
             .flex_col()
             .gap(px(4.0))
             .text_size(px(theme::TEXT_SIZE_SM))
-            .text_color(theme::DANGER)
+            .text_color(theme::danger())
             .child("Couldn’t start pairing")
             .child(error.to_string())
     });
@@ -106,19 +106,19 @@ pub fn pairing_panel(session: &SessionMirror, cx: &mut Context<MainWindow>) -> g
         .items_center()
         .justify_center()
         .gap(px(16.0))
-        .bg(theme::CANVAS)
+        .bg(theme::canvas())
         .child(
             gpui::div()
                 .text_size(px(theme::TEXT_NAME))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(theme::TEXT_PRIMARY)
+                .text_color(theme::text_primary())
                 .child("Link with WhatsApp"),
         )
         .child(qr_view)
         .child(
             gpui::div()
                 .text_size(px(theme::TEXT_SIZE))
-                .text_color(theme::TEXT_SECONDARY)
+                .text_color(theme::text_secondary())
                 .child(status_line),
         )
         .when(
@@ -130,7 +130,7 @@ pub fn pairing_panel(session: &SessionMirror, cx: &mut Context<MainWindow>) -> g
             gpui::div()
                 .max_w(px(360.0))
                 .text_size(px(theme::TEXT_SIZE_SM))
-                .text_color(theme::TEXT_SECONDARY)
+                .text_color(theme::text_secondary())
                 .flex()
                 .flex_col()
                 .items_center()
@@ -145,13 +145,13 @@ fn qr_status(text: &'static str) -> gpui::Div {
         .rounded(px(theme::RADIUS_MD))
         .border_1()
         .border_dashed()
-        .border_color(theme::BORDER)
-        .bg(theme::SURFACE)
+        .border_color(theme::border())
+        .bg(theme::surface())
         .flex()
         .items_center()
         .justify_center()
         .text_size(px(theme::TEXT_SIZE_SM))
-        .text_color(theme::TEXT_SECONDARY)
+        .text_color(theme::text_secondary())
         .child(text)
 }
 
@@ -168,8 +168,8 @@ fn qr_code_view(code: qrcode::QrCode) -> gpui::Div {
         .size(px(QR_FRAME_SIZE))
         .rounded(px(theme::RADIUS_MD))
         .border_1()
-        .border_color(theme::BORDER)
-        .bg(theme::SURFACE)
+        .border_color(theme::border())
+        .bg(theme::surface())
         .overflow_hidden()
         .child(
             gpui::canvas(
@@ -184,7 +184,7 @@ fn qr_code_view(code: qrcode::QrCode) -> gpui::Div {
                             (bounds.size.height - code_size) * 0.5,
                         );
 
-                    window.paint_quad(gpui::fill(bounds, theme::SURFACE));
+                    window.paint_quad(gpui::fill(bounds, theme::surface()));
 
                     for y in 0..module_count {
                         for x in 0..module_count {
@@ -199,7 +199,7 @@ fn qr_code_view(code: qrcode::QrCode) -> gpui::Div {
                                 );
                             let module_bounds =
                                 gpui::bounds(module_origin, gpui::size(module_size, module_size));
-                            window.paint_quad(gpui::fill(module_bounds, theme::TEXT_PRIMARY));
+                            window.paint_quad(gpui::fill(module_bounds, theme::text_primary()));
                         }
                     }
                 },

@@ -1,7 +1,5 @@
 //! Chat list page model: one loaded keyset page plus client-side filtering.
 
-use std::cmp::Ordering;
-
 use wasabi_domain::{ChatPageCursor, ChatSummary};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -31,22 +29,6 @@ impl ChatFilter {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ChatSortMode {
-    #[default]
-    Recent,
-    Name,
-}
-
-impl ChatSortMode {
-    pub const fn toggle(self) -> Self {
-        match self {
-            ChatSortMode::Recent => ChatSortMode::Name,
-            ChatSortMode::Name => ChatSortMode::Recent,
-        }
-    }
-}
-
 #[derive(Default)]
 pub struct ChatListModel {
     pub chats: Vec<ChatSummary>,
@@ -58,7 +40,6 @@ pub struct ChatListModel {
     pub has_more: bool,
     pub filter: ChatFilter,
     pub query: String,
-    pub sort_mode: ChatSortMode,
     pub selected: Option<String>,
     pub error: Option<String>,
 }
@@ -87,11 +68,6 @@ impl ChatListModel {
         self.error = Some(message);
     }
 
-    pub fn toggle_sort(&mut self) {
-        self.sort_mode = self.sort_mode.toggle();
-        self.visible_cache = self.visible();
-    }
-
     /// Keyset cursor reconstructed from the last row of the loaded page.
     /// Kept for chat-list "load more" paging once the list grows beyond one
     /// page; unused by the first shell.
@@ -106,7 +82,7 @@ impl ChatListModel {
     }
 
     /// Indexes into `chats` of rows surviving the active filter chip and
-    /// search query, ordered by the active sort mode.
+    /// search query. Product order is pinned first, then recent activity.
     pub fn visible(&self) -> Vec<usize> {
         let query = self.query.to_lowercase();
         let mut visible = self
@@ -117,28 +93,15 @@ impl ChatListModel {
             .map(|(ix, _)| ix)
             .collect::<Vec<_>>();
         visible.sort_by(|left, right| {
-            compare_chats(&self.chats[*left], &self.chats[*right], self.sort_mode)
+            let left = &self.chats[*left];
+            let right = &self.chats[*right];
+            right
+                .pinned_at_ms
+                .cmp(&left.pinned_at_ms)
+                .then_with(|| right.last_activity_ms.cmp(&left.last_activity_ms))
+                .then_with(|| left.id.as_str().cmp(right.id.as_str()))
         });
         visible
-    }
-}
-
-fn compare_chats(left: &ChatSummary, right: &ChatSummary, mode: ChatSortMode) -> Ordering {
-    match mode {
-        ChatSortMode::Recent => right
-            .pinned_at_ms
-            .cmp(&left.pinned_at_ms)
-            .then_with(|| right.last_activity_ms.cmp(&left.last_activity_ms))
-            .then_with(|| left.id.as_str().cmp(right.id.as_str())),
-        ChatSortMode::Name => {
-            let left_name = fallback_name(left);
-            let right_name = fallback_name(right);
-            left_name
-                .to_lowercase()
-                .cmp(&right_name.to_lowercase())
-                .then_with(|| left_name.cmp(&right_name))
-                .then_with(|| left.id.as_str().cmp(right.id.as_str()))
-        }
     }
 }
 
@@ -184,7 +147,7 @@ pub fn fallback_name(chat: &ChatSummary) -> String {
 mod tests {
     use wasabi_domain::{ChatId, ChatSummary};
 
-    use super::{ChatFilter, ChatListModel, ChatSortMode};
+    use super::{ChatFilter, ChatListModel};
 
     fn chat(
         id: &str,
@@ -206,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn visible_uses_deterministic_recent_and_name_orders() {
+    fn visible_uses_deterministic_product_order() {
         let mut model = ChatListModel::new();
         model.set_page(
             vec![
@@ -220,13 +183,6 @@ mod tests {
 
         assert_eq!(model.visible(), vec![2, 0, 3, 1]);
 
-        model.toggle_sort();
-        assert_eq!(model.sort_mode, ChatSortMode::Name);
-        assert_eq!(model.visible(), vec![1, 3, 2, 0]);
-
-        model.toggle_sort();
-        assert_eq!(model.sort_mode, ChatSortMode::Recent);
-        assert_eq!(model.visible_cache, vec![2, 0, 3, 1]);
     }
 
     #[test]
@@ -246,8 +202,6 @@ mod tests {
 
         assert_eq!(model.visible(), vec![2, 0]);
 
-        model.toggle_sort();
-        assert_eq!(model.visible_cache, vec![2, 0]);
         assert_eq!(model.selected.as_deref(), Some("group-a@g.us"));
         assert_eq!(model.visible(), vec![2, 0]);
     }

@@ -25,7 +25,7 @@ pub fn conversation(
         .min_h(px(0.0))
         .flex()
         .flex_col()
-        .bg(theme::CANVAS);
+        .bg(theme::canvas());
 
     let Some(_) = this.chats.selected.clone() else {
         pane = pane.child(empty_conversation());
@@ -33,9 +33,31 @@ pub fn conversation(
     };
 
     pane = pane.child(header(this, cx));
+    if !this.session.state.is_connected() {
+        pane = pane.child(connection_banner(this));
+    }
     pane = pane.child(timeline(this, window, cx));
     pane = pane.child(crate::views::composer::composer_bar(this, window, cx));
     pane
+}
+
+fn connection_banner(this: &MainWindow) -> gpui::Div {
+    let failed = matches!(
+        this.session.state,
+        wasabi_core::state::SessionState::Disconnected { .. }
+            | wasabi_core::state::SessionState::Failed { .. }
+    );
+    gpui::div()
+        .min_h(px(34.0))
+        .flex_shrink_0()
+        .px(px(14.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(if failed { theme::danger() } else { theme::warn() })
+        .text_color(theme::text_on_accent())
+        .text_size(px(theme::TEXT_SIZE_SM))
+        .child(format!("{} — cached messages remain available", this.session.status_label()))
 }
 
 fn empty_conversation() -> gpui::Div {
@@ -45,7 +67,7 @@ fn empty_conversation() -> gpui::Div {
         .items_center()
         .justify_center()
         .text_size(px(theme::TEXT_SIZE))
-        .text_color(theme::TEXT_SECONDARY)
+        .text_color(theme::text_secondary())
         .child("Select a conversation to start messaging")
 }
 
@@ -71,7 +93,7 @@ fn header(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
             "Conversation".to_string(),
             String::new(),
             "#".to_string(),
-            theme::SKELETON,
+            theme::skeleton(),
         ),
     };
 
@@ -82,9 +104,9 @@ fn header(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
         .gap(px(10.0))
         .px(px(12.0))
         .h(px(crate::views::composer::COMPOSER_H))
-        .bg(theme::SURFACE)
+        .bg(theme::surface())
         .border_b_1()
-        .border_color(theme::BORDER)
+        .border_color(theme::border())
         .child(
             gpui::div()
                 .size(px(38.0))
@@ -94,7 +116,7 @@ fn header(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
                 .items_center()
                 .justify_center()
                 .bg(avatar_bg)
-                .text_color(theme::TEXT_ON_ACCENT)
+                .text_color(theme::text_on_accent())
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child(initials),
         )
@@ -109,14 +131,14 @@ fn header(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
                         .truncate()
                         .text_size(px(theme::TEXT_NAME))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(theme::TEXT_PRIMARY)
+                        .text_color(theme::text_primary())
                         .child(name),
                 )
                 .child(
                     gpui::div()
                         .truncate()
                         .text_size(px(theme::TEXT_SIZE_SM))
-                        .text_color(theme::TEXT_SECONDARY)
+                        .text_color(theme::text_secondary())
                         .child(subtitle),
                 ),
         )
@@ -129,9 +151,9 @@ fn header(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
                 .flex()
                 .items_center()
                 .justify_center()
-                .when(panel_open, |el| el.bg(theme::ROW_SELECTED))
-                .hover(|s| s.bg(theme::ROW_HOVER))
-                .text_color(theme::TEXT_SECONDARY)
+                .when(panel_open, |el| el.bg(theme::row_selected()))
+                .hover(|s| s.bg(theme::row_hover()))
+                .text_color(theme::text_secondary())
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.toggle_right_panel(cx);
                 }))
@@ -170,7 +192,7 @@ fn timeline(
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_color(theme::TEXT_SECONDARY)
+                .text_color(theme::text_secondary())
                 .child("Loading messages…")
                 .into_any_element()
         } else if let Some(err) = &this.messages.error {
@@ -179,7 +201,7 @@ fn timeline(
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_color(theme::DANGER)
+                .text_color(theme::danger())
                 .child(err.clone())
                 .into_any_element()
         } else {
@@ -204,21 +226,21 @@ fn timeline_row(this: &mut MainWindow, ix: usize) -> gpui::AnyElement {
                     .rounded(px(theme::RADIUS_SM))
                     .px(px(10.0))
                     .py(px(3.0))
-                    .bg(theme::SURFACE)
+                    .bg(theme::surface())
                     .text_size(px(theme::TEXT_SIZE_SM))
-                    .text_color(theme::TEXT_SECONDARY)
+                    .text_color(theme::text_secondary())
                     .child(label.clone()),
             )
             .into_any_element(),
         Some(TimelineItem::Message(row_ix)) => match this.messages.rows.get(*row_ix) {
-            Some(row) => bubble(row).into_any_element(),
+            Some(row) => bubble(row, this.settings.text_scale).into_any_element(),
             None => gpui::div().into_any_element(),
         },
         None => gpui::div().into_any_element(),
     }
 }
 
-fn bubble(row: &wasabi_domain::MessageRow) -> gpui::Div {
+fn bubble(row: &wasabi_domain::MessageRow, text_scale: u16) -> gpui::Div {
     use wasabi_domain::{MessageDirection, MessageKind};
 
     let outgoing = row.direction == MessageDirection::Outgoing;
@@ -226,16 +248,16 @@ fn bubble(row: &wasabi_domain::MessageRow) -> gpui::Div {
     if matches!(row.kind, MessageKind::System { .. }) {
         return gpui::div().flex().justify_center().py(px(6.0)).child(
             gpui::div()
-                .text_size(px(theme::TEXT_SIZE_SM))
-                .text_color(theme::TEXT_SECONDARY)
+                .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+                .text_color(theme::text_secondary())
                 .child(messages::body_text(row)),
         );
     }
 
     let (bubble_bg, text_color) = if outgoing {
-        (theme::BUBBLE_OUT, theme::TEXT_PRIMARY)
+        (theme::bubble_out(), theme::text_primary())
     } else {
-        (theme::BUBBLE_IN, theme::TEXT_PRIMARY)
+        (theme::bubble_in(), theme::text_primary())
     };
 
     let show_sender = messages::sender_is_group_member(row);
@@ -256,7 +278,7 @@ fn bubble(row: &wasabi_domain::MessageRow) -> gpui::Div {
     if show_sender {
         content = content.child(
             gpui::div()
-                .text_size(px(theme::TEXT_SIZE_SM))
+                .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(sender_color)
                 .child(sender_label),
@@ -266,13 +288,13 @@ fn bubble(row: &wasabi_domain::MessageRow) -> gpui::Div {
         content = content.child(
             gpui::div()
                 .italic()
-                .text_color(theme::TEXT_SECONDARY)
+                .text_color(theme::text_secondary())
                 .child("This message was deleted"),
         );
     } else {
         content = content.child(
             gpui::div()
-                .text_size(px(theme::TEXT_SIZE))
+                .text_size(px(theme::scaled_text(theme::TEXT_SIZE, text_scale)))
                 .text_color(text_color)
                 .child(messages::body_text(row)),
         );
@@ -282,7 +304,7 @@ fn bubble(row: &wasabi_domain::MessageRow) -> gpui::Div {
             .flex()
             .justify_end()
             .gap(px(4.0))
-            .text_size(px(theme::TEXT_SIZE_SM))
+            .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
             .text_color(messages::status_color(row.status))
             .when(row.starred, |el| el.child("★"))
             .child(meta_ticks),
@@ -301,7 +323,7 @@ fn bubble(row: &wasabi_domain::MessageRow) -> gpui::Div {
             .px(px(10.0))
             .py(px(6.0))
             .border_1()
-            .when(!outgoing, |el| el.border_color(theme::BORDER))
+            .when(!outgoing, |el| el.border_color(theme::border()))
             .when(outgoing, |el| el.border_color(gpui::transparent_black()))
             .bg(bubble_bg)
             .child(content),

@@ -7,4 +7,4 @@ pub mod search;
 pub mod store;
 
 pub use config::{StorageLayout, StoreTuning};
-pub use store::{AccountStore, OpenError};
+pub use store::{AccountStore, OpenError, StoreChange, StoreChangeFeed};

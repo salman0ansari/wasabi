@@ -7,10 +7,34 @@ use gpui::{Context, Window, px, size};
 use gpui_component::v_virtual_list;
 use gpui_component::{Icon, IconName};
 
-use crate::state::chats::{self, ChatFilter, ChatSortMode};
+use crate::state::chats::{self, ChatFilter};
 use crate::state::messages;
 use crate::theme;
 use crate::views::root::MainWindow;
+
+pub fn pane_header(_this: &mut MainWindow, _cx: &mut Context<MainWindow>) -> gpui::Div {
+    gpui::div()
+        .h(px(58.0))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .px(px(16.0))
+        .child(
+            gpui::div()
+                .flex_1()
+                .text_size(px(theme::TEXT_TITLE))
+                .font_weight(gpui::FontWeight::BOLD)
+                .text_color(theme::text_primary())
+                .child("Wasabi"),
+        )
+}
+
+pub fn search_bar(this: &mut MainWindow) -> gpui::Div {
+    gpui::div().px(px(12.0)).pb(px(8.0)).child(
+        gpui_component::input::Input::new(&this.search_input)
+            .prefix(Icon::new(IconName::Search).size(px(16.0))),
+    )
+}
 
 pub fn filter_bar(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
     let chips = ChatFilter::ALL.map(|filter| {
@@ -24,14 +48,14 @@ pub fn filter_bar(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::
             .text_size(px(theme::TEXT_SIZE_SM));
         if active {
             chip = chip
-                .bg(theme::ACCENT)
-                .text_color(theme::TEXT_ON_ACCENT)
+                .bg(theme::accent())
+                .text_color(theme::text_on_accent())
                 .font_weight(gpui::FontWeight::MEDIUM);
         } else {
             chip = chip
-                .bg(theme::CHIP_IDLE)
-                .text_color(theme::TEXT_SECONDARY)
-                .hover(|s| s.bg(theme::ROW_HOVER));
+                .bg(theme::chip_idle())
+                .text_color(theme::text_secondary())
+                .hover(|s| s.bg(theme::row_hover()));
         }
         chip = chip.on_click(cx.listener(move |this, _, _, cx| {
             this.set_chat_filter(filter, cx);
@@ -39,48 +63,16 @@ pub fn filter_bar(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::
         chip.child(filter.label())
     });
 
-    let sort_mode = this.chats.sort_mode;
-    let mut sort_button = gpui::div()
-        .id("chat-sort")
-        .size(px(28.0))
-        .rounded_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .text_color(theme::ACCENT_TEXT)
-        .bg(theme::CHIP_IDLE)
-        .on_click(cx.listener(|this, _, _, cx| {
-            this.chats.toggle_sort();
-            cx.notify();
-        }));
-    if sort_mode == ChatSortMode::Name {
-        sort_button = sort_button
-            .bg(theme::ACCENT)
-            .text_color(theme::TEXT_ON_ACCENT);
-    } else {
-        sort_button = sort_button.hover(|s| s.bg(theme::ROW_HOVER));
-    }
-
     gpui::div()
         .flex()
         .items_center()
         .gap(px(6.0))
         .px(px(10.0))
         .py(px(8.0))
-        .bg(theme::SURFACE)
+        .bg(theme::surface())
         .border_b_1()
-        .border_color(theme::BORDER)
+        .border_color(theme::border())
         .children(chips)
-        .child(
-            sort_button.child(
-                Icon::new(match sort_mode {
-                    ChatSortMode::Recent => IconName::SortDescending,
-                    ChatSortMode::Name => IconName::SortAscending,
-                })
-                .size(px(16.0)),
-            ),
-        )
 }
 
 pub fn chat_list(
@@ -89,8 +81,10 @@ pub fn chat_list(
     cx: &mut Context<MainWindow>,
 ) -> gpui::Div {
     let rows = this.chats.visible_cache.len();
-    let item_sizes: Rc<Vec<gpui::Size<gpui::Pixels>>> =
-        Rc::new(vec![size(px(1.0), px(theme::CHAT_ROW_H)); rows]);
+    let item_sizes: Rc<Vec<gpui::Size<gpui::Pixels>>> = Rc::new(vec![
+        size(px(theme::CHAT_LIST_W), px(theme::CHAT_ROW_H));
+        rows
+    ]);
 
     let view = cx.entity().clone();
     let mut pane = gpui::div().flex_1().min_h(px(0.0)).relative();
@@ -142,6 +136,7 @@ fn chat_row(
     };
 
     let unread = chat.unread_count;
+    let text_scale = this.settings.text_scale;
     let unread_pill = (unread != 0).then(|| {
         let label = match unread {
             n if n < 0 => "•".to_string(),
@@ -153,9 +148,9 @@ fn chat_row(
             .px(px(6.0))
             .py(px(1.0))
             .rounded_full()
-            .bg(theme::ACCENT)
-            .text_color(theme::TEXT_ON_ACCENT)
-            .text_size(px(theme::TEXT_SIZE_SM))
+            .bg(theme::accent())
+            .text_color(theme::text_on_accent())
+            .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
             .flex()
             .justify_center()
             .child(label)
@@ -170,9 +165,11 @@ fn chat_row(
         .items_center()
         .gap(px(10.0))
         .px(px(10.0))
+        .w(px(theme::CHAT_LIST_W))
         .h(px(theme::CHAT_ROW_H))
-        .when(selected, |el| el.bg(theme::ROW_SELECTED))
-        .hover(|s| s.bg(theme::ROW_HOVER))
+        .overflow_hidden()
+        .when(selected, |el| el.bg(theme::row_selected()))
+        .hover(|s| s.bg(theme::row_hover()))
         .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
             this.select_chat(id.clone(), cx);
         }))
@@ -185,8 +182,8 @@ fn chat_row(
                 .items_center()
                 .justify_center()
                 .bg(avatar_bg)
-                .text_color(theme::TEXT_ON_ACCENT)
-                .text_size(px(theme::TEXT_NAME))
+                .text_color(theme::text_on_accent())
+                .text_size(px(theme::scaled_text(theme::TEXT_NAME, text_scale)))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child(initials),
         )
@@ -207,23 +204,23 @@ fn chat_row(
                                 .flex_1()
                                 .min_w(px(0.0))
                                 .truncate()
-                                .text_size(px(theme::TEXT_NAME))
+                                .text_size(px(theme::scaled_text(theme::TEXT_NAME, text_scale)))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_color(theme::TEXT_PRIMARY)
+                                .text_color(theme::text_primary())
                                 .child(name),
                         )
                         .when(pinned, |el| {
                             el.child(
                                 gpui::div()
-                                    .text_size(px(theme::TEXT_SIZE_SM))
-                                    .text_color(theme::ACCENT_TEXT)
+                                    .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+                                    .text_color(theme::accent_text())
                                     .child(Icon::new(IconName::Star).size(px(13.0))),
                             )
                         })
                         .child(
                             gpui::div()
-                                .text_size(px(theme::TEXT_SIZE_SM))
-                                .text_color(theme::TEXT_SECONDARY)
+                                .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+                                .text_color(theme::text_secondary())
                                 .whitespace_nowrap()
                                 .child(time),
                         ),
@@ -238,9 +235,9 @@ fn chat_row(
                                 .flex_1()
                                 .min_w(px(0.0))
                                 .truncate()
-                                .text_size(px(theme::TEXT_SIZE))
-                                .when(typing_here, |el| el.text_color(theme::ACCENT_TEXT))
-                                .when(!typing_here, |el| el.text_color(theme::TEXT_SECONDARY))
+                                .text_size(px(theme::scaled_text(theme::TEXT_SIZE, text_scale)))
+                                .when(typing_here, |el| el.text_color(theme::accent_text()))
+                                .when(!typing_here, |el| el.text_color(theme::text_secondary()))
                                 .child(preview),
                         )
                         .children(unread_pill),
@@ -257,6 +254,6 @@ fn centered_label(text: impl Into<String>) -> gpui::Div {
         .items_center()
         .justify_center()
         .text_size(px(theme::TEXT_SIZE))
-        .text_color(theme::TEXT_SECONDARY)
+        .text_color(theme::text_secondary())
         .child(text.into())
 }

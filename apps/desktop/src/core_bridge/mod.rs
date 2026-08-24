@@ -153,10 +153,8 @@ impl CoreBridge {
             .map(|s| s.subscribe_qr())
     }
 
-    /// Forward materialization-store change signals into the invalidation
-    /// publisher as a coarse `Chats` signal. Payloads are deliberately not
-    /// inspected: projections recover by re-querying durable state, so the
-    /// coarsest correct signal is enough.
+    /// Forward materialization-store changes at their real scope. Lag is the
+    /// only case that deliberately falls back to a coarse chat refresh.
     fn forward_store_changes(&self) {
         let Ok(store) = self.store_snapshot() else {
             return;
@@ -166,7 +164,17 @@ impl CoreBridge {
             let mut changes = store.subscribe_changes();
             loop {
                 match changes.recv().await {
-                    Ok(_) => invalidations.publish(Invalidation::Chats),
+                    Ok(wasabi_repository::StoreChange::Chats) => {
+                        invalidations.publish(Invalidation::Chats)
+                    }
+                    Ok(wasabi_repository::StoreChange::Contacts) => {
+                        invalidations.publish(Invalidation::Contacts)
+                    }
+                    Ok(wasabi_repository::StoreChange::Messages { chat }) => {
+                        invalidations.publish(Invalidation::Messages {
+                            chat,
+                        })
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         invalidations.publish(Invalidation::Chats)
                     }

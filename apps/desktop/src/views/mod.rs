@@ -7,5 +7,6 @@ mod conversation;
 mod pairing;
 mod right_panel;
 mod root;
+mod settings;
 
 pub use root::{BridgeGlobal, MainWindow, key_bindings};

@@ -24,6 +24,7 @@ use wasabi_repository::{StorageLayout, StoreTuning};
 use wasabi_whatsapp::session::{AccountSession, SessionConfig};
 
 use crate::core_bridge::CoreBridge;
+use crate::state::{DeviceSettings, ThemePreference};
 use crate::views::{BridgeGlobal, MainWindow, key_bindings};
 
 const WINDOW_SIZE: f32 = 1280.0;
@@ -64,8 +65,14 @@ fn main() -> anyhow::Result<()> {
         .with_assets(gpui_component_assets::Assets)
         .run(move |cx| {
             gpui_component::init(cx);
-            // The shell is designed around the light reference palette.
-            gpui_component::Theme::change(gpui_component::theme::ThemeMode::Light, None, cx);
+            let preference = DeviceSettings::load().theme;
+            let mode = match preference {
+                ThemePreference::Light => gpui_component::theme::ThemeMode::Light,
+                ThemePreference::Dark => gpui_component::theme::ThemeMode::Dark,
+                ThemePreference::System => cx.window_appearance().into(),
+            };
+            theme::set_dark_mode(mode.is_dark());
+            gpui_component::Theme::change(mode, None, cx);
 
             cx.bind_keys(key_bindings());
             cx.set_global(BridgeGlobal(Arc::clone(&bridge)));

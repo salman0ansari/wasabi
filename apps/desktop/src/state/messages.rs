@@ -15,10 +15,12 @@ use crate::state::chats::{fallback_name, is_group};
 
 /// Hard cap of the in-memory window around the viewport.
 pub const WINDOW_MAX: usize = 200;
-const CHARS_PER_LINE: f32 = 58.0;
-const LINE_H: f32 = 20.0;
-const BUBBLE_BASE_H: f32 = 46.0;
-const MEDIA_BASE_H: f32 = 120.0;
+// Conservative until GPUI text measurement is cached by width bucket. A
+// slightly taller virtual row is preferable to content collisions.
+const CHARS_PER_LINE: f32 = 42.0;
+const LINE_H: f32 = 22.0;
+const BUBBLE_BASE_H: f32 = 54.0;
+const MEDIA_BASE_H: f32 = 248.0;
 
 /// Prepared render order: date chips between day groups, messages by index
 /// into [`MessageWindowModel::rows`].
@@ -49,6 +51,11 @@ pub struct MessageWindowModel {
 impl MessageWindowModel {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn clear_layout_estimates(&mut self) {
+        self.estimates.clear();
+        self.rebuild();
     }
 
     /// Drop everything and prepare for a fresh anchored load.
@@ -243,9 +250,9 @@ pub fn status_glyph(status: MessageStatus) -> &'static str {
 pub fn status_color(status: MessageStatus) -> gpui::Rgba {
     use crate::theme;
     match status {
-        MessageStatus::Read => theme::ACCENT_TEXT,
-        MessageStatus::Failed => theme::DANGER,
-        _ => theme::TEXT_SECONDARY,
+        MessageStatus::Read => theme::accent_text(),
+        MessageStatus::Failed => theme::danger(),
+        _ => theme::text_secondary(),
     }
 }
 

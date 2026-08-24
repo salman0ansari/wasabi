@@ -4,7 +4,9 @@
 pub(crate) mod chats;
 pub(crate) mod messages;
 pub(crate) mod session;
+pub(crate) mod settings;
 
 pub use chats::ChatListModel;
 pub use messages::MessageWindowModel;
 pub use session::SessionMirror;
+pub use settings::{DeviceSettings, SettingsSection, ThemePreference};

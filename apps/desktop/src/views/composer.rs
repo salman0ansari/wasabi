@@ -18,7 +18,8 @@ pub fn build_input(window: &mut Window, cx: &mut Context<MainWindow>) -> gpui::E
                 secondary: false,
                 shift: false,
             }
-        ) {
+        ) && this.settings.enter_to_send
+        {
             this.send_current(window, cx);
         }
     })
@@ -43,9 +44,9 @@ pub fn composer_bar(
 
     let send = {
         let (bg, fg) = if can_send {
-            (theme::ACCENT, theme::TEXT_ON_ACCENT)
+            (theme::accent(), theme::text_on_accent())
         } else {
-            (theme::CHIP_IDLE, theme::TEXT_SECONDARY)
+            (theme::chip_idle(), theme::text_secondary())
         };
         let mut button = gpui::div()
             .id("send-button")
@@ -54,7 +55,7 @@ pub fn composer_bar(
             .py(px(9.0))
             .bg(bg)
             .text_color(fg)
-            .text_size(px(theme::TEXT_SIZE))
+            .text_size(px(theme::scaled_text(theme::TEXT_SIZE, this.settings.text_scale)))
             .child(send_label);
         if can_send {
             button = button.cursor_pointer().on_click(cx.listener(
@@ -72,9 +73,9 @@ pub fn composer_bar(
         .gap(px(8.0))
         .px(px(12.0))
         .h(px(COMPOSER_H))
-        .bg(theme::SURFACE)
+        .bg(theme::surface())
         .border_t_1()
-        .border_color(theme::BORDER)
+        .border_color(theme::border())
         .child(
             Input::new(&this.composer_input)
                 .cleanable(false)
@@ -86,7 +87,7 @@ pub fn composer_bar(
         bar = bar.child(
             gpui::div()
                 .text_size(px(theme::TEXT_SIZE_SM))
-                .text_color(theme::DANGER)
+                .text_color(theme::danger())
                 .whitespace_nowrap()
                 .child(err),
         );
