@@ -218,11 +218,26 @@ impl MainWindow {
     }
 
     pub(crate) fn request_pairing(&mut self, cx: &mut Context<Self>) {
+        if self.session.pairing_requesting {
+            return;
+        }
+
+        self.session.pairing_requesting = true;
+        self.session.pairing_error = None;
+        cx.notify();
+
         let bridge = Arc::clone(&self.bridge);
-        spawn_main(cx, async move |_, _| {
-            if let Err(err) = bridge.start_pairing().await {
-                tracing::warn!(error = %err, "pairing request failed");
-            }
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.start_pairing().await;
+            this.update(cx, |this, cx| {
+                this.session.pairing_requesting = false;
+                if let Err(err) = result {
+                    tracing::warn!(error = %err, "pairing request failed");
+                    this.session.pairing_error = Some(err);
+                }
+                cx.notify();
+            })
+            .ok();
         });
     }
 
@@ -715,6 +730,10 @@ fn apply_state(
             this.session.qr_deadline = None;
             this.qr_ticker_gen.fetch_add(1, Ordering::AcqRel);
         }
+        if state.is_connected() {
+            this.session.pairing_requesting = false;
+            this.session.pairing_error = None;
+        }
         this.session.state = state;
         if connected && this.bridge.has_pending_sends() {
             let bridge = Arc::clone(&this.bridge);
@@ -726,8 +745,7 @@ fn apply_state(
     })
 }
 
-/// Apply one QR update. The payload never lands in UI state; only its
-/// validity deadline does.
+/// Apply one QR update and clear the request feedback once a code is ready.
 fn apply_qr(
     weak: WeakEntity<MainWindow>,
     cx: &mut gpui::AsyncApp,
@@ -736,11 +754,10 @@ fn apply_qr(
     weak.update(cx, |this, cx| {
         match qr {
             Some(qr) => {
-                // The payload stays only in the ephemeral UI mirror so
-                // the pairing code can be rendered; it is never logged
-                // or included in a domain event.
                 this.session.qr_code = Some(qr.code);
                 this.session.qr_deadline = Some(std::time::Instant::now() + qr.expires_in);
+                this.session.pairing_requesting = false;
+                this.session.pairing_error = None;
                 this.spawn_countdown_ticker(cx);
             }
             None => {

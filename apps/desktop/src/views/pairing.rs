@@ -1,5 +1,5 @@
-//! QR pairing panel: placeholder for the rendered code plus a validity
-//! countdown driven by the session's QR watch.
+//! QR pairing panel with request feedback and a validity countdown driven by
+//! the session's QR watch.
 
 use std::time::Instant;
 
@@ -15,12 +15,25 @@ pub fn pairing_panel(session: &SessionMirror, cx: &mut Context<MainWindow>) -> g
         .qr_deadline
         .map(|deadline| deadline.saturating_duration_since(Instant::now()).as_secs() + 1);
 
-    let status_line = match countdown {
-        Some(secs) => format!("Code refreshes in {secs}s"),
-        None => "Waiting for QR…".to_string(),
+    let status_line = if session.pairing_requesting {
+        "Starting secure pairing…".to_string()
+    } else {
+        match countdown {
+            Some(secs) => format!("Code refreshes in {secs}s"),
+            None => "Waiting for QR…".to_string(),
+        }
     };
 
-    let start_button = {
+    let start_button = if session.pairing_requesting {
+        gpui::div()
+            .id("pairing-requesting")
+            .rounded(px(theme::RADIUS_MD))
+            .px(px(20.0))
+            .py(px(10.0))
+            .bg(theme::ROW_SELECTED)
+            .text_color(theme::TEXT_SECONDARY)
+            .child("Starting…")
+    } else {
         let mut button = gpui::div()
             .id("start-pairing")
             .cursor_pointer()
@@ -29,12 +42,34 @@ pub fn pairing_panel(session: &SessionMirror, cx: &mut Context<MainWindow>) -> g
             .py(px(10.0))
             .bg(theme::ACCENT)
             .text_color(theme::TEXT_ON_ACCENT)
-            .child("Link this device");
+            .child(if session.pairing_error.is_some() {
+                "Try again"
+            } else {
+                "Link this device"
+            });
         button = button.on_click(cx.listener(move |this, _, _, cx| {
             this.request_pairing(cx);
         }));
         button
     };
+
+    let error_view = session.pairing_error.as_deref().map(|error| {
+        gpui::div()
+            .max_w(px(360.0))
+            .rounded(px(theme::RADIUS_MD))
+            .border_1()
+            .border_color(theme::DANGER)
+            .bg(theme::SURFACE)
+            .px(px(12.0))
+            .py(px(10.0))
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .text_size(px(theme::TEXT_SIZE_SM))
+            .text_color(theme::DANGER)
+            .child("Couldn’t start pairing")
+            .child(error.to_string())
+    });
 
     let qr_view = match session.qr_code.as_deref() {
         Some(payload) => match qrcode::QrCode::new(payload.as_bytes()) {
@@ -90,6 +125,7 @@ pub fn pairing_panel(session: &SessionMirror, cx: &mut Context<MainWindow>) -> g
                 .child(status_line),
         )
         .when(countdown.is_none(), |el| el.child(start_button))
+        .when_some(error_view, |el, error| el.child(error))
         .child(
             gpui::div()
                 .max_w(px(360.0))

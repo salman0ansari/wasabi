@@ -1,20 +1,23 @@
-//! Connection-state mirror plus pairing countdown anchor.
+//! Connection-state mirror plus pairing status and countdown anchor.
 
 use std::time::Instant;
 
 use wasabi_core::state::SessionState;
 
-/// Last-value-wins projection of the session watches. The QR payload itself
-/// is secret material and never stored here; only its validity window is.
+/// Last-value-wins projection of the session watches plus transient pairing
+/// feedback owned by the desktop surface.
 #[derive(Clone)]
 pub struct SessionMirror {
     pub state: SessionState,
     /// Ephemeral QR payload used only to render the current pairing code.
-    /// It is never logged or persisted and is cleared when the code rotates
-    /// or pairing succeeds.
+    /// It is not logged or persisted and is cleared when pairing ends.
     pub qr_code: Option<String>,
     /// Wall-clock instant at which the current QR code expires.
     pub qr_deadline: Option<Instant>,
+    /// Whether a user-triggered pairing request is still being started.
+    pub pairing_requesting: bool,
+    /// Last user-visible error from a pairing request.
+    pub pairing_error: Option<String>,
 }
 
 impl SessionMirror {
@@ -23,6 +26,8 @@ impl SessionMirror {
             state: SessionState::Stopped,
             qr_code: None,
             qr_deadline: None,
+            pairing_requesting: false,
+            pairing_error: None,
         }
     }
 
