@@ -120,6 +120,16 @@ pub struct MessagePage {
     pub next_before: Option<PageCursor>,
 }
 
+/// A bounded message window centered on one durable search/action target.
+/// Rows use the same newest→oldest ordering as [`MessagePage`].
+#[derive(Clone, Debug)]
+pub struct MessageContext {
+    pub rows: Vec<MessageRow>,
+    pub anchor: MessageId,
+    pub has_more_older: bool,
+    pub has_more_newer: bool,
+}
+
 /// Opaque pagination cursor handed back by the repository.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PageCursor {

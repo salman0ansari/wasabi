@@ -183,6 +183,40 @@ async fn keyset_pagination_no_overlap_no_gap() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn anchored_context_returns_exact_bounded_neighbors() {
+    let dir = TestDir::new("anchored-context");
+    let store = open(&dir).await;
+    let ts = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+    for i in 1..=25 {
+        let id = format!("M{i:02}");
+        store
+            .chats()
+            .record_outgoing(
+                &jid(PEER1),
+                id,
+                &wa::Message::text(format!("message {i}")),
+                ts,
+            )
+            .unwrap();
+    }
+    store.flush().await.unwrap();
+
+    let context = store
+        .message_context(PEER1, domain::MessageId::new("M13"), 3, 2)
+        .await
+        .unwrap();
+    let ids = context
+        .rows
+        .iter()
+        .map(|row| row.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, ["M15", "M14", "M13", "M12", "M11", "M10"]);
+    assert_eq!(context.anchor.as_str(), "M13");
+    assert!(context.has_more_older);
+    assert!(context.has_more_newer);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn store_change_invalidation_emitted_after_commit() {
     let dir = TestDir::new("invalidation");
     let store = open(&dir).await;

@@ -8,7 +8,8 @@
 use std::collections::{HashMap, HashSet};
 
 use wasabi_domain::{
-    ChatSummary, MessageDirection, MessageKind, MessagePage, MessageRow, MessageStatus,
+    ChatSummary, MessageContext, MessageDirection, MessageKind, MessagePage, MessageRow,
+    MessageStatus,
 };
 
 use crate::state::chats::{fallback_name, is_group};
@@ -44,7 +45,10 @@ pub struct MessageWindowModel {
     pub has_more_newer: bool,
     pub loading: bool,
     pub loading_older: bool,
+    pub loading_newer: bool,
     pub error: Option<String>,
+    /// Search/action target receiving a temporary accent outline.
+    pub highlighted: Option<wasabi_domain::MessageId>,
     estimates: HashMap<wasabi_domain::MessageId, f32>,
 }
 
@@ -80,7 +84,73 @@ impl MessageWindowModel {
         self.has_more_newer = false;
         self.loading = false;
         self.error = None;
+        self.highlighted = None;
         self.rebuild();
+    }
+
+    /// Replace the window with bounded context around an exact target.
+    pub fn anchor_context(&mut self, context: &MessageContext) {
+        let mut rows = context.rows.clone();
+        rows.reverse();
+        self.rows = rows;
+        self.has_more_older = context.has_more_older;
+        self.has_more_newer = context.has_more_newer;
+        self.loading = false;
+        self.loading_older = false;
+        self.loading_newer = false;
+        self.error = None;
+        self.highlighted = Some(context.anchor.clone());
+        self.rebuild();
+    }
+
+    /// Render-list index (including date chips) for an exact message.
+    pub fn timeline_index_for_message(
+        &self,
+        message: &wasabi_domain::MessageId,
+    ) -> Option<usize> {
+        self.items.iter().position(|item| match item {
+            TimelineItem::Message(row) => self
+                .rows
+                .get(*row)
+                .is_some_and(|candidate| &candidate.id == message),
+            TimelineItem::Date(_) => false,
+        })
+    }
+
+    pub fn newer_anchor(&self) -> Option<wasabi_domain::MessageId> {
+        self.rows.last().map(|row| row.id.clone())
+    }
+
+    /// Append the next newer anchored page while preserving the current
+    /// viewport. Returns the number of genuinely new rows added.
+    pub fn append_newer_context(&mut self, context: &MessageContext) -> usize {
+        self.loading_newer = false;
+        let mut seen = self.rows.iter().map(row_key).collect::<HashSet<_>>();
+        let mut newer = context
+            .rows
+            .iter()
+            .rev()
+            .filter(|row| seen.insert(row_key(row)))
+            .cloned()
+            .collect::<Vec<_>>();
+        let added = newer.len();
+        self.rows.append(&mut newer);
+        self.rows.sort_by_key(|row| (row.timestamp_ms, row.seq.0));
+        let overflow = self.rows.len().saturating_sub(WINDOW_MAX);
+        if overflow > 0 {
+            self.rows.drain(..overflow);
+            self.has_more_older = true;
+        }
+        self.has_more_newer = context.has_more_newer;
+        if self
+            .highlighted
+            .as_ref()
+            .is_some_and(|target| !self.rows.iter().any(|row| &row.id == target))
+        {
+            self.highlighted = None;
+        }
+        self.rebuild();
+        added
     }
 
     /// Prepend an older page, trimming the newest tail when the window would
@@ -305,4 +375,63 @@ pub fn avatar_initials(chat: &ChatSummary) -> String {
         .find(|c| c.is_alphanumeric())
         .map(|c| c.to_uppercase().to_string())
         .unwrap_or_else(|| "#".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasabi_domain::{
+        ChatId, LocalCursor, MessageContext, MessageDirection, MessageId, MessageKind,
+        MessageStatus, SenderJid,
+    };
+
+    fn row(id: &str, order: i64) -> MessageRow {
+        MessageRow {
+            id: MessageId::new(id),
+            chat: ChatId::new("chat@s.whatsapp.net"),
+            direction: MessageDirection::Incoming,
+            sender: SenderJid {
+                bare: "peer@s.whatsapp.net".to_string(),
+                push_name: None,
+            },
+            timestamp_ms: order * 1_000,
+            seq: LocalCursor(order),
+            kind: MessageKind::Text {
+                body: id.to_string(),
+            },
+            status: MessageStatus::Delivered,
+            edited_at_ms: None,
+            revoked: false,
+            starred: false,
+        }
+    }
+
+    #[test]
+    fn anchored_window_centers_and_pages_toward_newest_without_duplicates() {
+        let mut model = MessageWindowModel::new();
+        model.anchor_context(&MessageContext {
+            rows: vec![row("M3", 3), row("M2", 2), row("M1", 1)],
+            anchor: MessageId::new("M2"),
+            has_more_older: true,
+            has_more_newer: true,
+        });
+        assert_eq!(
+            model.rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["M1", "M2", "M3"]
+        );
+        assert!(model.timeline_index_for_message(&MessageId::new("M2")).is_some());
+
+        let added = model.append_newer_context(&MessageContext {
+            rows: vec![row("M5", 5), row("M4", 4), row("M3", 3)],
+            anchor: MessageId::new("M3"),
+            has_more_older: false,
+            has_more_newer: false,
+        });
+        assert_eq!(added, 2);
+        assert_eq!(
+            model.rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["M1", "M2", "M3", "M4", "M5"]
+        );
+        assert!(!model.has_more_newer);
+    }
 }

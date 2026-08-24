@@ -23,8 +23,8 @@ pub use conversation::{
 pub use error::{ErrorKind, ServiceError};
 pub use ids::{AccountId, ChatId, LocalCursor, MessageId};
 pub use message::{
-    ChatSummary, MessageDirection, MessageKind, MessagePage, MessageRow, MessageStatus, PageCursor,
-    SenderJid,
+    ChatSummary, MessageContext, MessageDirection, MessageKind, MessagePage, MessageRow,
+    MessageStatus, PageCursor, SenderJid,
 };
 pub use page::{ChatPage, ChatPageCursor, ChatScope};
 pub use pairing::{PairingPhoneNumber, PhonePairCode};

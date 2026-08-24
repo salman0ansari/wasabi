@@ -19,9 +19,9 @@ use wasabi_core::events::{Invalidation, InvalidationPublisher};
 use wasabi_core::state::SessionState;
 use wasabi_domain::{
     ChatAction, ChatId, ChatPage, ChatScope, DirectContactDetails, ErrorKind, GroupDetails,
-    GroupPermissions, MessageAction, MessageId, MessagePage, PageCursor, Participant,
-    PairingPhoneNumber, ParticipantRole, PhonePairCode, SearchPage, SendContent, SendReceipt,
-    SendRequest, ServiceError,
+    GroupPermissions, MessageAction, MessageContext, MessageId, MessagePage, PageCursor,
+    PairingPhoneNumber, Participant, ParticipantRole, PhonePairCode, SearchPage, SendContent,
+    SendReceipt, SendRequest, ServiceError,
 };
 use wasabi_repository::AccountStore;
 use wasabi_whatsapp::lifecycle::QrState;
@@ -60,6 +60,13 @@ pub trait DesktopBackend: Send + Sync {
         before: Option<PageCursor>,
         limit: usize,
     ) -> Result<MessagePage, String>;
+    async fn load_message_context(
+        &self,
+        chat: String,
+        anchor: MessageId,
+        before: usize,
+        after: usize,
+    ) -> Result<MessageContext, String>;
     async fn search_messages(
         &self,
         query: String,
@@ -272,6 +279,23 @@ impl CoreBridge {
         self.run_on_core(async move {
             store
                 .message_page(&chat, before, limit)
+                .await
+                .map_err(service_message)
+        })
+        .await
+    }
+
+    pub async fn load_message_context(
+        &self,
+        chat: String,
+        anchor: MessageId,
+        before: usize,
+        after: usize,
+    ) -> Result<MessageContext, String> {
+        let store = self.store_snapshot()?;
+        self.run_on_core(async move {
+            store
+                .message_context(&chat, anchor, before, after)
                 .await
                 .map_err(service_message)
         })
@@ -763,6 +787,16 @@ impl DesktopBackend for CoreBridge {
         limit: usize,
     ) -> Result<MessagePage, String> {
         CoreBridge::load_message_page(self, chat, before, limit).await
+    }
+
+    async fn load_message_context(
+        &self,
+        chat: String,
+        anchor: MessageId,
+        before: usize,
+        after: usize,
+    ) -> Result<MessageContext, String> {
+        CoreBridge::load_message_context(self, chat, anchor, before, after).await
     }
 
     async fn search_messages(

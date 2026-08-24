@@ -11,7 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui::prelude::*;
 use gpui::{
-    Context, FocusHandle, Focusable, Global, KeyBinding, Subscription, WeakEntity, Window, div, px,
+    Context, FocusHandle, Focusable, Global, KeyBinding, ScrollStrategy, Subscription, WeakEntity,
+    Window, div, px,
 };
 use gpui_component::VirtualListScrollHandle;
 use gpui_component::input::{InputEvent, InputState};
@@ -33,6 +34,11 @@ const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(25
 const DRAFT_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
 /// Countdown label refresh interval.
 const COUNTDOWN_TICK: std::time::Duration = std::time::Duration::from_secs(1);
+
+enum LoadedConversation {
+    Newest(wasabi_domain::MessagePage),
+    Context(wasabi_domain::MessageContext),
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum NavDestination {
@@ -344,7 +350,27 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.chats.selected.as_deref() == Some(chat_id.as_str()) {
+        self.open_chat(chat_id, None, window, cx);
+    }
+
+    pub(crate) fn open_search_result(
+        &mut self,
+        chat_id: String,
+        message_id: wasabi_domain::MessageId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_chat(chat_id, Some(message_id), window, cx);
+    }
+
+    fn open_chat(
+        &mut self,
+        chat_id: String,
+        anchor: Option<wasabi_domain::MessageId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if anchor.is_none() && self.chats.selected.as_deref() == Some(chat_id.as_str()) {
             return;
         }
         // Bump first so any in-flight message load is discarded as stale.
@@ -357,7 +383,10 @@ impl MainWindow {
         self.details_loading = false;
         self.details_error = None;
         self.first_visible = 0;
-        self.near_bottom = true;
+        // An anchored search result starts in the middle of its context; do
+        // not prefetch toward newest until the first rendered range actually
+        // reaches that edge.
+        self.near_bottom = anchor.is_none();
         let draft = self
             .chats
             .chats
@@ -391,17 +420,36 @@ impl MainWindow {
 
         let bridge = Arc::clone(&self.bridge);
         spawn_main(cx, async move |this, cx| {
-            let page = bridge
-                .load_message_page(&chat_id, None, MESSAGE_PAGE_LIMIT)
-                .await;
+            let result = match anchor.as_ref() {
+                Some(message) => bridge
+                    .load_message_context(
+                        chat_id.clone(),
+                        message.clone(),
+                        MESSAGE_PAGE_LIMIT / 2,
+                        MESSAGE_PAGE_LIMIT / 2,
+                    )
+                    .await
+                    .map(LoadedConversation::Context),
+                None => bridge
+                    .load_message_page(&chat_id, None, MESSAGE_PAGE_LIMIT)
+                    .await
+                    .map(LoadedConversation::Newest),
+            };
             this.update(cx, |this, cx| {
                 if this.messages_gen.load(Ordering::Acquire) != generation {
                     return;
                 }
-                match page {
-                    Ok(page) => {
+                match result {
+                    Ok(LoadedConversation::Newest(page)) => {
                         this.messages.anchor_newest(&page);
                         this.msg_scroll.scroll_to_bottom();
+                    }
+                    Ok(LoadedConversation::Context(context)) => {
+                        let anchor = context.anchor.clone();
+                        this.messages.anchor_context(&context);
+                        if let Some(index) = this.messages.timeline_index_for_message(&anchor) {
+                            this.msg_scroll.scroll_to_item(index, ScrollStrategy::Center);
+                        }
                     }
                     Err(err) => this.messages.set_error(err),
                 }
@@ -886,6 +934,41 @@ impl MainWindow {
                         }
                     }
                     Err(err) => this.messages.set_error(err),
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+    }
+
+    /// Load the next bounded page toward the newest end of an anchored
+    /// search result without replacing or jumping the window being read.
+    pub(crate) fn load_newer_history(&mut self, cx: &mut Context<Self>) {
+        let Some(chat) = self.messages.chat_id.clone() else {
+            return;
+        };
+        let Some(anchor) = self.messages.newer_anchor() else {
+            return;
+        };
+        self.messages.loading_newer = true;
+        let generation = self.current_messages_gen();
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let context = bridge
+                .load_message_context(chat, anchor, 0, MESSAGE_PAGE_LIMIT)
+                .await;
+            this.update(cx, |this, cx| {
+                if this.messages_gen.load(Ordering::Acquire) != generation {
+                    return;
+                }
+                match context {
+                    Ok(context) => {
+                        this.messages.append_newer_context(&context);
+                    }
+                    Err(error) => {
+                        this.messages.loading_newer = false;
+                        this.send_error = Some(error);
+                    }
                 }
                 cx.notify();
             })

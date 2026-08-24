@@ -49,7 +49,7 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 - Link an account using a rotating QR code or a short-lived phone-number code.
 - Reopen cached chats immediately while reconnecting in the background.
 - Browse cursor-paginated active chats using All, Unread, device-local Favorites, and Groups filters, with a separate Archived destination.
-- Search loaded chats and the complete local message FTS index with cancellable, paginated results.
+- Search loaded chats and the complete local message FTS index with cancellable, paginated results that open the exact message in context.
 - Read paginated message history and send text messages.
 - Star and unstar messages with optimistic rollback if synchronization fails.
 - Pin/unpin and mute/unmute chats from the conversation drawer.

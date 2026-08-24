@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use diesel::prelude::*;
 use tokio::sync::broadcast;
 
 use wasabi_domain as domain;
@@ -259,6 +260,104 @@ impl AccountStore {
         })
     }
 
+    /// A bounded window around an exact durable message identity. The target
+    /// is resolved through ChatStore first so PN/LID aliases land on the same
+    /// canonical conversation before the two indexed neighbor reads run.
+    pub async fn message_context(
+        &self,
+        chat: &str,
+        anchor: domain::MessageId,
+        before: usize,
+        after: usize,
+    ) -> Result<domain::MessageContext, domain::ServiceError> {
+        let requested_chat = parse_jid(chat)?;
+        let target = self
+            .chats
+            .message(&requested_chat, anchor.as_str())
+            .await
+            .map_err(database_error)?
+            .ok_or_else(|| {
+                domain::ServiceError::new(
+                    domain::ErrorKind::InvalidRequest,
+                    "message anchor no longer exists",
+                )
+            })?;
+        let device_id = self.device_id();
+        let actual_chat = target.chat_jid.to_string();
+        let timestamp_ms = target.timestamp.timestamp_millis();
+        let sequence = target.seq;
+        let before_limit = i64::try_from(before.saturating_add(1)).unwrap_or(i64::MAX);
+        let after_limit = i64::try_from(after.saturating_add(1)).unwrap_or(i64::MAX);
+        let query_chat = actual_chat.clone();
+
+        let (mut older, mut newer) = self
+            .shared_db()
+            .read(move |connection| {
+                let older = diesel::sql_query(
+                    "SELECT msg_id, sender_jid, from_me, timestamp_ms, kind, text_content, \
+                            status, starred, edited_at_ms, revoked, rowid \
+                     FROM messages \
+                     WHERE device_id = ? AND chat_jid = ? \
+                       AND (timestamp_ms < ? OR (timestamp_ms = ? AND rowid < ?)) \
+                     ORDER BY timestamp_ms DESC, rowid DESC LIMIT ?",
+                )
+                .bind::<diesel::sql_types::Integer, _>(device_id)
+                .bind::<diesel::sql_types::Text, _>(query_chat.clone())
+                .bind::<diesel::sql_types::BigInt, _>(timestamp_ms)
+                .bind::<diesel::sql_types::BigInt, _>(timestamp_ms)
+                .bind::<diesel::sql_types::BigInt, _>(sequence)
+                .bind::<diesel::sql_types::BigInt, _>(before_limit)
+                .load::<MessageContextRow>(connection)
+                .map_err(context_database_error)?;
+                let newer = diesel::sql_query(
+                    "SELECT msg_id, sender_jid, from_me, timestamp_ms, kind, text_content, \
+                            status, starred, edited_at_ms, revoked, rowid \
+                     FROM messages \
+                     WHERE device_id = ? AND chat_jid = ? \
+                       AND (timestamp_ms > ? OR (timestamp_ms = ? AND rowid > ?)) \
+                     ORDER BY timestamp_ms ASC, rowid ASC LIMIT ?",
+                )
+                .bind::<diesel::sql_types::Integer, _>(device_id)
+                .bind::<diesel::sql_types::Text, _>(query_chat)
+                .bind::<diesel::sql_types::BigInt, _>(timestamp_ms)
+                .bind::<diesel::sql_types::BigInt, _>(timestamp_ms)
+                .bind::<diesel::sql_types::BigInt, _>(sequence)
+                .bind::<diesel::sql_types::BigInt, _>(after_limit)
+                .load::<MessageContextRow>(connection)
+                .map_err(context_database_error)?;
+                Ok((older, newer))
+            })
+            .await
+            .map_err(|error| {
+                domain::ServiceError::new(domain::ErrorKind::Database, error.to_string())
+            })?;
+
+        let has_more_older = older.len() > before;
+        let has_more_newer = newer.len() > after;
+        older.truncate(before);
+        newer.truncate(after);
+
+        // Context uses the established newest→oldest boundary order: reverse
+        // the nearest-first newer side, then target, then older DESC rows.
+        newer.reverse();
+        let mut rows = newer
+            .into_iter()
+            .map(|row| context_row_to_domain(&actual_chat, row))
+            .collect::<Vec<_>>();
+        rows.push(stored_to_row(target)?);
+        rows.extend(
+            older
+                .into_iter()
+                .map(|row| context_row_to_domain(&actual_chat, row)),
+        );
+        Ok(domain::MessageContext {
+            rows,
+            anchor,
+            has_more_older,
+            has_more_newer,
+        })
+    }
+
     /// Cached identity fields for a direct contact. Privacy-controlled About
     /// and profile-photo data remain `None` until their dedicated cache is
     /// populated; the projection never invents values for them.
@@ -440,6 +539,104 @@ fn stored_to_row(
         revoked: m.revoked,
         starred: m.starred,
     })
+}
+
+#[derive(QueryableByName)]
+struct MessageContextRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    msg_id: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    sender_jid: String,
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    from_me: bool,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    timestamp_ms: i64,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    kind: String,
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+    text_content: Option<String>,
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    status: i32,
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    starred: bool,
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::BigInt>)]
+    edited_at_ms: Option<i64>,
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    revoked: bool,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    rowid: i64,
+}
+
+fn context_row_to_domain(chat: &str, row: MessageContextRow) -> domain::MessageRow {
+    let status = match row.status {
+        0 => domain::MessageStatus::Failed,
+        2 => domain::MessageStatus::ServerAck,
+        3 | 5 => domain::MessageStatus::Delivered,
+        4 => domain::MessageStatus::Read,
+        _ => domain::MessageStatus::Pending,
+    };
+    let kind = context_kind(&row.kind, row.text_content);
+    domain::MessageRow {
+        id: domain::MessageId::new(row.msg_id),
+        chat: domain::ChatId::new(chat),
+        direction: if row.from_me {
+            domain::MessageDirection::Outgoing
+        } else {
+            domain::MessageDirection::Incoming
+        },
+        sender: domain::SenderJid {
+            bare: row.sender_jid,
+            push_name: None,
+        },
+        timestamp_ms: row.timestamp_ms,
+        seq: domain::LocalCursor(row.rowid),
+        kind,
+        status,
+        edited_at_ms: row.edited_at_ms,
+        revoked: row.revoked,
+        starred: row.starred,
+    }
+}
+
+fn context_kind(kind: &str, text: Option<String>) -> domain::MessageKind {
+    match kind {
+        "text" => domain::MessageKind::Text {
+            body: text.unwrap_or_default(),
+        },
+        "image" => domain::MessageKind::Image {
+            caption: text,
+            mime: None,
+            media_key: None,
+        },
+        "video" | "ptv" => domain::MessageKind::Video {
+            caption: text,
+            mime: None,
+            media_key: None,
+        },
+        "audio" | "ptt" => domain::MessageKind::Audio {
+            mime: None,
+            media_key: None,
+        },
+        "document" => domain::MessageKind::Document {
+            file_name: text,
+            mime: None,
+            media_key: None,
+        },
+        "sticker" => domain::MessageKind::Sticker {
+            mime: None,
+            media_key: None,
+        },
+        "undecryptable" | "view_once" | "hosted" | "bot" | "unknown" => {
+            domain::MessageKind::Unknown
+        }
+        _ => text.map_or(domain::MessageKind::Unknown, |text| {
+            domain::MessageKind::System { text }
+        }),
+    }
+}
+
+fn context_database_error(error: diesel::result::Error) -> wacore::store::error::StoreError {
+    wacore::store::error::StoreError::Database(Box::new(error))
 }
 
 /// Map the stored kind + text into the UI-facing projection. Media payloads

@@ -289,6 +289,7 @@ fn message_search_row(
     hit: wasabi_domain::MessageSearchHit,
 ) -> gpui::Stateful<gpui::Div> {
     let chat_id = hit.row.chat.as_str().to_string();
+    let message_id = hit.row.id.clone();
     let name = this
         .chats
         .chats
@@ -320,7 +321,7 @@ fn message_search_row(
         .cursor_pointer()
         .hover(|style| style.bg(theme::row_hover()))
         .on_click(cx.listener(move |this, _, window, cx| {
-            this.select_chat(chat_id.clone(), window, cx)
+            this.open_search_result(chat_id.clone(), message_id.clone(), window, cx)
         }))
         .child(
             gpui::div()
@@ -365,6 +366,10 @@ fn message_search_row(
                 )
                 .child(
                     gpui::div()
+                        .w_full()
+                        .max_w(px(275.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
                         .truncate()
                         .text_size(px(theme::scaled_text(theme::TEXT_SIZE, text_scale)))
                         .text_color(theme::text_secondary())

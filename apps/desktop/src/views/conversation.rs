@@ -179,6 +179,14 @@ fn timeline(
     {
         this.load_older_history(cx);
     }
+    if this.messages.has_more_newer
+        && !this.messages.loading_newer
+        && !this.messages.loading
+        && this.near_bottom
+        && items_len > 0
+    {
+        this.load_newer_history(cx);
+    }
 
     let view = cx.entity().clone();
     gpui::div()
@@ -239,7 +247,17 @@ fn timeline_row(
             )
             .into_any_element(),
         Some(TimelineItem::Message(row_ix)) => match this.messages.rows.get(*row_ix) {
-            Some(row) => bubble(row.clone(), *row_ix, this.settings.text_scale, cx).into_any_element(),
+            Some(row) => {
+                let highlighted = this.messages.highlighted.as_ref() == Some(&row.id);
+                bubble(
+                    row.clone(),
+                    *row_ix,
+                    this.settings.text_scale,
+                    highlighted,
+                    cx,
+                )
+                .into_any_element()
+            }
             None => gpui::div().into_any_element(),
         },
         None => gpui::div().into_any_element(),
@@ -250,6 +268,7 @@ fn bubble(
     row: wasabi_domain::MessageRow,
     row_index: usize,
     text_scale: u16,
+    highlighted: bool,
     cx: &mut Context<MainWindow>,
 ) -> gpui::Div {
     use wasabi_domain::{MessageDirection, MessageKind};
@@ -336,6 +355,7 @@ fn bubble(
             .border_1()
             .when(!outgoing, |el| el.border_color(theme::border()))
             .when(outgoing, |el| el.border_color(gpui::transparent_black()))
+            .when(highlighted, |el| el.border_color(theme::accent()))
             .bg(bubble_bg)
             .child(content),
     )
