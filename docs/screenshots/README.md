@@ -11,6 +11,7 @@ These images are captures of the native GPUI application—not design mockups or
 | Protocol reply and composer context | Light | 1280×850 | [`reply-flow.png`](reply-flow.png) |
 | Protocol text edit and composer context | Light | 1280×850 | [`edit-message-flow.png`](edit-message-flow.png) |
 | Durable message reaction summaries | Light | 1280×850 | [`message-reactions.png`](message-reactions.png) |
+| Auto-growing multiline composer | Light | 1280×850 | [`multiline-composer.png`](multiline-composer.png) |
 | Durable attachment composer | Light | 1280×922 | [`attachment-composer-light.png`](attachment-composer-light.png) |
 | Archived conversations | Light | 1280×922 | [`archived-empty.png`](archived-empty.png) |
 | Operational Storage settings | Light | 1280×922 | [`settings-storage-light.png`](settings-storage-light.png) |

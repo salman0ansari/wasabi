@@ -56,6 +56,13 @@ remove that reaction without creating standalone reaction bubbles.
 
 ![Wasabi reaction summaries](docs/screenshots/message-reactions.png)
 
+The composer grows from one to six measured lines, keeps a separate
+restart-safe draft for every chat, and scales with the rest of the
+conversation. `Enter` follows the saved send preference; `Shift+Enter` always
+inserts a newline.
+
+![Wasabi multiline composer](docs/screenshots/multiline-composer.png)
+
 ### Attachments
 
 Selected files are copied into restart-safe Wasabi staging before upload. The composer shows the real filename, media class, and size without exposing local paths.
@@ -113,6 +120,7 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 - Pin/unpin and mute/unmute chats from the conversation drawer.
 - Mark unread conversations read when they are opened in the active window, without cross-chat races.
 - Keep independent per-chat text drafts across conversation switches and app restarts.
+- Compose up to six visible lines before the editor scrolls, with `Enter` following the saved send preference and `Shift+Enter` always inserting a newline.
 - Use light, dark, or Linux system appearance.
 - Configure text size, Enter-to-send, notifications, download location, and an actively enforced media-cache quota.
 - Inspect current media-cache usage and clear downloaded media through an explicit confirmation flow.

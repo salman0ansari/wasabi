@@ -3,6 +3,7 @@
 use gpui::prelude::*;
 use gpui::{ClickEvent, Context, Window, px};
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::Position;
 use gpui_component::{Disableable as _, Icon, IconName};
 use gpui_component::button::{Button, ButtonVariants as _};
 
@@ -11,19 +12,66 @@ use crate::theme;
 use crate::views::root::MainWindow;
 
 pub const COMPOSER_H: f32 = 64.0;
+const COMPOSER_MAX_ROWS: usize = 6;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EnterBehavior {
+    Submit,
+    InsertNewline,
+    AlreadyHandled,
+}
+
+fn enter_behavior(secondary: bool, shift: bool, enter_to_send: bool) -> EnterBehavior {
+    if secondary || shift {
+        EnterBehavior::AlreadyHandled
+    } else if enter_to_send {
+        EnterBehavior::Submit
+    } else {
+        EnterBehavior::InsertNewline
+    }
+}
+
+pub fn set_text_at_end(
+    input: &mut InputState,
+    value: impl Into<String>,
+    window: &mut Window,
+    cx: &mut Context<InputState>,
+) {
+    let value = value.into();
+    let position = end_position(&value);
+    input.set_value(value, window, cx);
+    if position != Position::new(0, 0) {
+        input.set_cursor_position(position, window, cx);
+    }
+}
+
+fn end_position(value: &str) -> Position {
+    let line = value.bytes().filter(|byte| *byte == b'\n').count();
+    let character = value.rsplit('\n').next().unwrap_or_default().chars().count();
+    Position::new(line as u32, character as u32)
+}
 
 pub fn build_input(window: &mut Window, cx: &mut Context<MainWindow>) -> gpui::Entity<InputState> {
-    let input = cx.new(|cx| InputState::new(window, cx).placeholder("Type a message"));
+    let input = cx.new(|cx| {
+        InputState::new(window, cx)
+            .auto_grow(1, COMPOSER_MAX_ROWS)
+            // The event subscriber inserts a newline for plain Enter when the
+            // user's setting disables submit-on-enter. Keeping this enabled
+            // guarantees Shift+Enter is always handled natively as newline.
+            .submit_on_enter(true)
+            .placeholder("Type a message")
+    });
     cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
-        if matches!(
-            event,
-            InputEvent::PressEnter {
-                secondary: false,
-                shift: false,
+        let InputEvent::PressEnter { secondary, shift } = event else {
+            return;
+        };
+        match enter_behavior(*secondary, *shift, this.settings.enter_to_send) {
+            EnterBehavior::Submit => this.send_current(window, cx),
+            EnterBehavior::InsertNewline => {
+                this.composer_input
+                    .update(cx, |input, cx| input.insert("\n", window, cx));
             }
-        ) && this.settings.enter_to_send
-        {
-            this.send_current(window, cx);
+            EnterBehavior::AlreadyHandled => {}
         }
     })
     .detach();
@@ -81,15 +129,18 @@ pub fn composer_bar(
                 .contains(&(chat.clone(), message.as_str().to_string()))
         })
     });
-    let can_send =
+    let can_compose =
         session_can_send && selected.is_some() && !staging && !sending && !editing_in_flight;
+    let has_payload = !this.composer_input.read(cx).value().trim().is_empty()
+        || attachment.is_some();
+    let can_submit = can_compose && has_payload;
     let send_label = if sending {
         "Sending…"
     } else if editing_in_flight {
         "Saving…"
-    } else if editing.is_some() && can_send {
+    } else if editing.is_some() && can_compose {
         "Save"
-    } else if can_send {
+    } else if can_compose {
         "Send"
     } else if !session_can_send {
         "Connect to send"
@@ -98,7 +149,7 @@ pub fn composer_bar(
     };
 
     let attach = {
-        let enabled = can_send && attachment.is_none() && editing.is_none();
+        let enabled = can_compose && attachment.is_none() && editing.is_none();
         let mut button = Button::new("attach-button")
             .icon(IconName::File)
             .ghost()
@@ -113,7 +164,7 @@ pub fn composer_bar(
     };
 
     let send = {
-        let (bg, fg) = if can_send {
+        let (bg, fg) = if can_submit {
             (theme::accent(), theme::text_on_accent())
         } else {
             (theme::chip_idle(), theme::text_secondary())
@@ -127,7 +178,7 @@ pub fn composer_bar(
             .text_color(fg)
             .text_size(px(theme::scaled_text(theme::TEXT_SIZE, this.settings.text_scale)))
             .child(send_label);
-        if can_send {
+        if can_submit {
             button = button.cursor_pointer().on_click(cx.listener(
                 |this, _: &ClickEvent, window, cx| {
                     this.send_current(window, cx);
@@ -180,13 +231,17 @@ pub fn composer_bar(
     bar = bar.child(
         gpui::div()
             .flex()
-            .items_center()
+            .items_end()
             .gap(px(8.0))
             .child(attach)
             .child(
                 Input::new(&this.composer_input)
                     .cleanable(false)
-                    .disabled(!can_send),
+                    .disabled(!can_compose)
+                    .text_size(px(theme::scaled_text(
+                        theme::TEXT_SIZE,
+                        this.settings.text_scale,
+                    ))),
             )
             .child(send),
     );
@@ -415,5 +470,29 @@ mod tests {
         assert!(!preview.contains('\n'));
         assert!(preview.ends_with('…'));
         assert!(preview.is_char_boundary(preview.len()));
+    }
+
+    #[test]
+    fn enter_policy_matches_desktop_messaging_conventions() {
+        assert_eq!(enter_behavior(false, false, true), EnterBehavior::Submit);
+        assert_eq!(
+            enter_behavior(false, false, false),
+            EnterBehavior::InsertNewline
+        );
+        assert_eq!(
+            enter_behavior(false, true, true),
+            EnterBehavior::AlreadyHandled
+        );
+        assert_eq!(
+            enter_behavior(false, true, false),
+            EnterBehavior::AlreadyHandled
+        );
+    }
+
+    #[test]
+    fn restored_multilingual_drafts_place_the_cursor_at_the_true_end() {
+        assert_eq!(end_position("hello"), Position::new(0, 5));
+        assert_eq!(end_position("hello\n界🎉"), Position::new(1, 2));
+        assert_eq!(end_position("trailing\n"), Position::new(1, 0));
     }
 }

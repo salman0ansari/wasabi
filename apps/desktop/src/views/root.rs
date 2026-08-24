@@ -437,7 +437,7 @@ impl MainWindow {
             self.active_draft.body = format!("{original} I’ll send notes before lunch.");
             self.active_draft.edit_target = Some(row.id.clone());
             self.composer_input.update(cx, |input, cx| {
-                input.set_value(self.active_draft.body.clone(), window, cx)
+                composer::set_text_at_end(input, self.active_draft.body.clone(), window, cx)
             });
             self.messages.rebuild();
         }
@@ -467,6 +467,14 @@ impl MainWindow {
             ];
             self.messages.rebuild();
         }
+        if matches!(mode, "composer-multiline" | "composer-multiline-large") {
+            let body = "First line of a real multiline draft.\nSecond line wraps naturally on compact windows.\nمرحبا — 日本語 — emoji 🎉 remain editable."
+                .to_string();
+            self.active_draft.body = body.clone();
+            self.composer_input.update(cx, |input, cx| {
+                composer::set_text_at_end(input, body, window, cx)
+            });
+        }
         self.msg_scroll.reset(self.messages.items.len());
         self.msg_scroll.scroll_to_end();
         if mode == "reactions" {
@@ -492,7 +500,7 @@ impl MainWindow {
                 generation: 1,
             },
         );
-        if mode == "timeline-large" {
+        if matches!(mode, "timeline-large" | "composer-multiline-large") {
             self.settings.text_scale = 150;
             self.msg_scroll.remeasure();
         }
@@ -683,7 +691,7 @@ impl MainWindow {
         let draft_body = draft.body.clone();
         self.active_draft = draft;
         self.composer_input
-            .update(cx, |input, cx| input.set_value(draft_body, window, cx));
+            .update(cx, |input, cx| composer::set_text_at_end(input, draft_body, window, cx));
         let should_mark_read = window.is_window_active()
             && self.session.can_send()
             && self
@@ -1038,7 +1046,7 @@ impl MainWindow {
                                 // This failure happened before a durable row
                                 // was accepted, so there is no bubble Retry to
                                 // own the user's text.
-                                state.set_value(text.clone(), window, cx);
+                                composer::set_text_at_end(state, text.clone(), window, cx);
                             }
                         });
                     })
@@ -1620,7 +1628,7 @@ impl MainWindow {
         self.message_overlay = None;
         self.send_error = None;
         self.composer_input
-            .update(cx, |input, cx| input.set_value(body, window, cx));
+            .update(cx, |input, cx| composer::set_text_at_end(input, body, window, cx));
         self.queue_draft_save(cx);
         self.composer_input.update(cx, |input, cx| input.focus(window, cx));
         cx.notify();

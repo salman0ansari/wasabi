@@ -6,6 +6,10 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 
 ### Added
 
+- The composer now grows from one to six measured lines, preserves restored
+  multilingual cursor positions, applies text-size preferences to its editor
+  geometry, submits with plain Enter only when configured, and always treats
+  Shift+Enter as a newline without duplicate insertion.
 - Message bubbles now project durable reactions into per-emoji counts, mark
   the linked account's own choice, and expose compact toggle chips. Reaction
   events remain hidden from the timeline; optimistic replace/remove updates
