@@ -9,6 +9,7 @@ use gpui::{Context, px};
 use crate::state::SessionMirror;
 use crate::theme;
 use crate::views::root::MainWindow;
+use wasabi_core::state::SessionState;
 
 const QR_FRAME_SIZE: f32 = 240.0;
 const QR_QUIET_ZONE: usize = 4;
@@ -23,7 +24,13 @@ pub fn pairing_panel(session: &SessionMirror, cx: &mut Context<MainWindow>) -> g
     } else {
         match countdown {
             Some(secs) => format!("Code refreshes in {secs}s"),
-            None => "Waiting for QR…".to_string(),
+            None => match session.state {
+                SessionState::Connecting => "Connecting to WhatsApp…".to_string(),
+                SessionState::Failed { .. } | SessionState::Disconnected { .. } => {
+                    "Connection needs attention. Try again.".to_string()
+                }
+                _ => "Waiting for QR…".to_string(),
+            },
         }
     };
 
@@ -36,6 +43,15 @@ pub fn pairing_panel(session: &SessionMirror, cx: &mut Context<MainWindow>) -> g
             .bg(theme::ROW_SELECTED)
             .text_color(theme::TEXT_SECONDARY)
             .child("Starting…")
+    } else if matches!(session.state, SessionState::Connecting) {
+        gpui::div()
+            .id("pairing-connecting")
+            .rounded(px(theme::RADIUS_MD))
+            .px(px(20.0))
+            .py(px(10.0))
+            .bg(theme::ROW_SELECTED)
+            .text_color(theme::TEXT_SECONDARY)
+            .child("Connecting…")
     } else {
         let mut button = gpui::div()
             .id("start-pairing")
@@ -105,7 +121,10 @@ pub fn pairing_panel(session: &SessionMirror, cx: &mut Context<MainWindow>) -> g
                 .text_color(theme::TEXT_SECONDARY)
                 .child(status_line),
         )
-        .when(countdown.is_none(), |el| el.child(start_button))
+        .when(
+            countdown.is_none() && !matches!(session.state, SessionState::Connecting),
+            |el| el.child(start_button),
+        )
         .when_some(error_view, |el, error| el.child(error))
         .child(
             gpui::div()

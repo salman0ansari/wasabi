@@ -9,6 +9,9 @@ use wasabi_core::state::SessionState;
 #[derive(Clone)]
 pub struct SessionMirror {
     pub state: SessionState,
+    /// Becomes true after the account has completed one live connection.
+    /// Startup stays on the pairing surface until this is known.
+    pub connected_once: bool,
     /// Ephemeral QR payload used only to render the current pairing code.
     /// It is not logged or persisted and is cleared when pairing ends.
     pub qr_code: Option<String>,
@@ -24,6 +27,7 @@ impl SessionMirror {
     pub fn new() -> Self {
         Self {
             state: SessionState::Stopped,
+            connected_once: false,
             qr_code: None,
             qr_deadline: None,
             pairing_requesting: false,

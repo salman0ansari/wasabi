@@ -84,3 +84,4 @@ pub const RADIUS_LG: f32 = 14.0;
 pub const TEXT_SIZE: f32 = 14.0;
 pub const TEXT_SIZE_SM: f32 = 12.0;
 pub const TEXT_NAME: f32 = 15.0;
+pub const TEXT_TITLE: f32 = 24.0;

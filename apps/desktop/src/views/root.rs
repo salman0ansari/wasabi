@@ -31,6 +31,41 @@ const MESSAGE_PAGE_LIMIT: usize = 60;
 /// Countdown label refresh interval.
 const COUNTDOWN_TICK: std::time::Duration = std::time::Duration::from_secs(1);
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NavDestination {
+    Chats,
+    Unread,
+    Groups,
+    Contacts,
+    Favorites,
+    Calendar,
+    Settings,
+}
+
+impl NavDestination {
+    fn chat_filter(self) -> Option<ChatFilter> {
+        match self {
+            Self::Chats => Some(ChatFilter::All),
+            Self::Unread => Some(ChatFilter::Unread),
+            Self::Groups => Some(ChatFilter::Groups),
+            Self::Favorites => Some(ChatFilter::Favorites),
+            Self::Contacts | Self::Calendar | Self::Settings => None,
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Chats => "Chats",
+            Self::Unread => "Unread",
+            Self::Groups => "Groups",
+            Self::Contacts => "Contacts",
+            Self::Favorites => "Favorites",
+            Self::Calendar => "Calendar",
+            Self::Settings => "Settings",
+        }
+    }
+}
+
 /// Startup-installed global so the window can reach the process bridge.
 pub struct BridgeGlobal(pub Arc<CoreBridge>);
 
@@ -43,6 +78,8 @@ pub struct MainWindow {
     pub(crate) messages: MessageWindowModel,
     pub(crate) session: SessionMirror,
     pub(crate) typing: HashMap<String, ()>,
+    nav_destination: NavDestination,
+    status_menu_open: bool,
     pub(crate) show_right_panel: bool,
     pub(crate) send_error: Option<String>,
     pub(crate) composer_input: gpui::Entity<InputState>,
@@ -99,6 +136,8 @@ impl MainWindow {
             messages: MessageWindowModel::new(),
             session: SessionMirror::new(),
             typing: HashMap::new(),
+            nav_destination: NavDestination::Chats,
+            status_menu_open: false,
             show_right_panel: true,
             send_error: None,
             composer_input,
@@ -154,6 +193,21 @@ impl MainWindow {
     pub(crate) fn set_chat_filter(&mut self, filter: ChatFilter, cx: &mut Context<Self>) {
         self.chats.filter = filter;
         self.refresh_visible();
+        cx.notify();
+    }
+
+    fn select_nav(&mut self, destination: NavDestination, cx: &mut Context<Self>) {
+        self.nav_destination = destination;
+        self.status_menu_open = false;
+        if let Some(filter) = destination.chat_filter() {
+            self.set_chat_filter(filter, cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    fn toggle_status_menu(&mut self, cx: &mut Context<Self>) {
+        self.status_menu_open = !self.status_menu_open;
         cx.notify();
     }
 
@@ -233,8 +287,12 @@ impl MainWindow {
         }
 
         let request_generation = self.pairing_request_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        self.qr_ticker_gen.fetch_add(1, Ordering::AcqRel);
+        self.session.qr_code = None;
+        self.session.qr_deadline = None;
         self.session.pairing_requesting = true;
         self.session.pairing_error = None;
+        self.status_menu_open = false;
         cx.notify();
 
         let bridge = Arc::clone(&self.bridge);
@@ -558,6 +616,14 @@ impl Render for MainWindow {
             || self.session.pairing_requesting
             || self.session.pairing_error.is_some();
 
+        if !store_ready {
+            return opening_storage().into_any_element();
+        }
+
+        if !self.session.connected_once {
+            return pairing_gate(self, cx);
+        }
+
         div()
             .id("root")
             .size_full()
@@ -572,20 +638,13 @@ impl Render for MainWindow {
                 let search = this.search_input.clone();
                 search.update(cx, |state, cx| state.focus(window, cx));
             }))
-            .child(titlebar(self))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .flex()
-                    .child(nav_rail())
-                    .child(chat_pane(self, window, cx))
-                    .child(center_area(self, store_ready, pairing_active, window, cx)),
-            )
+            .child(titlebar(self, cx))
+            .child(main_content(self, window, cx, pairing_active))
+            .into_any_element()
     }
 }
 
-fn titlebar(this: &MainWindow) -> gpui::Div {
+fn titlebar(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
     let status_color = match &this.session.state {
         wasabi_core::state::SessionState::Connected => theme::ACCENT,
         wasabi_core::state::SessionState::Reconnecting
@@ -595,7 +654,67 @@ fn titlebar(this: &MainWindow) -> gpui::Div {
         _ => theme::TEXT_SECONDARY,
     };
 
+    let status = div()
+        .id("session-status")
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .text_size(px(theme::TEXT_SIZE_SM))
+        .text_color(theme::TEXT_SECONDARY)
+        .child(Icon::new(IconName::Network).size(px(16.0)))
+        .child(div().size(px(9.0)).rounded_full().bg(status_color))
+        .child(format!("Network · {}", this.session.status_label()))
+        .child(Icon::new(IconName::ChevronDown).size(px(15.0)))
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.toggle_status_menu(cx);
+        }));
+
+    let status_menu = this.status_menu_open.then(|| {
+        div()
+            .id("session-status-menu")
+            .absolute()
+            .right(px(14.0))
+            .top(px(theme::TITLEBAR_H - 2.0))
+            .w(px(220.0))
+            .rounded(px(theme::RADIUS_MD))
+            .border_1()
+            .border_color(theme::BORDER)
+            .bg(theme::SURFACE)
+            .shadow_lg()
+            .p(px(6.0))
+            .child(
+                div()
+                    .id("status-pair")
+                    .cursor_pointer()
+                    .rounded(px(theme::RADIUS_SM))
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .hover(|s| s.bg(theme::ROW_HOVER))
+                    .text_color(theme::TEXT_PRIMARY)
+                    .child("Link another device")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.request_pairing(cx);
+                    })),
+            )
+            .child(
+                div()
+                    .id("status-close")
+                    .cursor_pointer()
+                    .rounded(px(theme::RADIUS_SM))
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .hover(|s| s.bg(theme::ROW_HOVER))
+                    .text_color(theme::TEXT_SECONDARY)
+                    .child("Close")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toggle_status_menu(cx);
+                    })),
+            )
+    });
+
     div()
+        .relative()
         .flex()
         .items_center()
         .gap(px(12.0))
@@ -611,31 +730,18 @@ fn titlebar(this: &MainWindow) -> gpui::Div {
             ),
         )
         .child(div().flex_1())
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .text_size(px(theme::TEXT_SIZE_SM))
-                .text_color(theme::TEXT_SECONDARY)
-                .child(Icon::new(IconName::Network).size(px(16.0)))
-                .child(div().size(px(9.0)).rounded_full().bg(status_color))
-                .child(format!("Network · {}", this.session.status_label()))
-                .child(Icon::new(IconName::ChevronDown).size(px(15.0))),
-        )
+        .child(status)
+        .when_some(status_menu, |el, menu| el.child(menu))
 }
 
-fn nav_rail() -> gpui::Div {
-    // Single active destination for now: the chats pane owns the shell. The
-    // icons come from the bundled GPUI component asset set so their stroke
-    // weight stays consistent with the rest of the shell.
+fn nav_rail(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
     let items = [
-        (IconName::Inbox, true),
-        (IconName::CircleUser, false),
-        (IconName::Network, false),
-        (IconName::User, false),
-        (IconName::Star, false),
-        (IconName::Calendar, false),
+        (IconName::Inbox, NavDestination::Chats),
+        (IconName::CircleUser, NavDestination::Unread),
+        (IconName::Network, NavDestination::Groups),
+        (IconName::User, NavDestination::Contacts),
+        (IconName::Star, NavDestination::Favorites),
+        (IconName::Calendar, NavDestination::Calendar),
     ];
 
     let mut rail = div()
@@ -651,10 +757,13 @@ fn nav_rail() -> gpui::Div {
         .border_r_1()
         .border_color(theme::BORDER);
 
-    for (icon, active) in items {
+    for (index, (icon, destination)) in items.into_iter().enumerate() {
+        let active = this.nav_destination == destination;
         let mut item = div()
+            .id(("nav-item", index))
             .size(px(46.0))
             .rounded(px(theme::RADIUS_LG))
+            .cursor_pointer()
             .flex()
             .items_center()
             .justify_center()
@@ -662,8 +771,13 @@ fn nav_rail() -> gpui::Div {
         if active {
             item = item.bg(theme::ROW_SELECTED).text_color(theme::ACCENT_TEXT);
         } else {
-            item = item.text_color(theme::TEXT_SECONDARY);
+            item = item
+                .text_color(theme::TEXT_SECONDARY)
+                .hover(|s| s.bg(theme::ROW_HOVER));
         }
+        item = item.on_click(cx.listener(move |this, _, _, cx| {
+            this.select_nav(destination, cx);
+        }));
         rail = rail.child(item.child(Icon::new(icon).size(px(20.0))));
     }
 
@@ -676,6 +790,7 @@ fn nav_rail() -> gpui::Div {
             .gap(px(8.0))
             .child(
                 div()
+                    .id("nav-settings")
                     .size(px(46.0))
                     .rounded(px(theme::RADIUS_LG))
                     .flex()
@@ -684,10 +799,15 @@ fn nav_rail() -> gpui::Div {
                     .text_size(px(18.0))
                     .text_color(theme::TEXT_SECONDARY)
                     .hover(|s| s.bg(theme::ROW_HOVER))
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.select_nav(NavDestination::Settings, cx);
+                    }))
                     .child(Icon::new(IconName::Settings2).size(px(20.0))),
             )
             .child(
                 div()
+                    .id("nav-account")
                     .size(px(38.0))
                     .rounded_full()
                     .flex()
@@ -696,10 +816,122 @@ fn nav_rail() -> gpui::Div {
                     .bg(theme::ACCENT_TEXT)
                     .text_color(theme::TEXT_ON_ACCENT)
                     .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.select_nav(NavDestination::Settings, cx);
+                    }))
                     .child("W"),
             ),
     );
     rail
+}
+
+fn main_content(
+    this: &mut MainWindow,
+    window: &mut Window,
+    cx: &mut Context<MainWindow>,
+    pairing_active: bool,
+) -> gpui::AnyElement {
+    if matches!(
+        this.nav_destination,
+        NavDestination::Contacts | NavDestination::Calendar | NavDestination::Settings
+    ) {
+        return div()
+            .flex_1()
+            .min_h(px(0.0))
+            .flex()
+            .child(nav_rail(this, cx))
+            .child(section_page(this, cx))
+            .into_any_element();
+    }
+
+    div()
+        .flex_1()
+        .min_h(px(0.0))
+        .flex()
+        .child(nav_rail(this, cx))
+        .child(chat_pane(this, window, cx))
+        .child(center_area(this, true, pairing_active, window, cx))
+        .into_any_element()
+}
+
+fn pairing_gate(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElement {
+    div()
+        .id("pairing-gate")
+        .size_full()
+        .flex()
+        .flex_col()
+        .bg(theme::CANVAS)
+        .child(pairing::pairing_panel(&this.session, cx))
+        .into_any_element()
+}
+
+fn section_page(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElement {
+    let destination = this.nav_destination;
+    let description = match destination {
+        NavDestination::Contacts => "Your synced contacts will appear here.",
+        NavDestination::Calendar => "Shared events and reminders will appear here.",
+        NavDestination::Settings => "Manage the linked account and connection.",
+        _ => "",
+    };
+
+    let mut page = div()
+        .id("secondary-page")
+        .flex_1()
+        .min_w(px(0.0))
+        .h_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(12.0))
+        .bg(theme::CANVAS)
+        .text_color(theme::TEXT_PRIMARY)
+        .child(
+            div()
+                .text_size(px(theme::TEXT_TITLE))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(destination.title()),
+        )
+        .child(
+            div()
+                .text_size(px(theme::TEXT_SIZE))
+                .text_color(theme::TEXT_SECONDARY)
+                .child(description),
+        );
+
+    if destination == NavDestination::Settings {
+        page = page.child(
+            div()
+                .id("settings-link-device")
+                .cursor_pointer()
+                .rounded(px(theme::RADIUS_MD))
+                .px(px(18.0))
+                .py(px(10.0))
+                .bg(theme::ACCENT)
+                .text_color(theme::TEXT_ON_ACCENT)
+                .child("Link another device")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.request_pairing(cx);
+                })),
+        );
+    }
+
+    page.child(
+        div()
+            .id("back-to-chats")
+            .cursor_pointer()
+            .rounded(px(theme::RADIUS_MD))
+            .px(px(18.0))
+            .py(px(10.0))
+            .bg(theme::CHIP_IDLE)
+            .text_color(theme::TEXT_PRIMARY)
+            .child("Back to chats")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.select_nav(NavDestination::Chats, cx);
+            })),
+    )
+    .into_any_element()
 }
 
 fn chat_pane(
@@ -746,7 +978,7 @@ fn center_area(
 /// Hydrate-first degraded state: shown only when storage is not open yet.
 fn opening_storage() -> gpui::Div {
     div()
-        .flex_1()
+        .size_full()
         .min_w(px(0.0))
         .flex()
         .items_center()
@@ -765,6 +997,9 @@ fn apply_state(
 ) -> Result<(), anyhow::Error> {
     let connected = state.is_connected();
     weak.update(cx, |this, cx| {
+        if state.is_connected() {
+            this.session.connected_once = true;
+        }
         let left_pairing = this.session.qr_deadline.is_some()
             && !matches!(state, wasabi_core::state::SessionState::Pairing);
         if left_pairing {
@@ -808,14 +1043,12 @@ fn apply_qr(
                 this.spawn_countdown_ticker(cx);
             }
             None => {
-                let expired = this
-                    .session
-                    .qr_deadline
-                    .is_some_and(|deadline| deadline <= std::time::Instant::now());
+                let had_qr = this.session.qr_code.is_some() || this.session.qr_deadline.is_some();
                 this.session.qr_code = None;
                 this.session.qr_deadline = None;
                 this.qr_ticker_gen.fetch_add(1, Ordering::AcqRel);
-                if expired
+                if had_qr
+                    && !this.session.pairing_requesting
                     && matches!(
                         this.session.state,
                         wasabi_core::state::SessionState::Pairing
