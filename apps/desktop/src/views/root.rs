@@ -17,7 +17,7 @@ use gpui_component::VirtualListScrollHandle;
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::{Icon, IconName};
 
-use crate::core_bridge::CoreBridge;
+use crate::core_bridge::DesktopBackend;
 use crate::state::chats::ChatFilter;
 use crate::state::{ChatListModel, DeviceSettings, MessageWindowModel, SessionMirror, SettingsSection};
 use crate::theme;
@@ -51,12 +51,12 @@ impl NavDestination {
 }
 
 /// Startup-installed global so the window can reach the process bridge.
-pub struct BridgeGlobal(pub Arc<CoreBridge>);
+pub struct BridgeGlobal(pub Arc<dyn DesktopBackend>);
 
 impl Global for BridgeGlobal {}
 
 pub struct MainWindow {
-    pub(crate) bridge: Arc<CoreBridge>,
+    pub(crate) bridge: Arc<dyn DesktopBackend>,
     focus: FocusHandle,
     pub(crate) chats: ChatListModel,
     pub(crate) messages: MessageWindowModel,

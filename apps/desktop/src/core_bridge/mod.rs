@@ -27,6 +27,50 @@ use wasabi_whatsapp::lifecycle::QrState;
 use wasabi_whatsapp::outbox::Outbox;
 use wasabi_whatsapp::session::{AccountSession, SessionConfig};
 
+/// Mockable product boundary consumed by GPUI entities. Implementations may
+/// use protocol, SQLite, or network types internally, but every value crossing
+/// this trait is a Wasabi domain projection or a bounded feed.
+#[async_trait::async_trait]
+pub trait DesktopBackend: Send + Sync {
+    fn store_ready(&self) -> bool;
+    fn commands_accepted(&self) -> bool;
+    fn invalidations(&self) -> &InvalidationPublisher;
+    fn subscribe_state(&self) -> Option<tokio::sync::watch::Receiver<SessionState>>;
+    fn subscribe_qr(&self) -> Option<tokio::sync::watch::Receiver<Option<QrState>>>;
+
+    async fn connect_session(&self) -> Result<(), String>;
+    async fn start_pairing(&self) -> Result<(), String>;
+    async fn stop_session(&self) -> Result<(), String>;
+    async fn flush_storage(&self) -> Result<(), String>;
+    async fn load_chat_page(
+        &self,
+        scope: ChatScope,
+        after: Option<wasabi_domain::ChatPageCursor>,
+        limit: usize,
+    ) -> Result<ChatPage, String>;
+    async fn load_message_page(
+        &self,
+        chat: &str,
+        before: Option<PageCursor>,
+        limit: usize,
+    ) -> Result<MessagePage, String>;
+    async fn search_messages(
+        &self,
+        query: String,
+        chat_scope: Option<String>,
+        page: usize,
+    ) -> Result<SearchPage, String>;
+    async fn direct_contact_details(&self, jid: String) -> Result<DirectContactDetails, String>;
+    async fn group_details(&self, chat: String) -> Result<GroupDetails, String>;
+    async fn set_favorite(&self, chat: ChatId, favorite: bool) -> Result<(), String>;
+    async fn save_draft(
+        &self,
+        chat: ChatId,
+        draft: Option<wasabi_domain::Draft>,
+    ) -> Result<(), String>;
+    async fn send(&self, request: SendRequest) -> Result<SendReceipt, ServiceError>;
+}
+
 /// Shared handle bundle handed to the UI.
 pub struct CoreBridge {
     runtime: tokio::runtime::Handle,
@@ -464,4 +508,94 @@ fn role_rank(role: ParticipantRole) -> u8 {
 fn service_message(e: ServiceError) -> String {
     tracing::warn!(kind = %e.kind, detail = %e.detail, "core query failed");
     e.ui_message().to_string()
+}
+
+#[async_trait::async_trait]
+impl DesktopBackend for CoreBridge {
+    fn store_ready(&self) -> bool {
+        CoreBridge::store_ready(self)
+    }
+
+    fn commands_accepted(&self) -> bool {
+        CoreBridge::commands_accepted(self)
+    }
+
+    fn invalidations(&self) -> &InvalidationPublisher {
+        CoreBridge::invalidations(self)
+    }
+
+    fn subscribe_state(&self) -> Option<tokio::sync::watch::Receiver<SessionState>> {
+        CoreBridge::subscribe_state(self)
+    }
+
+    fn subscribe_qr(&self) -> Option<tokio::sync::watch::Receiver<Option<QrState>>> {
+        CoreBridge::subscribe_qr(self)
+    }
+
+    async fn connect_session(&self) -> Result<(), String> {
+        CoreBridge::connect_session(self).await
+    }
+
+    async fn start_pairing(&self) -> Result<(), String> {
+        CoreBridge::start_pairing(self).await
+    }
+
+    async fn stop_session(&self) -> Result<(), String> {
+        CoreBridge::stop_session(self).await
+    }
+
+    async fn flush_storage(&self) -> Result<(), String> {
+        CoreBridge::flush_storage(self).await
+    }
+
+    async fn load_chat_page(
+        &self,
+        scope: ChatScope,
+        after: Option<wasabi_domain::ChatPageCursor>,
+        limit: usize,
+    ) -> Result<ChatPage, String> {
+        CoreBridge::load_chat_page(self, scope, after, limit).await
+    }
+
+    async fn load_message_page(
+        &self,
+        chat: &str,
+        before: Option<PageCursor>,
+        limit: usize,
+    ) -> Result<MessagePage, String> {
+        CoreBridge::load_message_page(self, chat, before, limit).await
+    }
+
+    async fn search_messages(
+        &self,
+        query: String,
+        chat_scope: Option<String>,
+        page: usize,
+    ) -> Result<SearchPage, String> {
+        CoreBridge::search_messages(self, query, chat_scope, page).await
+    }
+
+    async fn direct_contact_details(&self, jid: String) -> Result<DirectContactDetails, String> {
+        CoreBridge::direct_contact_details(self, jid).await
+    }
+
+    async fn group_details(&self, chat: String) -> Result<GroupDetails, String> {
+        CoreBridge::group_details(self, chat).await
+    }
+
+    async fn set_favorite(&self, chat: ChatId, favorite: bool) -> Result<(), String> {
+        CoreBridge::set_favorite(self, chat, favorite).await
+    }
+
+    async fn save_draft(
+        &self,
+        chat: ChatId,
+        draft: Option<wasabi_domain::Draft>,
+    ) -> Result<(), String> {
+        CoreBridge::save_draft(self, chat, draft).await
+    }
+
+    async fn send(&self, request: SendRequest) -> Result<SendReceipt, ServiceError> {
+        CoreBridge::send(self, request).await
+    }
 }

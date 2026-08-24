@@ -23,7 +23,7 @@ use wasabi_core::supervisor::SupervisorConfig;
 use wasabi_repository::{StorageLayout, StoreTuning};
 use wasabi_whatsapp::session::{AccountSession, SessionConfig};
 
-use crate::core_bridge::CoreBridge;
+use crate::core_bridge::{CoreBridge, DesktopBackend};
 use crate::state::{DeviceSettings, ThemePreference};
 use crate::views::{BridgeGlobal, MainWindow, key_bindings};
 
@@ -74,7 +74,8 @@ fn main() -> anyhow::Result<()> {
             gpui_component::Theme::change(mode, None, cx);
 
             cx.bind_keys(key_bindings());
-            cx.set_global(BridgeGlobal(Arc::clone(&bridge)));
+            let ui_backend: Arc<dyn DesktopBackend> = bridge.clone();
+            cx.set_global(BridgeGlobal(ui_backend));
 
             if let Some(err) = &open_error {
                 tracing::error!(error = %err, "storage unavailable at startup");

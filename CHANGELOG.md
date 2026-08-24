@@ -15,6 +15,10 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 - Reproducible Linux desktop footprint benchmark and same-machine blank Electron baseline.
 - Customer-facing project documentation and verified native screenshots.
 
+### Changed
+
+- GPUI now depends on a mockable `DesktopBackend` product-service contract instead of the concrete protocol bridge.
+
 ## [0.2.0-alpha.1] - 2026-08-24
 
 ### Added
