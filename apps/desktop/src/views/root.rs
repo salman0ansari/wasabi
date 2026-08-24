@@ -581,6 +581,7 @@ impl MainWindow {
                         alive
                     })
                     .unwrap_or(false);
+                cx.refresh();
                 if !alive {
                     break;
                 }
