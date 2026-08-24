@@ -20,7 +20,8 @@ use wasabi_core::state::SessionState;
 use wasabi_domain::{
     ChatAction, ChatId, ChatPage, ChatScope, DirectContactDetails, ErrorKind, GroupDetails,
     GroupPermissions, MessageAction, MessageId, MessagePage, PageCursor, Participant,
-    ParticipantRole, SearchPage, SendContent, SendReceipt, SendRequest, ServiceError,
+    PairingPhoneNumber, ParticipantRole, PhonePairCode, SearchPage, SendContent, SendReceipt,
+    SendRequest, ServiceError,
 };
 use wasabi_repository::AccountStore;
 use wasabi_whatsapp::lifecycle::QrState;
@@ -40,6 +41,11 @@ pub trait DesktopBackend: Send + Sync {
 
     async fn connect_session(&self) -> Result<(), String>;
     async fn start_pairing(&self) -> Result<(), String>;
+    async fn start_phone_pairing(
+        &self,
+        phone: PairingPhoneNumber,
+    ) -> Result<PhonePairCode, String>;
+    async fn cancel_phone_pairing(&self) -> Result<(), String>;
     async fn stop_session(&self) -> Result<(), String>;
     async fn flush_storage(&self) -> Result<(), String>;
     async fn load_chat_page(
@@ -199,6 +205,24 @@ impl CoreBridge {
                 .await
                 .map(|_| ())
                 .map_err(|e| e.to_string())
+        })
+        .await
+    }
+
+    pub async fn start_phone_pairing(
+        &self,
+        phone: PairingPhoneNumber,
+    ) -> Result<PhonePairCode, String> {
+        let session = self.session_snapshot()?;
+        self.run_on_core(async move { session.pair_with_phone(phone).await })
+            .await
+    }
+
+    pub async fn cancel_phone_pairing(&self) -> Result<(), String> {
+        let session = self.session_snapshot()?;
+        self.run_on_core(async move {
+            session.cancel_phone_pairing().await;
+            Ok(())
         })
         .await
     }
@@ -702,6 +726,17 @@ impl DesktopBackend for CoreBridge {
 
     async fn start_pairing(&self) -> Result<(), String> {
         CoreBridge::start_pairing(self).await
+    }
+
+    async fn start_phone_pairing(
+        &self,
+        phone: PairingPhoneNumber,
+    ) -> Result<PhonePairCode, String> {
+        CoreBridge::start_phone_pairing(self, phone).await
+    }
+
+    async fn cancel_phone_pairing(&self) -> Result<(), String> {
+        CoreBridge::cancel_phone_pairing(self).await
     }
 
     async fn stop_session(&self) -> Result<(), String> {

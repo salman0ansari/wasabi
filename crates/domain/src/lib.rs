@@ -10,6 +10,7 @@ pub mod error;
 pub mod ids;
 pub mod message;
 pub mod page;
+pub mod pairing;
 pub mod preferences;
 pub mod search;
 pub mod send;
@@ -26,6 +27,7 @@ pub use message::{
     SenderJid,
 };
 pub use page::{ChatPage, ChatPageCursor, ChatScope};
+pub use pairing::{PairingPhoneNumber, PhonePairCode};
 pub use preferences::Draft;
 pub use search::{MessageSearchHit, SearchPage};
 pub use send::{SendContent, SendReceipt, SendRequest};

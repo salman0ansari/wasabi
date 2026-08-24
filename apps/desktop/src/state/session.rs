@@ -21,6 +21,16 @@ pub struct SessionMirror {
     pub pairing_requesting: bool,
     /// Last user-visible error from a pairing request.
     pub pairing_error: Option<String>,
+    /// Whether the alternative phone-number code surface is active.
+    pub use_phone_pairing: bool,
+    /// Ephemeral eight-character link code; never logged or persisted.
+    pub phone_pair_code: Option<String>,
+    /// Wall-clock instant at which the phone link code expires.
+    pub phone_pair_deadline: Option<Instant>,
+    /// Whether a phone-code request is currently in flight.
+    pub phone_pair_requesting: bool,
+    /// Last user-visible phone-code request error.
+    pub phone_pair_error: Option<String>,
 }
 
 impl SessionMirror {
@@ -32,6 +42,11 @@ impl SessionMirror {
             qr_deadline: None,
             pairing_requesting: false,
             pairing_error: None,
+            use_phone_pairing: false,
+            phone_pair_code: None,
+            phone_pair_deadline: None,
+            phone_pair_requesting: false,
+            phone_pair_error: None,
         }
     }
 

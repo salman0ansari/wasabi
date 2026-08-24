@@ -19,6 +19,7 @@ whatsapp-rust = { workspace = true, features = [
 ] }
 whatsapp-rust-chat-store = { workspace = true }
 whatsapp-rust-sqlite-storage = { workspace = true }
+wacore = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 async-trait = "0.1"
 tokio-util = { workspace = true }

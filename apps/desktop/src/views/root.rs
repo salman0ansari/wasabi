@@ -72,6 +72,7 @@ pub struct MainWindow {
     pub(crate) send_error: Option<String>,
     pub(crate) composer_input: gpui::Entity<InputState>,
     pub(crate) search_input: gpui::Entity<InputState>,
+    pub(crate) phone_pair_input: gpui::Entity<InputState>,
     pub(crate) chat_scroll: VirtualListScrollHandle,
     pub(crate) msg_scroll: VirtualListScrollHandle,
     /// First visible timeline index observed on the last frame.
@@ -84,7 +85,9 @@ pub struct MainWindow {
     messages_gen: AtomicU64,
     details_gen: AtomicU64,
     qr_ticker_gen: AtomicU64,
+    phone_pair_ticker_gen: AtomicU64,
     pairing_request_gen: AtomicU64,
+    phone_pair_request_gen: AtomicU64,
     #[allow(dead_code)]
     subscriptions: Vec<Subscription>,
 }
@@ -132,6 +135,9 @@ impl MainWindow {
         let composer_input = composer::build_input(window, cx);
         let search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search or start new chat"));
+        let phone_pair_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Country code and phone number")
+        });
 
         let mut this = Self {
             bridge,
@@ -150,6 +156,7 @@ impl MainWindow {
             send_error: None,
             composer_input,
             search_input,
+            phone_pair_input,
             chat_scroll: VirtualListScrollHandle::new(),
             msg_scroll: VirtualListScrollHandle::new(),
             first_visible: 0,
@@ -160,7 +167,9 @@ impl MainWindow {
             messages_gen: AtomicU64::new(0),
             details_gen: AtomicU64::new(0),
             qr_ticker_gen: AtomicU64::new(0),
+            phone_pair_ticker_gen: AtomicU64::new(0),
             pairing_request_gen: AtomicU64::new(0),
+            phone_pair_request_gen: AtomicU64::new(0),
             subscriptions: Vec::new(),
         };
         // Storage normally opens before the window appears; reflect a
@@ -463,6 +472,76 @@ impl MainWindow {
 
     pub(crate) fn request_pairing(&mut self, cx: &mut Context<Self>) {
         self.start_pairing_request(cx, false);
+    }
+
+    pub(crate) fn show_phone_pairing(&mut self, cx: &mut Context<Self>) {
+        self.session.use_phone_pairing = true;
+        self.session.phone_pair_error = None;
+        cx.notify();
+    }
+
+    pub(crate) fn show_qr_pairing(&mut self, cx: &mut Context<Self>) {
+        self.phone_pair_request_gen.fetch_add(1, Ordering::AcqRel);
+        self.phone_pair_ticker_gen.fetch_add(1, Ordering::AcqRel);
+        self.session.use_phone_pairing = false;
+        self.session.phone_pair_code = None;
+        self.session.phone_pair_deadline = None;
+        self.session.phone_pair_requesting = false;
+        self.session.phone_pair_error = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |_this, _cx| {
+            let _ = bridge.cancel_phone_pairing().await;
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn request_phone_pairing(&mut self, cx: &mut Context<Self>) {
+        if self.session.phone_pair_requesting || !self.bridge.commands_accepted() {
+            return;
+        }
+        let input = self.phone_pair_input.read(cx).value().to_string();
+        let phone = match wasabi_domain::PairingPhoneNumber::parse(&input) {
+            Ok(phone) => phone,
+            Err(message) => {
+                self.session.phone_pair_error = Some(message.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        let request_generation = self
+            .phone_pair_request_gen
+            .fetch_add(1, Ordering::AcqRel)
+            + 1;
+        self.phone_pair_ticker_gen.fetch_add(1, Ordering::AcqRel);
+        self.session.phone_pair_code = None;
+        self.session.phone_pair_deadline = None;
+        self.session.phone_pair_requesting = true;
+        self.session.phone_pair_error = None;
+        cx.notify();
+
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.start_phone_pairing(phone).await;
+            this.update(cx, |this, cx| {
+                if this.phone_pair_request_gen.load(Ordering::Acquire) != request_generation {
+                    return;
+                }
+                this.session.phone_pair_requesting = false;
+                match result {
+                    Ok(pairing) => {
+                        this.session.phone_pair_code = Some(pairing.code);
+                        this.session.phone_pair_deadline =
+                            Some(std::time::Instant::now() + pairing.expires_in);
+                        this.spawn_phone_pair_countdown(cx);
+                    }
+                    Err(error) => {
+                        this.session.phone_pair_error = Some(error);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
     }
 
     fn restart_pairing(&mut self, cx: &mut Context<Self>) {
@@ -1019,7 +1098,8 @@ impl MainWindow {
                             if matches!(
                                 this.session.state,
                                 wasabi_core::state::SessionState::Pairing
-                            ) {
+                            ) && !this.session.use_phone_pairing
+                            {
                                 this.restart_pairing(cx);
                             }
                             cx.notify();
@@ -1027,6 +1107,49 @@ impl MainWindow {
                         }
 
                         let alive = this.session.qr_deadline.is_some();
+                        cx.notify();
+                        alive
+                    })
+                    .unwrap_or(false);
+                cx.refresh();
+                if !alive {
+                    break;
+                }
+            }
+        });
+    }
+
+    fn spawn_phone_pair_countdown(&mut self, cx: &mut Context<Self>) {
+        let generation = self
+            .phone_pair_ticker_gen
+            .fetch_add(1, Ordering::AcqRel)
+            + 1;
+        spawn_main(cx, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(COUNTDOWN_TICK).await;
+                let alive = this
+                    .update(cx, |this, cx| {
+                        if this.phone_pair_ticker_gen.load(Ordering::Acquire) != generation {
+                            return false;
+                        }
+                        let expired = this
+                            .session
+                            .phone_pair_deadline
+                            .is_some_and(|deadline| deadline <= std::time::Instant::now());
+                        if expired {
+                            this.session.phone_pair_code = None;
+                            this.session.phone_pair_deadline = None;
+                            this.session.phone_pair_error =
+                                Some("This code expired. Request a new one.".to_string());
+                            this.phone_pair_ticker_gen.fetch_add(1, Ordering::AcqRel);
+                            let bridge = Arc::clone(&this.bridge);
+                            spawn_main(cx, async move |_this, _cx| {
+                                let _ = bridge.cancel_phone_pairing().await;
+                            });
+                            cx.notify();
+                            return false;
+                        }
+                        let alive = this.session.phone_pair_deadline.is_some();
                         cx.notify();
                         alive
                     })
@@ -1221,7 +1344,7 @@ fn pairing_gate(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::An
         .flex()
         .flex_col()
         .bg(theme::canvas())
-        .child(pairing::pairing_panel(&this.session, cx))
+        .child(pairing::pairing_panel(this, cx))
         .into_any_element()
 }
 
@@ -1256,7 +1379,7 @@ fn center_area(
         return opening_storage().into_any_element();
     }
     if pairing_active || this.session.needs_pairing() {
-        return pairing::pairing_panel(&this.session, cx).into_any_element();
+        return pairing::pairing_panel(this, cx).into_any_element();
     }
 
     let conversation = conversation::conversation(this, window, cx);
@@ -1309,6 +1432,12 @@ fn apply_state(
     weak.update(cx, |this, cx| {
         if state.is_connected() {
             this.session.connected_once = true;
+            this.phone_pair_request_gen.fetch_add(1, Ordering::AcqRel);
+            this.phone_pair_ticker_gen.fetch_add(1, Ordering::AcqRel);
+            this.session.phone_pair_code = None;
+            this.session.phone_pair_deadline = None;
+            this.session.phone_pair_requesting = false;
+            this.session.phone_pair_error = None;
         }
         let left_pairing = this.session.qr_deadline.is_some()
             && !matches!(state, wasabi_core::state::SessionState::Pairing);
@@ -1353,6 +1482,7 @@ fn apply_qr(
                 this.qr_ticker_gen.fetch_add(1, Ordering::AcqRel);
                 if had_qr
                     && !this.session.pairing_requesting
+                    && !this.session.use_phone_pairing
                     && matches!(
                         this.session.state,
                         wasabi_core::state::SessionState::Pairing

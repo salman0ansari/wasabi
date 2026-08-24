@@ -8043,6 +8043,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "wacore",
  "wasabi-core",
  "wasabi-domain",
  "wasabi-repository",

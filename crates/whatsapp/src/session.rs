@@ -18,6 +18,8 @@ use whatsapp_rust::types::events::Event;
 use whatsapp_rust_chat_store::ChatStore;
 
 use crate::durability::RepositoryDurabilityHook;
+use wasabi_domain::{PairingPhoneNumber, PhonePairCode};
+use whatsapp_rust::pair_code::PairCodeOptions;
 
 /// Assembly-time configuration for one account session.
 #[derive(Clone, Debug)]
@@ -165,6 +167,41 @@ impl AccountSession {
         )
         .await?;
         Ok(self.subscribe_qr())
+    }
+
+    /// Request a short-lived companion code for a validated phone number.
+    /// Both the phone number and returned code remain memory-only and have
+    /// redacted debug representations at the product boundary.
+    pub async fn pair_with_phone(
+        &self,
+        phone: PairingPhoneNumber,
+    ) -> Result<PhonePairCode, String> {
+        let client = self
+            .client()
+            .await
+            .ok_or_else(|| "Wait for the pairing connection, then try again".to_string())?;
+        // A deliberate retry replaces the previous live code instead of
+        // letting the dependency reject a competing request.
+        client.cancel_pair_code().await;
+        let code = client
+            .pair_with_code(PairCodeOptions {
+                phone_number: phone.as_str().to_string(),
+                show_push_notification: true,
+                ..PairCodeOptions::default()
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(PhonePairCode {
+            code,
+            expires_in: wacore::pair_code::PairCodeUtils::code_validity(),
+        })
+    }
+
+    /// Cancel any in-flight or still-valid phone pairing code.
+    pub async fn cancel_phone_pairing(&self) {
+        if let Some(client) = self.client().await {
+            client.cancel_pair_code().await;
+        }
     }
 
     /// Assemble and start the bot stack under `run_token`, then announce

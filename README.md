@@ -46,7 +46,7 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 
 ## What works today
 
-- Link an account using a rotating QR code.
+- Link an account using a rotating QR code or a short-lived phone-number code.
 - Reopen cached chats immediately while reconnecting in the background.
 - Browse cursor-paginated active chats using All, Unread, device-local Favorites, and Groups filters, with a separate Archived destination.
 - Search loaded chats and the complete local message FTS index with cancellable, paginated results.
@@ -69,7 +69,7 @@ This is a reproducible runtime-baseline comparison, not a fabricated measurement
 
 ## Before the stable release
 
-The stable release is gated on reliable media attachments and downloads, complete search and message actions, real contact/group metadata refresh, desktop notifications, phone-number pairing, account controls, recovery tests, and performance validation on large histories.
+The stable release is gated on reliable media attachments and downloads, complete search and message actions, durable contact/group metadata refresh, desktop notifications, account controls, recovery tests, and performance validation on large histories.
 
 Calls, Status, Channels, and Communities remain hidden until their complete workflows are ready. Wasabi does not ship placeholder destinations.
 
