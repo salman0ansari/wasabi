@@ -6,6 +6,11 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 
 ### Added
 
+- Conversation information now exposes synchronized archive/unarchive and
+  mark-read/unread controls alongside pin and mute. Clear and delete use
+  separate immutable protocol commands, exact-chat cancel-first dialogs,
+  preserve starred/downloaded content by default, suppress duplicate submits,
+  and change the local conversation only after protocol acceptance.
 - The composer now grows from one to six measured lines, preserves restored
   multilingual cursor positions, applies text-size preferences to its editor
   geometry, submits with plain Enter only when configured, and always treats

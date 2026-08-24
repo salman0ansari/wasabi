@@ -1313,6 +1313,18 @@ impl CoreBridge {
                 ChatAction::MarkRead { read, .. } => {
                     actions.mark_chat_as_read(&chat, read, None).await
                 }
+                ChatAction::Clear {
+                    delete_starred,
+                    delete_media,
+                    ..
+                } => {
+                    actions
+                        .clear_chat(&chat, delete_starred, delete_media, None)
+                        .await
+                }
+                ChatAction::Delete { delete_media, .. } => {
+                    actions.delete_chat(&chat, delete_media, None).await
+                }
             };
             result.map_err(|error| ServiceError::new(ErrorKind::Protocol, error.to_string()))
         })

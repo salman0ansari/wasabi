@@ -55,10 +55,31 @@ pub enum MessageAction {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChatAction {
-    Pin { chat: ChatId, pinned: bool },
-    Mute { chat: ChatId, muted: bool },
-    Archive { chat: ChatId, archived: bool },
-    MarkRead { chat: ChatId, read: bool },
+    Pin {
+        chat: ChatId,
+        pinned: bool,
+    },
+    Mute {
+        chat: ChatId,
+        muted: bool,
+    },
+    Archive {
+        chat: ChatId,
+        archived: bool,
+    },
+    MarkRead {
+        chat: ChatId,
+        read: bool,
+    },
+    Clear {
+        chat: ChatId,
+        delete_starred: bool,
+        delete_media: bool,
+    },
+    Delete {
+        chat: ChatId,
+        delete_media: bool,
+    },
 }
 
 impl ChatAction {
@@ -67,8 +88,14 @@ impl ChatAction {
             Self::Pin { chat, .. }
             | Self::Mute { chat, .. }
             | Self::Archive { chat, .. }
-            | Self::MarkRead { chat, .. } => chat,
+            | Self::MarkRead { chat, .. }
+            | Self::Clear { chat, .. }
+            | Self::Delete { chat, .. } => chat,
         }
+    }
+
+    pub fn is_destructive(&self) -> bool {
+        matches!(self, Self::Clear { .. } | Self::Delete { .. })
     }
 }
 
@@ -128,6 +155,31 @@ mod tests {
             muted: true,
         };
         assert_eq!(action.chat().as_str(), "chat-a@s.whatsapp.net");
+    }
+
+    #[test]
+    fn destructive_chat_actions_capture_scope_and_flags() {
+        let clear = ChatAction::Clear {
+            chat: ChatId::new("chat-a@s.whatsapp.net"),
+            delete_starred: false,
+            delete_media: false,
+        };
+        let delete = ChatAction::Delete {
+            chat: ChatId::new("chat-b@g.us"),
+            delete_media: true,
+        };
+
+        assert!(clear.is_destructive());
+        assert_eq!(clear.chat().as_str(), "chat-a@s.whatsapp.net");
+        assert!(delete.is_destructive());
+        assert_eq!(delete.chat().as_str(), "chat-b@g.us");
+        assert!(matches!(
+            delete,
+            ChatAction::Delete {
+                delete_media: true,
+                ..
+            }
+        ));
     }
 
     #[test]

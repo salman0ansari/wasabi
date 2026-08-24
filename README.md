@@ -92,6 +92,15 @@ At the minimum supported window size, contact and group information opens over t
 
 ![Wasabi responsive contact information drawer](docs/screenshots/contact-drawer-compact.png)
 
+The on-demand drawer also contains real synchronized chat controls. Clear and
+delete remain distinct actions, name the exact conversation, explain what
+stays on the device, and do not alter local state until the linked account
+accepts the command.
+
+![Wasabi chat lifecycle actions](docs/screenshots/chat-lifecycle-actions.png)
+
+![Wasabi clear-chat confirmation](docs/screenshots/clear-chat-confirmation.png)
+
 ### Group information
 
 When connected, group information is loaded on demand and uses real server metadata for the subject, description, participant count, identities, and admin roles.
@@ -117,7 +126,8 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 - Download received media on demand into a bounded, content-addressed, SHA-256-verified cache.
 - Copy and react to messages, see durable reaction counts, replace/remove your own choice, or star/unstar with optimistic rollback if synchronization fails.
 - Delete a message locally or revoke an eligible sent message through distinct, explicit confirmation dialogs.
-- Pin/unpin and mute/unmute chats from the conversation drawer.
+- Pin/unpin, mute/unmute, archive/unarchive, and mark chats read/unread from the conversation drawer.
+- Clear a chat or delete it from the chat list through distinct cancel-first confirmations; starred messages and downloaded files are preserved by default.
 - Mark unread conversations read when they are opened in the active window, without cross-chat races.
 - Keep independent per-chat text drafts across conversation switches and app restarts.
 - Compose up to six visible lines before the editor scrolls, with `Enter` following the saved send preference and `Shift+Enter` always inserting a newline.

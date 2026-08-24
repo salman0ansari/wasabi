@@ -139,6 +139,8 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
         ))
         .child(chat_sync_action(this, cx, ChatSyncAction::Pin))
         .child(chat_sync_action(this, cx, ChatSyncAction::Mute))
+        .child(chat_sync_action(this, cx, ChatSyncAction::Archive))
+        .child(chat_sync_action(this, cx, ChatSyncAction::MarkRead))
         .child(favorite_action(this, cx))
         .child(action_row("Encryption", "End-to-end encrypted"));
 
@@ -149,6 +151,10 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
     if is_group {
         panel = panel.child(participants_section(this));
     }
+
+    panel = panel
+        .child(destructive_chat_action(this, cx, DestructiveChatAction::Clear))
+        .child(destructive_chat_action(this, cx, DestructiveChatAction::Delete));
 
     panel
 }
@@ -252,6 +258,8 @@ fn favorite_action(
 enum ChatSyncAction {
     Pin,
     Mute,
+    Archive,
+    MarkRead,
 }
 
 fn chat_sync_action(
@@ -265,12 +273,13 @@ fn chat_sync_action(
         .chats
         .iter()
         .find(|chat| chat.id.as_str() == selected);
-    let (label, enabled, action) = match kind {
+    let (label, enabled, detail, action) = match kind {
         ChatSyncAction::Pin => {
             let enabled = summary.is_some_and(|chat| chat.pinned_at_ms.is_some());
             (
                 "Pin chat",
                 enabled,
+                if enabled { "On" } else { "Off" },
                 wasabi_domain::ChatAction::Pin {
                     chat: wasabi_domain::ChatId::new(selected),
                     pinned: !enabled,
@@ -285,9 +294,34 @@ fn chat_sync_action(
             (
                 "Mute notifications",
                 enabled,
+                if enabled { "On" } else { "Off" },
                 wasabi_domain::ChatAction::Mute {
                     chat: wasabi_domain::ChatId::new(selected),
                     muted: !enabled,
+                },
+            )
+        }
+        ChatSyncAction::Archive => {
+            let enabled = summary.is_some_and(|chat| chat.archived);
+            (
+                if enabled { "Unarchive chat" } else { "Archive chat" },
+                enabled,
+                if enabled { "Archived" } else { "Active" },
+                wasabi_domain::ChatAction::Archive {
+                    chat: wasabi_domain::ChatId::new(selected),
+                    archived: !enabled,
+                },
+            )
+        }
+        ChatSyncAction::MarkRead => {
+            let enabled = summary.is_some_and(|chat| chat.unread_count != 0);
+            (
+                if enabled { "Mark as read" } else { "Mark as unread" },
+                enabled,
+                if enabled { "Unread" } else { "Read" },
+                wasabi_domain::ChatAction::MarkRead {
+                    chat: wasabi_domain::ChatId::new(selected),
+                    read: enabled,
                 },
             )
         }
@@ -296,6 +330,8 @@ fn chat_sync_action(
         .id(match kind {
             ChatSyncAction::Pin => "toggle-pin",
             ChatSyncAction::Mute => "toggle-mute",
+            ChatSyncAction::Archive => "toggle-archive",
+            ChatSyncAction::MarkRead => "toggle-read",
         })
         .mx(px(16.0))
         .min_h(px(52.0))
@@ -325,7 +361,68 @@ fn chat_sync_action(
                 } else {
                     theme::text_secondary()
                 })
-                .child(if enabled { "On" } else { "Off" }),
+                .child(detail),
+        )
+}
+
+#[derive(Clone, Copy)]
+enum DestructiveChatAction {
+    Clear,
+    Delete,
+}
+
+fn destructive_chat_action(
+    this: &mut MainWindow,
+    cx: &mut Context<MainWindow>,
+    kind: DestructiveChatAction,
+) -> gpui::Stateful<gpui::Div> {
+    let selected = this.chats.selected.clone().unwrap_or_default();
+    let pending = this.destructive_chats.contains(&selected);
+    let (id, label, action) = match kind {
+        DestructiveChatAction::Clear => (
+            "clear-chat",
+            "Clear messages…",
+            wasabi_domain::ChatAction::Clear {
+                chat: wasabi_domain::ChatId::new(selected),
+                delete_starred: false,
+                delete_media: false,
+            },
+        ),
+        DestructiveChatAction::Delete => (
+            "delete-chat",
+            "Delete chat…",
+            wasabi_domain::ChatAction::Delete {
+                chat: wasabi_domain::ChatId::new(selected),
+                delete_media: false,
+            },
+        ),
+    };
+    gpui::div()
+        .id(id)
+        .mx(px(16.0))
+        .min_h(px(52.0))
+        .py(px(10.0))
+        .flex()
+        .items_center()
+        .border_t_1()
+        .border_color(theme::border())
+        .when(!pending, |row| {
+            row.cursor_pointer()
+                .hover(|style| style.bg(theme::row_hover()))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.confirm_chat_action(action.clone(), cx)
+                }))
+        })
+        .child(
+            gpui::div()
+                .flex_1()
+                .text_size(px(theme::TEXT_SIZE))
+                .text_color(if pending {
+                    theme::text_secondary()
+                } else {
+                    theme::danger()
+                })
+                .child(if pending { "Working…" } else { label }),
         )
 }
 

@@ -832,6 +832,9 @@ pub fn message_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> g
         crate::views::root::MessageOverlay::Confirm(action) => {
             message_delete_confirmation(this, action, cx)
         }
+        crate::views::root::MessageOverlay::ConfirmChat(action) => {
+            chat_action_confirmation(this, action, cx)
+        }
     };
     gpui::div()
         .absolute()
@@ -1054,6 +1057,75 @@ fn message_delete_confirmation(
         )
 }
 
+fn chat_action_confirmation(
+    this: &MainWindow,
+    action: wasabi_domain::ChatAction,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Div {
+    let name = this
+        .chats
+        .chats
+        .iter()
+        .find(|chat| chat.id == *action.chat())
+        .map(chats::fallback_name)
+        .unwrap_or_else(|| "this conversation".to_string());
+    let (title, detail, confirm, confirm_id) = chat_confirmation_copy(&action, &name);
+    action_card()
+        .child(
+            gpui::div()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme::text_primary())
+                .child(title),
+        )
+        .child(
+            gpui::div()
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .text_color(theme::text_secondary())
+                .child(detail),
+        )
+        .child(
+            gpui::div()
+                .flex()
+                .justify_end()
+                .gap(px(8.0))
+                .child(
+                    sheet_button("cancel-chat-action", "Cancel", false)
+                        .on_click(cx.listener(|this, _, _, cx| this.close_message_overlay(cx))),
+                )
+                .child(
+                    sheet_button(confirm_id, confirm, true).on_click(cx.listener(
+                        |this, _, _, cx| this.run_confirmed_chat_action(cx),
+                    )),
+                ),
+        )
+}
+
+fn chat_confirmation_copy(
+    action: &wasabi_domain::ChatAction,
+    name: &str,
+) -> (String, &'static str, &'static str, &'static str) {
+    match action {
+        wasabi_domain::ChatAction::Clear { .. } => (
+            format!("Clear messages in “{name}”?"),
+            "Messages are removed from this chat after synchronization. Starred messages remain in the chat, and downloaded files stay on this device.",
+            "Clear messages",
+            "confirm-clear-chat",
+        ),
+        wasabi_domain::ChatAction::Delete { .. } => (
+            format!("Delete chat with “{name}”?"),
+            "This removes the conversation from your chat list after synchronization. It does not delete messages from other participants, and downloaded files stay on this device.",
+            "Delete chat",
+            "confirm-delete-chat",
+        ),
+        _ => (
+            format!("Update “{name}”?"),
+            "This action will be synchronized with your linked account.",
+            "Confirm",
+            "confirm-chat-action",
+        ),
+    }
+}
+
 fn action_card() -> gpui::Div {
     gpui::div()
         .w(px(390.0))
@@ -1094,12 +1166,34 @@ fn sheet_button(
 /// Width is ignored by the vertical list; only heights matter.
 #[cfg(test)]
 mod tests {
-    use super::format_bytes;
+    use super::{chat_confirmation_copy, format_bytes};
 
     #[test]
     fn formats_media_sizes_for_desktop_cards() {
         assert_eq!(format_bytes(900), "900 B");
         assert_eq!(format_bytes(184_000), "180 KB");
         assert_eq!(format_bytes(2_830_000), "2.7 MB");
+    }
+
+    #[test]
+    fn destructive_chat_confirmations_name_and_distinguish_the_target() {
+        let clear = wasabi_domain::ChatAction::Clear {
+            chat: wasabi_domain::ChatId::new("a@s.whatsapp.net"),
+            delete_starred: false,
+            delete_media: false,
+        };
+        let delete = wasabi_domain::ChatAction::Delete {
+            chat: wasabi_domain::ChatId::new("a@s.whatsapp.net"),
+            delete_media: false,
+        };
+
+        let clear_copy = chat_confirmation_copy(&clear, "Avery Chen");
+        let delete_copy = chat_confirmation_copy(&delete, "Avery Chen");
+        assert!(clear_copy.0.contains("Avery Chen"));
+        assert!(clear_copy.1.contains("Starred messages"));
+        assert_eq!(clear_copy.2, "Clear messages");
+        assert!(delete_copy.0.contains("Avery Chen"));
+        assert!(delete_copy.1.contains("other participants"));
+        assert_eq!(delete_copy.2, "Delete chat");
     }
 }

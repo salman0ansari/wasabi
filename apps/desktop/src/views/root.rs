@@ -48,6 +48,7 @@ enum LoadedConversation {
 pub(crate) enum MessageOverlay {
     Actions(wasabi_domain::MessageId),
     Confirm(wasabi_domain::MessageAction),
+    ConfirmChat(wasabi_domain::ChatAction),
 }
 
 #[derive(Clone, Copy)]
@@ -145,6 +146,7 @@ pub struct MainWindow {
     pub(crate) attachment_sending: HashSet<String>,
     pub(crate) retrying_messages: HashSet<(String, String)>,
     pub(crate) editing_messages: HashSet<(String, String)>,
+    pub(crate) destructive_chats: HashSet<String>,
     pub(crate) composer_input: gpui::Entity<InputState>,
     pub(crate) search_input: gpui::Entity<InputState>,
     pub(crate) phone_pair_input: gpui::Entity<InputState>,
@@ -252,6 +254,7 @@ impl MainWindow {
             attachment_sending: HashSet::new(),
             retrying_messages: HashSet::new(),
             editing_messages: HashSet::new(),
+            destructive_chats: HashSet::new(),
             composer_input,
             search_input,
             phone_pair_input,
@@ -507,6 +510,24 @@ impl MainWindow {
         if mode == "timeline-pending" {
             self.pending_new_messages = 3;
             self.near_bottom = false;
+        }
+        if mode == "chat-actions" {
+            self.show_right_panel = true;
+        }
+        if matches!(mode, "chat-clear" | "chat-delete") {
+            let chat = preview.chat.clone();
+            self.message_overlay = Some(MessageOverlay::ConfirmChat(if mode == "chat-clear" {
+                wasabi_domain::ChatAction::Clear {
+                    chat,
+                    delete_starred: false,
+                    delete_media: false,
+                }
+            } else {
+                wasabi_domain::ChatAction::Delete {
+                    chat,
+                    delete_media: false,
+                }
+            }));
         }
         if matches!(mode, "settings" | "settings-dark" | "account") {
             self.nav_destination = NavDestination::Settings;
@@ -1881,6 +1902,10 @@ impl MainWindow {
         action: wasabi_domain::ChatAction,
         cx: &mut Context<Self>,
     ) {
+        if action.is_destructive() {
+            self.perform_destructive_chat_action(action, cx);
+            return;
+        }
         let chat_id = action.chat().as_str().to_string();
         let Some(index) = self
             .chats
@@ -1914,6 +1939,8 @@ impl MainWindow {
                 wasabi_domain::ChatAction::MarkRead { read, .. } => {
                     chat.unread_count = if *read { 0 } else { -1 };
                 }
+                wasabi_domain::ChatAction::Clear { .. }
+                | wasabi_domain::ChatAction::Delete { .. } => return,
             }
         }
         self.refresh_visible();
@@ -1936,6 +1963,96 @@ impl MainWindow {
                     this.send_error = Some(error.ui_message().to_string());
                     this.refresh_visible();
                 }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn confirm_chat_action(
+        &mut self,
+        action: wasabi_domain::ChatAction,
+        cx: &mut Context<Self>,
+    ) {
+        if action.is_destructive() {
+            self.message_overlay = Some(MessageOverlay::ConfirmChat(action));
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn run_confirmed_chat_action(&mut self, cx: &mut Context<Self>) {
+        let Some(MessageOverlay::ConfirmChat(action)) = self.message_overlay.take() else {
+            return;
+        };
+        self.perform_chat_action(action, cx);
+    }
+
+    fn perform_destructive_chat_action(
+        &mut self,
+        action: wasabi_domain::ChatAction,
+        cx: &mut Context<Self>,
+    ) {
+        let chat_id = action.chat().as_str().to_string();
+        if !self
+            .chats
+            .chats
+            .iter()
+            .any(|chat| chat.id.as_str() == chat_id)
+            || !self.destructive_chats.insert(chat_id.clone())
+        {
+            return;
+        }
+        let clear = matches!(&action, wasabi_domain::ChatAction::Clear { .. });
+        self.message_overlay = None;
+        self.send_error = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.perform_chat_action(action).await;
+            this.update(cx, |this, cx| {
+                this.destructive_chats.remove(&chat_id);
+                if let Err(error) = result {
+                    this.send_error = Some(error.ui_message().to_string());
+                    cx.notify();
+                    return;
+                }
+
+                if clear {
+                    if this.chats.selected.as_deref() == Some(chat_id.as_str()) {
+                        this.messages_gen.fetch_add(1, Ordering::AcqRel);
+                        this.messages.reset_for_chat(&chat_id);
+                        this.msg_scroll.reset(0);
+                        this.pending_new_messages = 0;
+                    }
+                    if let Some(chat) = this
+                        .chats
+                        .chats
+                        .iter_mut()
+                        .find(|chat| chat.id.as_str() == chat_id)
+                    {
+                        chat.last_message_preview = None;
+                        chat.unread_count = 0;
+                    }
+                } else {
+                    this.chats
+                        .chats
+                        .retain(|chat| chat.id.as_str() != chat_id);
+                    if this.chats.selected.as_deref() == Some(chat_id.as_str()) {
+                        this.stop_outbound_typing(chat_id.clone(), cx);
+                        this.messages_gen.fetch_add(1, Ordering::AcqRel);
+                        this.details_gen.fetch_add(1, Ordering::AcqRel);
+                        this.chats.selected = None;
+                        this.messages = MessageWindowModel::new();
+                        this.msg_scroll.reset(0);
+                        this.active_draft = wasabi_domain::Draft::default();
+                        this.show_right_panel = false;
+                        this.conversation_details = None;
+                        this.details_loading = false;
+                        this.details_error = None;
+                        this.pending_new_messages = 0;
+                    }
+                }
+                this.refresh_visible();
                 cx.notify();
             })
             .ok();
@@ -2131,6 +2248,7 @@ impl MainWindow {
                         this.active_draft = wasabi_domain::Draft::default();
                         this.editing_messages.clear();
                         this.retrying_messages.clear();
+                        this.destructive_chats.clear();
                         this.typing.clear();
                         this.notification_seen.clear();
                         this.notification_seen_order.clear();
