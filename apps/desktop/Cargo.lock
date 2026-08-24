@@ -7971,7 +7971,7 @@ dependencies = [
 
 [[package]]
 name = "wasabi-core"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "thiserror 2.0.20",
  "tokio",
@@ -7983,7 +7983,7 @@ dependencies = [
 
 [[package]]
 name = "wasabi-desktop"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -8008,7 +8008,7 @@ dependencies = [
 
 [[package]]
 name = "wasabi-domain"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "chrono",
  "serde",
@@ -8017,7 +8017,7 @@ dependencies = [
 
 [[package]]
 name = "wasabi-repository"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "chrono",
  "thiserror 2.0.20",
@@ -8031,7 +8031,7 @@ dependencies = [
 
 [[package]]
 name = "wasabi-whatsapp"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "anyhow",
  "async-trait",

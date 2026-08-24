@@ -3,7 +3,7 @@
 
 [package]
 name = "wasabi-desktop"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 edition = "2024"
 
 [dependencies]
@@ -35,3 +35,9 @@ serde_json = "1"
 
 [profile.dev.package.gpui]
 opt-level = 3
+
+# Release artifacts should not ship compiler symbol tables. This keeps the
+# standalone native executable materially smaller without changing runtime
+# behavior or relying on a packaging step that can be forgotten.
+[profile.release]
+strip = "symbols"
