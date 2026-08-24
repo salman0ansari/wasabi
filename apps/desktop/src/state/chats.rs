@@ -206,6 +206,11 @@ mod tests {
     ) -> ChatSummary {
         ChatSummary {
             id: ChatId::new(id),
+            kind: if id.ends_with("@g.us") {
+                wasabi_domain::ChatKind::Group
+            } else {
+                wasabi_domain::ChatKind::Direct
+            },
             display_name: name.map(str::to_string),
             last_activity_ms,
             last_message_preview: None,

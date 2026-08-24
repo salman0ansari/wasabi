@@ -18,7 +18,8 @@ use tokio_util::sync::CancellationToken;
 use wasabi_core::events::{Invalidation, InvalidationPublisher};
 use wasabi_core::state::SessionState;
 use wasabi_domain::{
-    ChatPage, ChatScope, ErrorKind, MessageId, MessagePage, PageCursor, SearchPage, SendContent,
+    ChatId, ChatPage, ChatScope, DirectContactDetails, ErrorKind, GroupDetails, GroupPermissions,
+    MessageId, MessagePage, PageCursor, Participant, ParticipantRole, SearchPage, SendContent,
     SendReceipt, SendRequest, ServiceError,
 };
 use wasabi_repository::AccountStore;
@@ -223,6 +224,101 @@ impl CoreBridge {
         .await
     }
 
+    pub async fn direct_contact_details(
+        &self,
+        jid: String,
+    ) -> Result<DirectContactDetails, String> {
+        let store = self.store_snapshot()?;
+        self.run_on_core(async move {
+            store
+                .direct_contact_details(&jid)
+                .await
+                .map_err(service_message)
+        })
+        .await
+    }
+
+    /// Fetch complete group metadata from the live client and immediately
+    /// project it into product types. No protocol value crosses this method.
+    pub async fn group_details(&self, chat: String) -> Result<GroupDetails, String> {
+        let session = self.session_snapshot()?;
+        self.run_on_core(async move {
+            let jid: whatsapp_rust::Jid = chat
+                .parse()
+                .map_err(|error| format!("Invalid group identity: {error}"))?;
+            let client = session
+                .client()
+                .await
+                .ok_or_else(|| "Connect to refresh group information".to_string())?;
+            let metadata = client
+                .groups()
+                .get_metadata(&jid)
+                .await
+                .map_err(|error| error.to_string())?;
+
+            let mut participants = Vec::with_capacity(metadata.participants.len());
+            for participant in metadata.participants {
+                let identity = participant
+                    .phone_number
+                    .as_ref()
+                    .unwrap_or(&participant.jid)
+                    .clone();
+                let contact = session
+                    .chats
+                    .contact(&identity)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let display_name = contact
+                    .as_ref()
+                    .and_then(|contact| contact.display_name())
+                    .map(str::to_string)
+                    .or_else(|| participant.username.as_ref().map(ToString::to_string))
+                    .unwrap_or_else(|| identity.user.to_string());
+                let role = match participant.participant_type {
+                    whatsapp_rust::ParticipantType::Member => ParticipantRole::Member,
+                    whatsapp_rust::ParticipantType::Admin => ParticipantRole::Admin,
+                    whatsapp_rust::ParticipantType::SuperAdmin => ParticipantRole::SuperAdmin,
+                };
+                participants.push(Participant {
+                    jid: identity.to_string(),
+                    display_name,
+                    avatar: None,
+                    role,
+                    // The dependency intentionally keeps own-JID matching
+                    // internal. Until the profile projection exposes it, the
+                    // UI does not guess which participant is the local user.
+                    is_self: false,
+                });
+            }
+
+            participants.sort_by(|left, right| {
+                role_rank(right.role)
+                    .cmp(&role_rank(left.role))
+                    .then_with(|| {
+                        left.display_name
+                            .to_lowercase()
+                            .cmp(&right.display_name.to_lowercase())
+                    })
+            });
+            let participant_count = metadata.size.map_or(participants.len(), |size| size as usize);
+            Ok(GroupDetails {
+                chat: ChatId::new(metadata.id.to_string()),
+                subject: metadata.subject,
+                description: metadata.description,
+                avatar: None,
+                participant_count,
+                participants,
+                permissions: GroupPermissions {
+                    only_admins_edit: metadata.is_locked,
+                    only_admins_send: metadata.is_announcement,
+                    membership_approval: metadata.membership_approval,
+                    current_user_role: None,
+                },
+            })
+        })
+        .await
+    }
+
     // ---- Sending ------------------------------------------------------------
 
     /// Submit an immutable product request through the durable account
@@ -328,6 +424,14 @@ fn map_outbox_error(error: wasabi_whatsapp::outbox::OutboxError) -> ServiceError
         _ => ErrorKind::Internal,
     };
     ServiceError::new(kind, error.to_string())
+}
+
+fn role_rank(role: ParticipantRole) -> u8 {
+    match role {
+        ParticipantRole::Member => 0,
+        ParticipantRole::Admin => 1,
+        ParticipantRole::SuperAdmin => 2,
+    }
 }
 
 /// Coarse, user-renderable message; diagnostics stay in logs.

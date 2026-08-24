@@ -36,6 +36,12 @@ At the minimum supported window size, contact and group information opens over t
 
 ![Wasabi responsive contact information drawer](docs/screenshots/contact-drawer-compact.png)
 
+### Group information
+
+When connected, group information is loaded on demand and uses real server metadata for the subject, description, participant count, identities, and admin roles.
+
+![Wasabi group information drawer](docs/screenshots/group-info-light.png)
+
 More verified captures are available in [`docs/screenshots`](docs/screenshots/README.md).
 
 ## What works today
@@ -43,14 +49,14 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 - Link an account using a rotating QR code.
 - Reopen cached chats immediately while reconnecting in the background.
 - Browse cursor-paginated active chats using All, Unread, Favorites, and Groups filters, with a separate Archived destination.
-- Search the loaded chat list by contact name or recent message preview.
+- Search loaded chats and the complete local message FTS index with cancellable, paginated results.
 - Read paginated message history and send text messages.
 - Use light, dark, or Linux system appearance.
 - Configure text size, Enter-to-send, spellcheck, link previews, notifications, download location, and cache quota.
 - Persist device settings independently from the linked account.
 - Enable standards-based XDG autostart.
 - Open direct-contact information without incorrect participant rows.
-- Open group-only participant information without fabricated members or roles.
+- When connected, load group subject, description, participant count, identities, and admin roles without fabricated rows.
 
 ## Native footprint
 

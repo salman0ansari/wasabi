@@ -251,6 +251,30 @@ impl AccountStore {
             next_before,
         })
     }
+
+    /// Cached identity fields for a direct contact. Privacy-controlled About
+    /// and profile-photo data remain `None` until their dedicated cache is
+    /// populated; the projection never invents values for them.
+    pub async fn direct_contact_details(
+        &self,
+        jid: &str,
+    ) -> Result<domain::DirectContactDetails, domain::ServiceError> {
+        let jid = parse_jid(jid)?;
+        let contact = self.chats.contact(&jid).await.map_err(database_error)?;
+        let display_name = contact
+            .as_ref()
+            .and_then(|contact| contact.display_name())
+            .map(str::to_string)
+            .unwrap_or_else(|| jid.user.to_string());
+        let phone_number = jid.is_pn().then(|| jid.user.to_string());
+        Ok(domain::DirectContactDetails {
+            jid: jid.to_string(),
+            display_name,
+            phone_number,
+            about: None,
+            avatar: None,
+        })
+    }
 }
 
 fn domain_cursor_to_upstream(cursor: domain::ChatPageCursor) -> ChatCursor {
@@ -287,8 +311,10 @@ fn parse_jid(s: &str) -> Result<whatsapp_rust::Jid, domain::ServiceError> {
 }
 
 fn chat_entry_to_summary(e: whatsapp_rust_chat_store::types::ChatEntry) -> domain::ChatSummary {
+    let jid = e.jid.to_string();
     domain::ChatSummary {
-        id: domain::ChatId::new(e.jid.to_string()),
+        kind: chat_kind(&jid),
+        id: domain::ChatId::new(jid),
         display_name: e.name,
         last_activity_ms: e.last_message_at.map_or(0, |t| t.timestamp_millis()),
         last_message_preview: e.last_message_preview,
@@ -296,6 +322,32 @@ fn chat_entry_to_summary(e: whatsapp_rust_chat_store::types::ChatEntry) -> domai
         pinned_at_ms: e.pinned_at.map(|t| t.timestamp_millis()),
         muted_until_ms: e.muted_until.map(|t| t.timestamp_millis()),
         archived: e.archived,
+    }
+}
+
+fn chat_kind(jid: &str) -> domain::ChatKind {
+    if jid.ends_with("@g.us") {
+        domain::ChatKind::Group
+    } else if jid.ends_with("@newsletter") {
+        domain::ChatKind::Newsletter
+    } else if jid.ends_with("@broadcast") || jid == "status@broadcast" {
+        domain::ChatKind::System
+    } else {
+        domain::ChatKind::Direct
+    }
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::chat_kind;
+    use wasabi_domain::ChatKind;
+
+    #[test]
+    fn chat_kind_is_derived_from_stable_jid_server() {
+        assert_eq!(chat_kind("123@s.whatsapp.net"), ChatKind::Direct);
+        assert_eq!(chat_kind("123@g.us"), ChatKind::Group);
+        assert_eq!(chat_kind("123@newsletter"), ChatKind::Newsletter);
+        assert_eq!(chat_kind("status@broadcast"), ChatKind::System);
     }
 }
 

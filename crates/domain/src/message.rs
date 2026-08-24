@@ -4,12 +4,14 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::ChatKind;
 use crate::ids::{ChatId, LocalCursor, MessageId};
 
 /// One row of the virtualized chat list.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChatSummary {
     pub id: ChatId,
+    pub kind: ChatKind,
     pub display_name: Option<String>,
     /// Milliseconds since epoch; ordering key for the chat list.
     pub last_activity_ms: i64,

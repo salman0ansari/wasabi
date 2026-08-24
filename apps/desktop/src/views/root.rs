@@ -22,7 +22,7 @@ use crate::state::chats::ChatFilter;
 use crate::state::{ChatListModel, DeviceSettings, MessageWindowModel, SessionMirror, SettingsSection};
 use crate::theme;
 use crate::views::{chat_list, composer, conversation, pairing, right_panel, settings};
-use wasabi_domain::ChatScope;
+use wasabi_domain::{ChatKind, ChatScope, ConversationDetails};
 
 gpui::actions!(wasabi_desktop, [FocusSearch, OpenSettings, CloseInfo]);
 
@@ -63,6 +63,9 @@ pub struct MainWindow {
     pub(crate) typing: HashMap<String, ()>,
     nav_destination: NavDestination,
     pub(crate) show_right_panel: bool,
+    pub(crate) conversation_details: Option<ConversationDetails>,
+    pub(crate) details_loading: bool,
+    pub(crate) details_error: Option<String>,
     pub(crate) settings: DeviceSettings,
     pub(crate) settings_section: SettingsSection,
     pub(crate) send_error: Option<String>,
@@ -77,6 +80,7 @@ pub struct MainWindow {
     chats_gen: AtomicU64,
     search_gen: AtomicU64,
     messages_gen: AtomicU64,
+    details_gen: AtomicU64,
     qr_ticker_gen: AtomicU64,
     pairing_request_gen: AtomicU64,
     #[allow(dead_code)]
@@ -136,6 +140,9 @@ impl MainWindow {
             typing: HashMap::new(),
             nav_destination: NavDestination::Chats,
             show_right_panel: false,
+            conversation_details: None,
+            details_loading: false,
+            details_error: None,
             settings: DeviceSettings::load(),
             settings_section: SettingsSection::Chats,
             send_error: None,
@@ -148,6 +155,7 @@ impl MainWindow {
             chats_gen: AtomicU64::new(0),
             search_gen: AtomicU64::new(0),
             messages_gen: AtomicU64::new(0),
+            details_gen: AtomicU64::new(0),
             qr_ticker_gen: AtomicU64::new(0),
             pairing_request_gen: AtomicU64::new(0),
             subscriptions: Vec::new(),
@@ -281,7 +289,11 @@ impl MainWindow {
         self.chats.visible_cache.clear();
         self.chats.selected = None;
         self.chats.loading = true;
+        self.details_gen.fetch_add(1, Ordering::AcqRel);
         self.show_right_panel = false;
+        self.conversation_details = None;
+        self.details_loading = false;
+        self.details_error = None;
         self.refresh_chats(cx);
     }
 
@@ -300,9 +312,13 @@ impl MainWindow {
         }
         // Bump first so any in-flight message load is discarded as stale.
         self.messages_gen.fetch_add(1, Ordering::AcqRel);
+        self.details_gen.fetch_add(1, Ordering::AcqRel);
         self.chats.selected = Some(chat_id.clone());
         self.messages.reset_for_chat(&chat_id);
         self.show_right_panel = false;
+        self.conversation_details = None;
+        self.details_loading = false;
+        self.details_error = None;
         self.first_visible = 0;
         self.near_bottom = true;
         let generation = self.next_messages_gen();
@@ -415,12 +431,72 @@ impl MainWindow {
     }
 
     pub(crate) fn toggle_right_panel(&mut self, cx: &mut Context<Self>) {
-        self.show_right_panel = !self.show_right_panel;
-        cx.notify();
+        if self.show_right_panel {
+            self.close_right_panel(cx);
+            return;
+        }
+        self.show_right_panel = true;
+        self.load_conversation_details(cx);
     }
 
     pub(crate) fn close_right_panel(&mut self, cx: &mut Context<Self>) {
+        self.details_gen.fetch_add(1, Ordering::AcqRel);
         self.show_right_panel = false;
+        self.details_loading = false;
+        cx.notify();
+    }
+
+    fn load_conversation_details(&mut self, cx: &mut Context<Self>) {
+        let Some((chat, kind)) = self
+            .chats
+            .selected
+            .as_ref()
+            .and_then(|selected| {
+                self.chats
+                    .chats
+                    .iter()
+                    .find(|summary| summary.id.as_str() == selected)
+                    .map(|summary| (selected.clone(), summary.kind))
+            })
+        else {
+            self.details_error = Some("Conversation information is unavailable".to_string());
+            cx.notify();
+            return;
+        };
+        let generation = self.details_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        self.conversation_details = None;
+        self.details_loading = true;
+        self.details_error = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = match kind {
+                ChatKind::Group => bridge
+                    .group_details(chat)
+                    .await
+                    .map(ConversationDetails::Group),
+                ChatKind::Direct => bridge
+                    .direct_contact_details(chat)
+                    .await
+                    .map(ConversationDetails::Direct),
+                ChatKind::Newsletter | ChatKind::System => {
+                    Err("Information is not available for this conversation type".to_string())
+                }
+            };
+            this.update(cx, |this, cx| {
+                if this.details_gen.load(Ordering::Acquire) != generation
+                    || !this.show_right_panel
+                {
+                    return;
+                }
+                this.details_loading = false;
+                match result {
+                    Ok(details) => this.conversation_details = Some(details),
+                    Err(error) => this.details_error = Some(error),
+                }
+                cx.notify();
+            })
+            .ok();
+        });
         cx.notify();
     }
 

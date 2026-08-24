@@ -5,6 +5,7 @@
 use gpui::prelude::*;
 use gpui::{Context, px};
 use gpui_component::{Icon, IconName};
+use wasabi_domain::{ConversationDetails, Participant, ParticipantRole};
 
 use crate::state::chats;
 use crate::theme;
@@ -17,7 +18,7 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
         .as_ref()
         .and_then(|id| this.chats.chats.iter().find(|chat| chat.id.as_str() == id));
 
-    let (name, is_group) = selected
+    let (fallback_name, is_group) = selected
         .map(|chat| {
             (
                 chats::fallback_name(chat),
@@ -25,6 +26,26 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
             )
         })
         .unwrap_or_else(|| ("Conversation".to_string(), false));
+    let (name, subtitle, about) = match this.conversation_details.as_ref() {
+        Some(ConversationDetails::Direct(details)) => (
+            details.display_name.clone(),
+            details
+                .phone_number
+                .clone()
+                .unwrap_or_else(|| "Contact".to_string()),
+            details.about.clone(),
+        ),
+        Some(ConversationDetails::Group(details)) => (
+            details.subject.clone(),
+            format!("{} participants", details.participant_count),
+            details.description.clone(),
+        ),
+        None => (
+            fallback_name,
+            if is_group { "Group" } else { "Contact" }.to_string(),
+            None,
+        ),
+    };
     let initial = name.chars().next().unwrap_or('#').to_string();
 
     let mut panel = gpui::div()
@@ -101,16 +122,20 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
                     gpui::div()
                         .text_size(px(theme::TEXT_SIZE_SM))
                         .text_color(theme::text_secondary())
-                        .child(if is_group { "Group" } else { "Contact" }),
+                        .child(subtitle),
                 ),
         )
         .child(section(
             "ABOUT",
-            if is_group {
-                "Group description is unavailable until metadata sync completes."
-            } else {
-                "About is unavailable for this contact."
-            },
+            about.unwrap_or_else(|| {
+                if this.details_loading {
+                    "Loading conversation information…".to_string()
+                } else if is_group {
+                    "No group description".to_string()
+                } else {
+                    "About unavailable".to_string()
+                }
+            }),
         ))
         .child(action_row("Media, links and documents", "No cached media"))
         .child(action_row("Starred messages", "None cached"))
@@ -118,11 +143,12 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
         .child(action_row("Disappearing messages", "Off"))
         .child(action_row("Encryption", "End-to-end encrypted"));
 
+    if let Some(error) = this.details_error.clone() {
+        panel = panel.child(section("INFORMATION UNAVAILABLE", error));
+    }
+
     if is_group {
-        panel = panel.child(section(
-            "PARTICIPANTS",
-            "Participant data will appear after real group metadata is available.",
-        ));
+        panel = panel.child(participants_section(this));
     } else {
         panel = panel.child(action_row("Groups in common", "None cached"));
     }
@@ -130,7 +156,7 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
     panel
 }
 
-fn section(label: &'static str, body: &'static str) -> gpui::Div {
+fn section(label: &'static str, body: impl Into<String>) -> gpui::Div {
     gpui::div()
         .mx(px(16.0))
         .py(px(14.0))
@@ -148,11 +174,11 @@ fn section(label: &'static str, body: &'static str) -> gpui::Div {
             gpui::div()
                 .text_size(px(theme::TEXT_SIZE))
                 .text_color(theme::text_secondary())
-                .child(body),
+                .child(body.into()),
         )
 }
 
-fn action_row(label: &'static str, detail: &'static str) -> gpui::Div {
+fn action_row(label: &'static str, detail: impl Into<String>) -> gpui::Div {
     gpui::div()
         .mx(px(16.0))
         .min_h(px(52.0))
@@ -174,6 +200,127 @@ fn action_row(label: &'static str, detail: &'static str) -> gpui::Div {
                 .max_w(px(170.0))
                 .text_size(px(theme::TEXT_SIZE_SM))
                 .text_color(theme::text_secondary())
-                .child(detail),
+                .child(detail.into()),
         )
+}
+
+fn participants_section(this: &MainWindow) -> gpui::Div {
+    let mut body = gpui::div()
+        .mx(px(16.0))
+        .py(px(14.0))
+        .border_t_1()
+        .border_color(theme::border())
+        .child(
+            gpui::div()
+                .mb(px(8.0))
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme::accent_text())
+                .child("PARTICIPANTS"),
+        );
+
+    match this.conversation_details.as_ref() {
+        Some(ConversationDetails::Group(details)) if details.participants.is_empty() => {
+            body = body.child(
+                gpui::div()
+                    .py(px(8.0))
+                    .text_size(px(theme::TEXT_SIZE))
+                    .text_color(theme::text_secondary())
+                    .child("No participant data was returned"),
+            );
+        }
+        Some(ConversationDetails::Group(details)) => {
+            for participant in &details.participants {
+                body = body.child(participant_row(participant));
+            }
+        }
+        _ if this.details_loading => {
+            // Neutral skeletons communicate pending data without invented
+            // names, roles, or participant counts.
+            for width in [180.0, 220.0, 160.0] {
+                body = body.child(
+                    gpui::div()
+                        .h(px(52.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .child(
+                            gpui::div()
+                                .size(px(34.0))
+                                .rounded_full()
+                                .bg(theme::row_hover()),
+                        )
+                        .child(
+                            gpui::div()
+                                .w(px(width))
+                                .h(px(10.0))
+                                .rounded(px(5.0))
+                                .bg(theme::row_hover()),
+                        ),
+                );
+            }
+        }
+        _ => {
+            body = body.child(
+                gpui::div()
+                    .py(px(8.0))
+                    .text_size(px(theme::TEXT_SIZE))
+                    .text_color(theme::text_secondary())
+                    .child("Participant information is unavailable offline"),
+            );
+        }
+    }
+    body
+}
+
+fn participant_row(participant: &Participant) -> gpui::Div {
+    let initial = participant
+        .display_name
+        .chars()
+        .next()
+        .unwrap_or('?')
+        .to_uppercase()
+        .to_string();
+    let role = match participant.role {
+        ParticipantRole::Member => None,
+        ParticipantRole::Admin => Some("admin"),
+        ParticipantRole::SuperAdmin => Some("creator"),
+    };
+    gpui::div()
+        .min_h(px(52.0))
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .child(
+            gpui::div()
+                .size(px(34.0))
+                .rounded_full()
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(theme::sender_color(&participant.display_name))
+                .text_color(theme::text_on_accent())
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(initial),
+        )
+        .child(
+            gpui::div()
+                .flex_1()
+                .min_w(px(0.0))
+                .truncate()
+                .text_size(px(theme::TEXT_SIZE))
+                .text_color(theme::text_primary())
+                .child(participant.display_name.clone()),
+        )
+        .children(role.map(|role| {
+            gpui::div()
+                .px(px(6.0))
+                .py(px(2.0))
+                .rounded(px(4.0))
+                .bg(theme::row_selected())
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .text_color(theme::accent_text())
+                .child(role)
+        }))
 }

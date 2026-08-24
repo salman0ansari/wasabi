@@ -9,5 +9,6 @@ These images are captures of the native GPUI application—not design mockups or
 | Settings | Light | 1280×922 | [`settings-light.png`](settings-light.png) |
 | Settings | Dark | 1280×922 | [`settings-dark.png`](settings-dark.png) |
 | Contact drawer overlay | Light | 980×700 | [`contact-drawer-compact.png`](contact-drawer-compact.png) |
+| Group information and real participant roles | Light | 1280×922 | [`group-info-light.png`](group-info-light.png) |
 
 The gallery should only contain captures from a build that passed the desktop checks. Replace images when the corresponding product surface materially changes.
