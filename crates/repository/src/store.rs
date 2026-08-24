@@ -535,8 +535,8 @@ fn chat_kind(jid: &str) -> domain::ChatKind {
 
 #[cfg(test)]
 mod projection_tests {
-    use super::chat_kind;
-    use wasabi_domain::ChatKind;
+    use super::{chat_kind, map_kind_fields};
+    use wasabi_domain::{ChatKind, MessageKind, UnavailableMessageReason};
 
     #[test]
     fn chat_kind_is_derived_from_stable_jid_server() {
@@ -544,6 +544,29 @@ mod projection_tests {
         assert_eq!(chat_kind("123@g.us"), ChatKind::Group);
         assert_eq!(chat_kind("123@newsletter"), ChatKind::Newsletter);
         assert_eq!(chat_kind("status@broadcast"), ChatKind::System);
+    }
+
+    #[test]
+    fn unavailable_kinds_keep_distinct_recovery_reasons() {
+        let cases = [
+            (
+                "undecryptable",
+                UnavailableMessageReason::WaitingForDecryption,
+            ),
+            ("view_once", UnavailableMessageReason::ViewOnceOnPhone),
+            ("hosted", UnavailableMessageReason::HostedContent),
+            ("bot", UnavailableMessageReason::BotContent),
+        ];
+        for (label, expected) in cases {
+            assert_eq!(
+                map_kind_fields("M", label, None, None),
+                MessageKind::Unavailable { reason: expected }
+            );
+        }
+        assert_eq!(
+            map_kind_fields("M", "unknown", None, None),
+            MessageKind::Unknown
+        );
     }
 }
 
@@ -662,6 +685,16 @@ fn notification_preview(kind: &domain::MessageKind) -> (String, bool) {
             true,
         ),
         domain::MessageKind::Sticker { .. } => ("Sticker".to_string(), true),
+        domain::MessageKind::Unavailable { reason } => (
+            match reason {
+                domain::UnavailableMessageReason::WaitingForDecryption => "Waiting for message",
+                domain::UnavailableMessageReason::ViewOnceOnPhone => "View-once message",
+                domain::UnavailableMessageReason::HostedContent => "Hosted message",
+                domain::UnavailableMessageReason::BotContent => "Automated message",
+            }
+            .to_string(),
+            true,
+        ),
         domain::MessageKind::Unknown => ("Unsupported message".to_string(), true),
         domain::MessageKind::Reaction { .. } | domain::MessageKind::System { .. } => {
             (String::new(), false)
@@ -729,9 +762,19 @@ fn map_kind_fields(
                 media: sticker_descriptor(message_id, wire),
             }
         }
-        "undecryptable" | "view_once" | "hosted" | "bot" | "unknown" => {
-            domain::MessageKind::Unknown
-        }
+        "undecryptable" => domain::MessageKind::Unavailable {
+            reason: domain::UnavailableMessageReason::WaitingForDecryption,
+        },
+        "view_once" => domain::MessageKind::Unavailable {
+            reason: domain::UnavailableMessageReason::ViewOnceOnPhone,
+        },
+        "hosted" => domain::MessageKind::Unavailable {
+            reason: domain::UnavailableMessageReason::HostedContent,
+        },
+        "bot" => domain::MessageKind::Unavailable {
+            reason: domain::UnavailableMessageReason::BotContent,
+        },
+        "unknown" => domain::MessageKind::Unknown,
         _ => text.map_or(domain::MessageKind::Unknown, |text| {
             domain::MessageKind::System { text }
         }),

@@ -129,7 +129,25 @@ pub enum MessageKind {
     System {
         text: String,
     },
+    Unavailable {
+        reason: UnavailableMessageReason,
+    },
     Unknown,
+}
+
+/// Why a durable message row cannot expose its original content on this
+/// companion device. Each reason has a distinct recovery expectation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UnavailableMessageReason {
+    /// Encryption material may still arrive or a placeholder resend may heal
+    /// the row; the content is not permanently lost yet.
+    WaitingForDecryption,
+    /// Companion devices are intentionally not given view-once payloads.
+    ViewOnceOnPhone,
+    /// Hosted fanout content is unavailable to companion clients.
+    HostedContent,
+    /// A known bot fanout cannot be rendered by this client.
+    BotContent,
 }
 
 /// A keyset page of messages, ordered newest→oldest.

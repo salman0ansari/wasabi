@@ -129,6 +129,14 @@ pub(crate) fn media_preview() -> MediaPreview {
                         body: "Looks great — I’ll review it today.".to_string(),
                     },
                 ),
+                row(
+                    "PREVIEW-VIEW-ONCE",
+                    0,
+                    MessageDirection::Incoming,
+                    MessageKind::Unavailable {
+                        reason: wasabi_domain::UnavailableMessageReason::ViewOnceOnPhone,
+                    },
+                ),
             ],
             next_before: None,
         },

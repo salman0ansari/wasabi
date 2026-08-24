@@ -308,7 +308,27 @@ pub fn body_text(row: &MessageRow) -> String {
         MessageKind::Sticker { .. } => "Sticker".to_string(),
         MessageKind::Reaction { emoji } => emoji.clone(),
         MessageKind::System { text } => text.clone(),
+        MessageKind::Unavailable { reason } => unavailable_text(*reason).to_string(),
         MessageKind::Unknown => "Unsupported message".to_string(),
+    }
+}
+
+pub fn unavailable_text(reason: wasabi_domain::UnavailableMessageReason) -> &'static str {
+    use wasabi_domain::UnavailableMessageReason;
+
+    match reason {
+        UnavailableMessageReason::WaitingForDecryption => {
+            "Waiting for this message. It may take a moment."
+        }
+        UnavailableMessageReason::ViewOnceOnPhone => {
+            "View-once message. Open it on your phone."
+        }
+        UnavailableMessageReason::HostedContent => {
+            "This hosted message is unavailable on linked devices."
+        }
+        UnavailableMessageReason::BotContent => {
+            "This automated message cannot be displayed yet."
+        }
     }
 }
 
@@ -385,6 +405,16 @@ pub fn avatar_initials(chat: &ChatSummary) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unavailable_messages_explain_the_correct_recovery_path() {
+        use wasabi_domain::UnavailableMessageReason;
+
+        assert!(unavailable_text(UnavailableMessageReason::WaitingForDecryption).contains("moment"));
+        assert!(unavailable_text(UnavailableMessageReason::ViewOnceOnPhone).contains("phone"));
+        assert!(unavailable_text(UnavailableMessageReason::HostedContent).contains("linked devices"));
+        assert!(unavailable_text(UnavailableMessageReason::BotContent).contains("automated"));
+    }
     use wasabi_domain::{
         ChatId, LocalCursor, MessageContext, MessageDirection, MessageId, MessageKind,
         MessageStatus, SenderJid,

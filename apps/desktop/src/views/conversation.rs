@@ -328,6 +328,24 @@ fn bubble(
                 .text_color(theme::text_secondary())
                 .child("This message was deleted"),
         );
+    } else if matches!(row.kind, MessageKind::Unavailable { .. } | MessageKind::Unknown) {
+        content = content.child(
+            gpui::div()
+                .flex()
+                .items_center()
+                .gap(px(7.0))
+                .rounded(px(theme::RADIUS_SM))
+                .bg(theme::canvas())
+                .px(px(9.0))
+                .py(px(7.0))
+                .text_color(theme::text_secondary())
+                .child(Icon::new(IconName::Info).size(px(16.0)))
+                .child(
+                    gpui::div()
+                        .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+                        .child(messages::body_text(&row)),
+                ),
+        );
     } else if let Some(media) = media_content(&row, text_scale, media_state, cx) {
         content = content.child(media);
     } else {
