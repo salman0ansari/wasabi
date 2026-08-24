@@ -56,6 +56,7 @@ pub struct MainWindow {
     chats_gen: AtomicU64,
     messages_gen: AtomicU64,
     qr_ticker_gen: AtomicU64,
+    pairing_request_gen: AtomicU64,
     #[allow(dead_code)]
     subscriptions: Vec<Subscription>,
 }
@@ -109,6 +110,7 @@ impl MainWindow {
             chats_gen: AtomicU64::new(0),
             messages_gen: AtomicU64::new(0),
             qr_ticker_gen: AtomicU64::new(0),
+            pairing_request_gen: AtomicU64::new(0),
             subscriptions: Vec::new(),
         };
         // Storage normally opens before the window appears; reflect a
@@ -218,20 +220,46 @@ impl MainWindow {
     }
 
     pub(crate) fn request_pairing(&mut self, cx: &mut Context<Self>) {
+        self.start_pairing_request(cx, false);
+    }
+
+    fn restart_pairing(&mut self, cx: &mut Context<Self>) {
+        self.start_pairing_request(cx, true);
+    }
+
+    fn start_pairing_request(&mut self, cx: &mut Context<Self>, restart: bool) {
         if self.session.pairing_requesting {
             return;
         }
 
+        let request_generation = self.pairing_request_gen.fetch_add(1, Ordering::AcqRel) + 1;
         self.session.pairing_requesting = true;
         self.session.pairing_error = None;
         cx.notify();
 
         let bridge = Arc::clone(&self.bridge);
         spawn_main(cx, async move |this, cx| {
-            let result = bridge.start_pairing().await;
+            let result = if restart {
+                match bridge.stop_session().await {
+                    Ok(()) => bridge.start_pairing().await,
+                    Err(err) => Err(err),
+                }
+            } else {
+                bridge.start_pairing().await
+            };
             this.update(cx, |this, cx| {
+                if this.pairing_request_gen.load(Ordering::Acquire) != request_generation {
+                    return;
+                }
                 this.session.pairing_requesting = false;
-                if let Err(err) = result {
+                if let Err(err) = result
+                    && this.session.qr_code.is_none()
+                    && !matches!(
+                        this.session.state,
+                        wasabi_core::state::SessionState::Connecting
+                            | wasabi_core::state::SessionState::Connected
+                    )
+                {
                     tracing::warn!(error = %err, "pairing request failed");
                     this.session.pairing_error = Some(err);
                 }
@@ -467,19 +495,31 @@ impl MainWindow {
                 let alive = this
                     .update(cx, |this, cx| {
                         let superseded = this.qr_ticker_gen.load(Ordering::Acquire) != generation;
+                        if superseded {
+                            cx.notify();
+                            return false;
+                        }
+
                         let expired = this
                             .session
                             .qr_deadline
-                            .is_some_and(|d| d <= std::time::Instant::now());
+                            .is_some_and(|deadline| deadline <= std::time::Instant::now());
                         if expired {
-                            // Rotation pushes a fresh code shortly; until then
-                            // show waiting instead of a stuck zero.
+                            this.session.qr_code = None;
                             this.session.qr_deadline = None;
-                        }
-                        let alive = !superseded && this.session.qr_deadline.is_some();
-                        if expired || superseded || !alive {
+                            this.qr_ticker_gen.fetch_add(1, Ordering::AcqRel);
+                            if matches!(
+                                this.session.state,
+                                wasabi_core::state::SessionState::Pairing
+                            ) {
+                                this.restart_pairing(cx);
+                            }
                             cx.notify();
+                            return false;
                         }
+
+                        let alive = this.session.qr_deadline.is_some();
+                        cx.notify();
                         alive
                     })
                     .unwrap_or(false);
@@ -514,7 +554,9 @@ impl Render for MainWindow {
         let pairing_active = matches!(
             self.session.state,
             wasabi_core::state::SessionState::Pairing
-        ) || self.session.qr_deadline.is_some();
+        ) || self.session.qr_deadline.is_some()
+            || self.session.pairing_requesting
+            || self.session.pairing_error.is_some();
 
         div()
             .id("root")
@@ -730,7 +772,12 @@ fn apply_state(
             this.session.qr_deadline = None;
             this.qr_ticker_gen.fetch_add(1, Ordering::AcqRel);
         }
-        if state.is_connected() {
+        if matches!(
+            &state,
+            wasabi_core::state::SessionState::Connecting
+                | wasabi_core::state::SessionState::Connected
+        ) {
+            this.pairing_request_gen.fetch_add(1, Ordering::AcqRel);
             this.session.pairing_requesting = false;
             this.session.pairing_error = None;
         }
@@ -761,8 +808,21 @@ fn apply_qr(
                 this.spawn_countdown_ticker(cx);
             }
             None => {
+                let expired = this
+                    .session
+                    .qr_deadline
+                    .is_some_and(|deadline| deadline <= std::time::Instant::now());
                 this.session.qr_code = None;
                 this.session.qr_deadline = None;
+                this.qr_ticker_gen.fetch_add(1, Ordering::AcqRel);
+                if expired
+                    && matches!(
+                        this.session.state,
+                        wasabi_core::state::SessionState::Pairing
+                    )
+                {
+                    this.restart_pairing(cx);
+                }
             }
         }
         cx.notify();
