@@ -6,6 +6,7 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 
 ### Added
 
+- Additive account migrations for device-local chat preferences, contact/group metadata caches, participant caches, and durable transfer jobs; Favorites now persist separately from protocol pinning.
 - Typed direct-contact and group information projections, on-demand metadata loading with stale-result cancellation, and real group participant/admin rows when connected.
 - Debounced, generation-cancelled global message search backed by the account FTS index, shown alongside matching loaded chats.
 - Cursor-based chat-list pagination with explicit load-more feedback and a real archived-conversations destination.

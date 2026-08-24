@@ -2054,6 +2054,8 @@ name = "wasabi-repository"
 version = "0.2.0-alpha.1"
 dependencies = [
  "chrono",
+ "diesel",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

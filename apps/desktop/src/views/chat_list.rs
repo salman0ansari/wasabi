@@ -430,6 +430,8 @@ fn chat_row(
     let typing_here = this.typing.contains_key(&id);
     let preview = if typing_here {
         "typing…".to_string()
+    } else if let Some(draft) = chat.draft_preview.as_ref() {
+        format!("Draft: {draft}")
     } else {
         chat.last_message_preview.clone().unwrap_or_default()
     };
@@ -456,6 +458,7 @@ fn chat_row(
     });
 
     let pinned = chat.pinned_at_ms.is_some();
+    let favorite = chat.favorite;
 
     let row = gpui::div()
         .id(("chat-row", ix))
@@ -509,6 +512,17 @@ fn chat_row(
                                 .child(name),
                         )
                         .when(pinned, |el| {
+                            el.child(
+                                gpui::div()
+                                    .text_size(px(theme::scaled_text(
+                                        theme::TEXT_SIZE_SM,
+                                        text_scale,
+                                    )))
+                                    .text_color(theme::accent_text())
+                                    .child(Icon::new(IconName::ArrowUp).size(px(13.0))),
+                            )
+                        })
+                        .when(favorite, |el| {
                             el.child(
                                 gpui::div()
                                     .text_size(px(theme::scaled_text(

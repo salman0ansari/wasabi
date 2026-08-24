@@ -319,6 +319,17 @@ impl CoreBridge {
         .await
     }
 
+    pub async fn set_favorite(&self, chat: ChatId, favorite: bool) -> Result<(), String> {
+        let store = self.store_snapshot()?;
+        self.run_on_core(async move {
+            store
+                .set_favorite(chat, favorite)
+                .await
+                .map_err(service_message)
+        })
+        .await
+    }
+
     // ---- Sending ------------------------------------------------------------
 
     /// Submit an immutable product request through the durable account

@@ -500,6 +500,47 @@ impl MainWindow {
         cx.notify();
     }
 
+    pub(crate) fn toggle_favorite(&mut self, cx: &mut Context<Self>) {
+        let Some(selected) = self.chats.selected.clone() else {
+            return;
+        };
+        let Some(index) = self
+            .chats
+            .chats
+            .iter()
+            .position(|chat| chat.id.as_str() == selected)
+        else {
+            return;
+        };
+        let favorite = !self.chats.chats[index].favorite;
+        self.chats.chats[index].favorite = favorite;
+        self.refresh_visible();
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge
+                .set_favorite(wasabi_domain::ChatId::new(selected.clone()), favorite)
+                .await;
+            this.update(cx, |this, cx| {
+                if let Err(error) = result {
+                    if let Some(chat) = this
+                        .chats
+                        .chats
+                        .iter_mut()
+                        .find(|chat| chat.id.as_str() == selected)
+                        && chat.favorite == favorite
+                    {
+                        chat.favorite = !favorite;
+                    }
+                    this.details_error = Some(error);
+                    this.refresh_visible();
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
     pub(crate) fn select_settings_section(
         &mut self,
         section: SettingsSection,

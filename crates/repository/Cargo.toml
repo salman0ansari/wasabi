@@ -21,11 +21,13 @@ tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
+diesel = { workspace = true }
+wacore = { workspace = true }
+serde_json = "1"
 
 [dev-dependencies]
 wasabi-test-support = { workspace = true }
 tempfile = { workspace = true }
-wacore = { workspace = true }
 waproto = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros", "sync"] }
 

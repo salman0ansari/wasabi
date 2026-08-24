@@ -3,8 +3,10 @@
 //! leak past this crate.
 
 pub mod config;
+pub mod preferences;
 pub mod search;
 pub mod store;
+mod wasabi_schema;
 
 pub use config::{StorageLayout, StoreTuning};
 pub use store::{AccountStore, OpenError, StoreChange, StoreChangeFeed};

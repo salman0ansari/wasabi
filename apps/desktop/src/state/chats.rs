@@ -163,9 +163,7 @@ fn matches_filter(chat: &ChatSummary, filter: ChatFilter, query: &str) -> bool {
     let passes_chip = match filter {
         ChatFilter::All => true,
         ChatFilter::Unread => chat.unread_count != 0,
-        // The store exposes no "starred" aggregate on summaries yet; the
-        // pinned flag is the closest durable favorite marker.
-        ChatFilter::Favorites => chat.pinned_at_ms.is_some(),
+        ChatFilter::Favorites => chat.favorite,
         ChatFilter::Groups => is_group(chat.id.as_str()),
     };
     let matches_query = query.is_empty()
@@ -218,6 +216,8 @@ mod tests {
             pinned_at_ms,
             muted_until_ms: None,
             archived: false,
+            favorite: false,
+            draft_preview: None,
         }
     }
 

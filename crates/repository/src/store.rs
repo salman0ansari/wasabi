@@ -24,6 +24,8 @@ pub enum OpenError {
     Sqlite(String),
     #[error("chat store: {0}")]
     ChatStore(#[from] whatsapp_rust_chat_store::ChatStoreError),
+    #[error("wasabi schema: {0}")]
+    WasabiSchema(String),
 }
 
 /// Repository-owned durable invalidation. Upstream JIDs and store types do
@@ -83,6 +85,9 @@ impl AccountStore {
                 .map_err(|e| OpenError::Sqlite(e.to_string()))?,
         );
         let chats = ChatStore::new(&sqlite).await?;
+        crate::wasabi_schema::migrate(sqlite.shared())
+            .await
+            .map_err(|error| OpenError::WasabiSchema(error.to_string()))?;
         Ok(Self { sqlite, chats })
     }
 
@@ -164,6 +169,7 @@ impl AccountStore {
             .collect::<Vec<_>>();
         let has_more = rows.len() > limit;
         rows.truncate(limit);
+        self.hydrate_chat_preferences(&mut rows).await?;
         let next_after =
             has_more.then(|| chat_summary_cursor(rows.last().expect("non-empty page")));
         Ok(domain::ChatPage { rows, next_after })
@@ -213,6 +219,7 @@ impl AccountStore {
 
         let has_more = archived.len() > limit;
         archived.truncate(limit);
+        self.hydrate_chat_preferences(&mut archived).await?;
         let next_after =
             has_more.then(|| chat_summary_cursor(archived.last().expect("non-empty page")));
         Ok(domain::ChatPage {
@@ -275,6 +282,54 @@ impl AccountStore {
             avatar: None,
         })
     }
+
+    pub async fn chat_preference(
+        &self,
+        chat: domain::ChatId,
+    ) -> Result<crate::preferences::ChatPreference, domain::ServiceError> {
+        crate::preferences::load(self.shared_db(), self.device_id(), chat).await
+    }
+
+    pub async fn set_favorite(
+        &self,
+        chat: domain::ChatId,
+        favorite: bool,
+    ) -> Result<(), domain::ServiceError> {
+        crate::preferences::set_favorite(self.shared_db(), self.device_id(), chat, favorite).await
+    }
+
+    pub async fn save_draft(
+        &self,
+        chat: domain::ChatId,
+        draft: Option<domain::Draft>,
+    ) -> Result<(), domain::ServiceError> {
+        crate::preferences::save_draft(self.shared_db(), self.device_id(), chat, draft).await
+    }
+
+    async fn hydrate_chat_preferences(
+        &self,
+        chats: &mut [domain::ChatSummary],
+    ) -> Result<(), domain::ServiceError> {
+        let ids = chats
+            .iter()
+            .map(|chat| chat.id.as_str().to_string())
+            .collect();
+        let preferences =
+            crate::preferences::load_for_chats(self.shared_db(), self.device_id(), ids).await?;
+        for chat in chats {
+            let Some(preference) = preferences.get(chat.id.as_str()) else {
+                continue;
+            };
+            chat.favorite = preference.favorite;
+            chat.draft_preview = preference
+                .draft
+                .as_ref()
+                .map(|draft| draft.body.trim())
+                .filter(|body| !body.is_empty())
+                .map(str::to_string);
+        }
+        Ok(())
+    }
 }
 
 fn domain_cursor_to_upstream(cursor: domain::ChatPageCursor) -> ChatCursor {
@@ -322,6 +377,8 @@ fn chat_entry_to_summary(e: whatsapp_rust_chat_store::types::ChatEntry) -> domai
         pinned_at_ms: e.pinned_at.map(|t| t.timestamp_millis()),
         muted_until_ms: e.muted_until.map(|t| t.timestamp_millis()),
         archived: e.archived,
+        favorite: false,
+        draft_preview: None,
     }
 }
 

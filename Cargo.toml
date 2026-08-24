@@ -42,6 +42,7 @@ chrono = { version = "0.4", default-features = false, features = ["now", "serde"
 serde = { version = "1.0", features = ["derive"] }
 parking_lot = "0.12"
 dirs = "6"
+diesel = { version = "2.3.12", features = ["sqlite"] }
 
 # dev
 tempfile = "3"

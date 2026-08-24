@@ -21,6 +21,10 @@ pub struct ChatSummary {
     pub pinned_at_ms: Option<i64>,
     pub muted_until_ms: Option<i64>,
     pub archived: bool,
+    /// Wasabi device-local preference; distinct from protocol-backed pinning.
+    pub favorite: bool,
+    /// Non-empty draft body preview, hydrated with the chat page.
+    pub draft_preview: Option<String>,
 }
 
 /// Direction of a message relative to this account.

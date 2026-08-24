@@ -140,6 +140,7 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
         .child(action_row("Media, links and documents", "No cached media"))
         .child(action_row("Starred messages", "None cached"))
         .child(action_row("Notifications", "Default"))
+        .child(favorite_action(this, cx))
         .child(action_row("Disappearing messages", "Off"))
         .child(action_row("Encryption", "End-to-end encrypted"));
 
@@ -201,6 +202,53 @@ fn action_row(label: &'static str, detail: impl Into<String>) -> gpui::Div {
                 .text_size(px(theme::TEXT_SIZE_SM))
                 .text_color(theme::text_secondary())
                 .child(detail.into()),
+        )
+}
+
+fn favorite_action(
+    this: &mut MainWindow,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Stateful<gpui::Div> {
+    let favorite = this
+        .chats
+        .selected
+        .as_ref()
+        .and_then(|selected| {
+            this.chats
+                .chats
+                .iter()
+                .find(|chat| chat.id.as_str() == selected)
+        })
+        .is_some_and(|chat| chat.favorite);
+    gpui::div()
+        .id("toggle-favorite")
+        .mx(px(16.0))
+        .min_h(px(52.0))
+        .py(px(10.0))
+        .flex()
+        .items_center()
+        .gap(px(12.0))
+        .cursor_pointer()
+        .border_t_1()
+        .border_color(theme::border())
+        .hover(|style| style.bg(theme::row_hover()))
+        .on_click(cx.listener(|this, _, _, cx| this.toggle_favorite(cx)))
+        .child(
+            gpui::div()
+                .flex_1()
+                .text_size(px(theme::TEXT_SIZE))
+                .text_color(theme::text_primary())
+                .child("Favorite"),
+        )
+        .child(
+            gpui::div()
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .text_color(if favorite {
+                    theme::accent_text()
+                } else {
+                    theme::text_secondary()
+                })
+                .child(if favorite { "On this device" } else { "Off" }),
         )
 }
 

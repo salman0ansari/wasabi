@@ -8020,9 +8020,12 @@ name = "wasabi-repository"
 version = "0.2.0-alpha.1"
 dependencies = [
  "chrono",
+ "diesel",
+ "serde_json",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+ "wacore",
  "wasabi-domain",
  "whatsapp-rust",
  "whatsapp-rust-chat-store",
