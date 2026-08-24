@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::io::{Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -17,7 +18,10 @@ use whatsapp_rust::wacore::proto_helpers::MessageExt;
 use whatsapp_rust_chat_store::ChatStore;
 
 use crate::cache::{DiskCache, is_sha_hex, to_hex};
-use crate::{MAX_CONCURRENT_DOWNLOADS, MEDIA_QUEUE_CAPACITY, MediaError};
+use crate::{
+    MAX_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_UPLOADS, MAX_OUTGOING_ATTACHMENT_BYTES,
+    MEDIA_QUEUE_CAPACITY, MediaError,
+};
 
 /// Maps a received message onto the upstream raw-params downloader.
 ///
@@ -170,6 +174,8 @@ pub struct MediaManager {
     /// surfaces as `Overloaded` instead of an unbounded wait set.
     queue: Arc<Semaphore>,
     running: Arc<Semaphore>,
+    upload_queue: Arc<Semaphore>,
+    upload_running: Arc<Semaphore>,
     inflight: OpRegistry<PathBuf>,
 }
 
@@ -195,6 +201,7 @@ impl std::fmt::Debug for MediaManager {
         f.debug_struct("MediaManager")
             .field("queue", &MEDIA_QUEUE_CAPACITY)
             .field("running", &MAX_CONCURRENT_DOWNLOADS)
+            .field("upload_running", &MAX_CONCURRENT_UPLOADS)
             .finish()
     }
 }
@@ -215,6 +222,8 @@ impl MediaManager {
             cache,
             queue: Arc::new(Semaphore::new(MEDIA_QUEUE_CAPACITY)),
             running: Arc::new(Semaphore::new(MAX_CONCURRENT_DOWNLOADS)),
+            upload_queue: Arc::new(Semaphore::new(MEDIA_QUEUE_CAPACITY)),
+            upload_running: Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS)),
             inflight: OpRegistry::new(),
         }
     }
@@ -332,6 +341,118 @@ impl MediaManager {
                 Ok(final_path)
             })
             .await
+    }
+
+    /// Encrypt and upload one Wasabi-owned staged file without holding the
+    /// plaintext or ciphertext in memory. The current protocol client is
+    /// captured only after admission, so reconnects replace stale clients.
+    pub async fn upload(
+        &self,
+        source: PathBuf,
+        kind: wasabi_domain::AttachmentKind,
+        cancel: CancellationToken,
+    ) -> Result<whatsapp_rust::upload::UploadResponse, MediaError> {
+        let metadata = tokio::fs::metadata(&source).await?;
+        if !metadata.is_file() {
+            return Err(MediaError::InvalidInput(
+                "attachment source is not a regular file".to_string(),
+            ));
+        }
+        if metadata.len() == 0 {
+            return Err(MediaError::InvalidInput(
+                "attachment source is empty".to_string(),
+            ));
+        }
+        if metadata.len() > MAX_OUTGOING_ATTACHMENT_BYTES {
+            return Err(MediaError::InvalidInput(
+                "attachment exceeds the configured maximum".to_string(),
+            ));
+        }
+
+        let _admission = self
+            .upload_queue
+            .try_acquire()
+            .map_err(|_| MediaError::Overloaded)?;
+        let _slot = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(MediaError::Cancelled),
+            slot = self.upload_running.acquire() => slot.map_err(|_| MediaError::Unavailable)?,
+        };
+        let client = self
+            .client_provider
+            .client()
+            .await
+            .ok_or(MediaError::Unavailable)?;
+        let media_type = attachment_media_type(kind);
+        let encrypted_path = self.cache.staging_tmp();
+        let guard = TmpGuard(encrypted_path.clone());
+        let encrypt_source = source.clone();
+        let encrypt_destination = encrypted_path.clone();
+        let encryption = tokio::task::spawn_blocking(move || {
+            encrypt_file(&encrypt_source, &encrypt_destination, media_type)
+        });
+        let info = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(MediaError::Cancelled),
+            result = encryption => result
+                .map_err(|error| MediaError::Encryption(error.to_string()))??,
+        };
+        let encrypted_len = tokio::fs::metadata(&encrypted_path).await?.len();
+        let upload_source = FileUploadSource {
+            path: encrypted_path,
+            len: encrypted_len,
+        };
+        let response = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(MediaError::Cancelled),
+            result = client.upload_stream(upload_source, info, media_type) =>
+                result.map_err(|error| MediaError::Upload(error.to_string()))?,
+        };
+        drop(guard);
+        Ok(response)
+    }
+}
+
+#[derive(Clone)]
+struct FileUploadSource {
+    path: PathBuf,
+    len: u64,
+}
+
+impl wacore::upload::UploadSource for FileUploadSource {
+    fn len(&self) -> u64 {
+        self.len
+    }
+
+    fn reader_from(&self, offset: u64) -> std::io::Result<Box<dyn std::io::Read + Send>> {
+        let mut file = std::fs::File::open(&self.path)?;
+        file.seek(SeekFrom::Start(offset.min(self.len)))?;
+        Ok(Box::new(file))
+    }
+}
+
+fn encrypt_file(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+    media_type: MediaType,
+) -> Result<wacore::upload::EncryptedMediaInfo, MediaError> {
+    let mut source = std::fs::File::open(source)?;
+    let mut destination = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
+    let info = wacore::upload::encrypt_media_streaming(&mut source, &mut destination, media_type)
+        .map_err(|error| MediaError::Encryption(error.to_string()))?;
+    destination.sync_all()?;
+    Ok(info)
+}
+
+fn attachment_media_type(kind: wasabi_domain::AttachmentKind) -> MediaType {
+    match kind {
+        wasabi_domain::AttachmentKind::Image => MediaType::Image,
+        wasabi_domain::AttachmentKind::Video => MediaType::Video,
+        wasabi_domain::AttachmentKind::Audio => MediaType::Audio,
+        wasabi_domain::AttachmentKind::Document => MediaType::Document,
     }
 }
 
@@ -613,6 +734,47 @@ mod tests {
             to_hex(&digest),
             to_hex(&Sha256::digest(b"xyz")),
             "digest must cover only the surviving attempt"
+        );
+    }
+
+    #[test]
+    fn file_encryption_is_streamed_and_preserves_plaintext_hash() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("plain.bin");
+        let encrypted = dir.path().join("encrypted.bin");
+        let bytes = vec![0x5a; 256 * 1024 + 7];
+        std::fs::write(&source, &bytes).expect("seed source");
+        let info = encrypt_file(&source, &encrypted, MediaType::Document).expect("encrypt");
+        assert_eq!(info.file_length, bytes.len() as u64);
+        assert_eq!(
+            info.file_sha256.as_slice(),
+            Sha256::digest(&bytes).as_slice()
+        );
+        assert_eq!(
+            std::fs::metadata(encrypted)
+                .expect("encrypted metadata")
+                .len(),
+            wacore::upload::encrypted_len(bytes.len()) as u64
+        );
+    }
+
+    #[test]
+    fn attachment_kinds_map_to_protocol_media_classes() {
+        assert_eq!(
+            attachment_media_type(wasabi_domain::AttachmentKind::Image),
+            MediaType::Image
+        );
+        assert_eq!(
+            attachment_media_type(wasabi_domain::AttachmentKind::Video),
+            MediaType::Video
+        );
+        assert_eq!(
+            attachment_media_type(wasabi_domain::AttachmentKind::Audio),
+            MediaType::Audio
+        );
+        assert_eq!(
+            attachment_media_type(wasabi_domain::AttachmentKind::Document),
+            MediaType::Document
         );
     }
 

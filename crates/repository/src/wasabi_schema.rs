@@ -7,7 +7,7 @@ use diesel::prelude::*;
 use wacore::store::error::StoreError;
 use whatsapp_rust_sqlite_storage::SharedSqlite;
 
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 
 const CREATE_STATEMENTS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS wasabi_schema_version (version INTEGER NOT NULL)",
@@ -62,6 +62,7 @@ const CREATE_STATEMENTS: &[&str] = &[
         source_path TEXT,
         destination_path TEXT,
         media_hash TEXT,
+        payload_json TEXT,
         bytes_done INTEGER NOT NULL DEFAULT 0,
         bytes_total INTEGER,
         error_kind TEXT,
@@ -80,6 +81,12 @@ pub async fn migrate(shared: SharedSqlite) -> Result<(), StoreError> {
                     for statement in CREATE_STATEMENTS {
                         diesel::sql_query(*statement).execute(connection)?;
                     }
+                    if !table_has_column(connection, "wasabi_transfer_jobs", "payload_json")? {
+                        diesel::sql_query(
+                            "ALTER TABLE wasabi_transfer_jobs ADD COLUMN payload_json TEXT",
+                        )
+                        .execute(connection)?;
+                    }
                     diesel::sql_query("DELETE FROM wasabi_schema_version").execute(connection)?;
                     diesel::sql_query("INSERT INTO wasabi_schema_version (version) VALUES (?)")
                         .bind::<diesel::sql_types::Integer, _>(SCHEMA_VERSION)
@@ -89,6 +96,24 @@ pub async fn migrate(shared: SharedSqlite) -> Result<(), StoreError> {
                 .map_err(MigrationError::into_store_error)
         })
         .await
+}
+
+#[derive(QueryableByName)]
+struct ColumnRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    name: String,
+}
+
+fn table_has_column(
+    connection: &mut diesel::SqliteConnection,
+    table: &str,
+    column: &str,
+) -> Result<bool, diesel::result::Error> {
+    // Both names are compile-time constants at every call site. Keeping the
+    // helper private avoids turning PRAGMA construction into a query surface.
+    let rows =
+        diesel::sql_query(format!("PRAGMA table_info('{table}')")).load::<ColumnRow>(connection)?;
+    Ok(rows.into_iter().any(|row| row.name == column))
 }
 
 #[derive(Debug)]
@@ -172,5 +197,75 @@ mod tests {
         expected.sort();
         assert_eq!(tables, expected);
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn version_one_transfer_rows_survive_payload_column_upgrade() {
+        let directory = TempDir::new().unwrap();
+        let url = format!("sqlite://{}", directory.path().join("old.db").display());
+        let sqlite = SqliteStore::with_config(&url, SqliteStoreConfig::default())
+            .await
+            .unwrap();
+        sqlite
+            .shared()
+            .run(|connection| {
+                diesel::sql_query(
+                    "CREATE TABLE wasabi_transfer_jobs (
+                        device_id INTEGER NOT NULL,
+                        transfer_id TEXT NOT NULL,
+                        chat_jid TEXT NOT NULL,
+                        message_id TEXT,
+                        direction INTEGER NOT NULL,
+                        state INTEGER NOT NULL,
+                        source_path TEXT,
+                        destination_path TEXT,
+                        media_hash TEXT,
+                        bytes_done INTEGER NOT NULL DEFAULT 0,
+                        bytes_total INTEGER,
+                        error_kind TEXT,
+                        updated_at_ms INTEGER NOT NULL,
+                        PRIMARY KEY (device_id, transfer_id)
+                    )",
+                )
+                .execute(connection)
+                .map_err(|error| StoreError::Database(Box::new(error)))?;
+                diesel::sql_query(
+                    "INSERT INTO wasabi_transfer_jobs (
+                        device_id, transfer_id, chat_jid, direction, state,
+                        bytes_done, updated_at_ms
+                    ) VALUES (1, 'legacy', 'chat@s.whatsapp.net', 1, 0, 0, 1)",
+                )
+                .execute(connection)
+                .map_err(|error| StoreError::Database(Box::new(error)))?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        migrate(sqlite.shared()).await.unwrap();
+        let (has_payload, count): (bool, i64) = sqlite
+            .shared()
+            .read(|connection| {
+                #[derive(QueryableByName)]
+                struct CountRow {
+                    #[diesel(sql_type = diesel::sql_types::BigInt)]
+                    count: i64,
+                }
+                let count = diesel::sql_query(
+                    "SELECT COUNT(*) AS count FROM wasabi_transfer_jobs WHERE transfer_id = 'legacy'",
+                )
+                .get_result::<CountRow>(connection)
+                .map_err(|error| StoreError::Database(Box::new(error)))?
+                .count;
+                Ok((
+                    table_has_column(connection, "wasabi_transfer_jobs", "payload_json")
+                        .map_err(|error| StoreError::Database(Box::new(error)))?,
+                    count,
+                ))
+            })
+            .await
+            .unwrap();
+        assert!(has_payload);
+        assert_eq!(count, 1);
     }
 }

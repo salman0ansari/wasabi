@@ -15,11 +15,15 @@ pub use tokio_util::sync::CancellationToken;
 // Re-exported so callers wiring downloads need no direct tokio-util/upstream
 // dependency beyond this crate.
 pub use whatsapp_rust::download::{DownloadParams, Downloadable};
+pub use whatsapp_rust::upload::UploadResponse;
 
 /// Concurrent media downloads per account.
 pub const MAX_CONCURRENT_DOWNLOADS: usize = 3;
 /// Concurrent media uploads per account.
 pub const MAX_CONCURRENT_UPLOADS: usize = 2;
+/// Conservative protocol/file-system guard. Product policy may lower this by
+/// media class, but no composer operation may exceed two GiB.
+pub const MAX_OUTGOING_ATTACHMENT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Thumbnail/image-decode workers (CPU budget).
 pub const MAX_DECODE_WORKERS: usize = 2;
 /// Pending media operations before new requests are rejected `Overloaded`.
@@ -45,6 +49,10 @@ pub enum MediaError {
     /// error is flattened because co-waiters must be able to clone outcomes.
     #[error("download failed: {0}")]
     Download(String),
+    #[error("upload failed: {0}")]
+    Upload(String),
+    #[error("media encryption failed: {0}")]
+    Encryption(String),
     #[error("decode failed: {0}")]
     Decode(String),
 }
@@ -61,6 +69,8 @@ impl Clone for MediaError {
             Self::Cancelled => Self::Cancelled,
             Self::InvalidInput(s) => Self::InvalidInput(s.clone()),
             Self::Download(s) => Self::Download(s.clone()),
+            Self::Upload(s) => Self::Upload(s.clone()),
+            Self::Encryption(s) => Self::Encryption(s.clone()),
             Self::Decode(s) => Self::Decode(s.clone()),
         }
     }
@@ -77,6 +87,8 @@ impl PartialEq for MediaError {
             (Self::Io(a), Self::Io(b)) => a.kind() == b.kind() && a.to_string() == b.to_string(),
             (Self::InvalidInput(a), Self::InvalidInput(b))
             | (Self::Download(a), Self::Download(b))
+            | (Self::Upload(a), Self::Upload(b))
+            | (Self::Encryption(a), Self::Encryption(b))
             | (Self::Decode(a), Self::Decode(b)) => a == b,
             _ => false,
         }

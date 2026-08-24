@@ -869,7 +869,11 @@ fn map_media_error(error: wasabi_media::MediaError) -> ServiceError {
         MediaError::Overloaded => ErrorKind::Overloaded,
         MediaError::Cancelled => ErrorKind::Cancelled,
         MediaError::InvalidInput(_) => ErrorKind::InvalidRequest,
-        MediaError::Unavailable | MediaError::Download(_) | MediaError::Decode(_) => {
+        MediaError::Unavailable
+        | MediaError::Download(_)
+        | MediaError::Upload(_)
+        | MediaError::Encryption(_)
+        | MediaError::Decode(_) => {
             ErrorKind::MediaUnavailable
         }
         MediaError::Io(_) => ErrorKind::Database,

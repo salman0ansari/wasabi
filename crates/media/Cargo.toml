@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 wasabi-domain = { workspace = true }
 whatsapp-rust = { workspace = true }
+wacore = { workspace = true }
 whatsapp-rust-chat-store = { workspace = true }
 waproto = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "macros", "time", "fs"] }

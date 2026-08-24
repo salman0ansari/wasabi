@@ -23,6 +23,12 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 - Durable upload/download jobs now preserve opaque identity, exact Linux
   paths, byte progress, redacted failure class, and restart-safe lifecycle
   state; stale callbacks cannot regress progress or resurrect terminal jobs.
+- Outgoing attachment encryption now streams through a disk-backed staging
+  file with bounded upload admission, cancellation, reconnect-time client
+  resolution, and constant memory use instead of buffering whole files.
+- Account schema v2 stores restart-safe attachment kind, display name, MIME
+  type, and caption metadata; the additive v1 migration preserves existing
+  transfer rows.
 
 - Phone-number account linking with validated international numbers, short-lived eight-character codes, expiry countdown, cancellation, and redacted sensitive values, alongside the existing QR flow.
 - Visible, focused conversation selection now synchronizes read state through an immutable chat-bound command, with optimistic rollback on failure.

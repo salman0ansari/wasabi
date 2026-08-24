@@ -25,6 +25,7 @@ diesel::table! {
         source_path -> Nullable<Binary>,
         destination_path -> Nullable<Binary>,
         media_hash -> Nullable<Text>,
+        payload_json -> Nullable<Text>,
         bytes_done -> BigInt,
         bytes_total -> Nullable<BigInt>,
         error_kind -> Nullable<Text>,
@@ -43,6 +44,7 @@ struct TransferRow {
     source_path: Option<Vec<u8>>,
     destination_path: Option<Vec<u8>>,
     media_hash: Option<String>,
+    payload_json: Option<String>,
     bytes_done: i64,
     bytes_total: Option<i64>,
     error_kind: Option<String>,
@@ -69,6 +71,11 @@ pub async fn save(
         .map(|value| as_i64(value, "bytes_total"))
         .transpose()?;
     let error_kind = job.error_kind.map(|kind| kind.to_string());
+    let payload_json = job
+        .payload
+        .map(|payload| serde_json::to_string(&payload))
+        .transpose()
+        .map_err(|error| ServiceError::new(ErrorKind::Internal, error.to_string()))?;
     let updated_at_ms = job.updated_at_ms;
 
     let inserted = shared
@@ -85,6 +92,7 @@ pub async fn save(
                     dsl::source_path.eq(source_path),
                     dsl::destination_path.eq(destination_path),
                     dsl::media_hash.eq(job.media_hash),
+                    dsl::payload_json.eq(payload_json),
                     dsl::bytes_done.eq(bytes_done),
                     dsl::bytes_total.eq(bytes_total),
                     dsl::error_kind.eq(error_kind),
@@ -397,6 +405,10 @@ fn row_to_job(row: TransferRow) -> Result<TransferJob, ServiceError> {
         source_path: row.source_path.map(path_from_bytes),
         destination_path: row.destination_path.map(path_from_bytes),
         media_hash: row.media_hash,
+        payload: row
+            .payload_json
+            .map(|json| serde_json::from_str(&json).map_err(|_| corrupt("transfer payload")))
+            .transpose()?,
         bytes_done,
         bytes_total,
         error_kind: row
@@ -475,12 +487,18 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn transfer_survives_reopen_and_progress_is_monotonic() {
         let (directory, sqlite) = fixture().await;
-        let job = TransferJob::staged_upload(
+        let mut job = TransferJob::staged_upload(
             TransferId::new("upload-a"),
             ChatId::new("group-a@g.us"),
             directory.path().join(std::ffi::OsString::from("photo.jpg")),
             100,
         );
+        job.payload = Some(wasabi_domain::TransferPayload {
+            kind: wasabi_domain::AttachmentKind::Image,
+            display_name: "Holiday photo.jpg".to_string(),
+            mime_type: "image/jpeg".to_string(),
+            caption: Some("A real caption".to_string()),
+        });
         save(sqlite.shared(), 7, job).await.unwrap();
         set_state(
             sqlite.shared(),
@@ -529,6 +547,13 @@ mod tests {
         let jobs = load(reopened.shared(), 7, false).await.unwrap();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].transfer.as_str(), "upload-a");
+        assert_eq!(
+            jobs[0]
+                .payload
+                .as_ref()
+                .map(|payload| payload.display_name.as_str()),
+            Some("Holiday photo.jpg")
+        );
     }
 
     #[cfg(unix)]

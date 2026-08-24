@@ -42,6 +42,36 @@ pub enum TransferState {
     Cancelled,
 }
 
+/// Composer-facing class used to select the correct protocol media builder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AttachmentKind {
+    Image,
+    Video,
+    Audio,
+    Document,
+}
+
+/// Durable metadata needed to reconstruct an outgoing attachment after a
+/// restart. It contains no media bytes, encryption keys, or remote URLs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferPayload {
+    pub kind: AttachmentKind,
+    pub display_name: String,
+    pub mime_type: String,
+    pub caption: Option<String>,
+}
+
+/// Safe composer projection returned after a source has been copied into
+/// Wasabi-owned staging and recorded durably.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StagedAttachment {
+    pub transfer: TransferId,
+    pub kind: AttachmentKind,
+    pub display_name: String,
+    pub mime_type: String,
+    pub bytes_total: u64,
+}
+
 impl TransferState {
     pub fn is_terminal(self) -> bool {
         matches!(
@@ -63,6 +93,7 @@ pub struct TransferJob {
     pub source_path: Option<PathBuf>,
     pub destination_path: Option<PathBuf>,
     pub media_hash: Option<String>,
+    pub payload: Option<TransferPayload>,
     pub bytes_done: u64,
     pub bytes_total: Option<u64>,
     pub error_kind: Option<ErrorKind>,
@@ -85,6 +116,7 @@ impl TransferJob {
             source_path: Some(source_path),
             destination_path: None,
             media_hash: None,
+            payload: None,
             bytes_done: 0,
             bytes_total: Some(bytes_total),
             error_kind: None,

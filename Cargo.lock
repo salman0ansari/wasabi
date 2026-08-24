@@ -2044,6 +2044,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "wacore",
  "waproto",
  "wasabi-domain",
  "whatsapp-rust",
