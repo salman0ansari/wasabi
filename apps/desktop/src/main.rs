@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Wasabi desktop entry point.
 //!
 //! Startup order is deliberate (hydrate-first): the supervisor runtime is

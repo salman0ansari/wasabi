@@ -625,6 +625,45 @@ impl MainWindow {
         cx.notify();
     }
 
+    pub(crate) fn perform_message_action(
+        &mut self,
+        action: wasabi_domain::MessageAction,
+        cx: &mut Context<Self>,
+    ) {
+        let target = action.target().clone();
+        let desired_star = match &action {
+            wasabi_domain::MessageAction::Star { starred, .. } => Some(*starred),
+            _ => None,
+        };
+        if let Some(starred) = desired_star
+            && let Some(row) = self.messages.rows.iter_mut().find(|row| {
+                row.chat == target.chat && row.id == target.message
+            })
+        {
+            row.starred = starred;
+        }
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.perform_message_action(action).await;
+            this.update(cx, |this, cx| {
+                if let Err(error) = result {
+                    if let Some(starred) = desired_star
+                        && let Some(row) = this.messages.rows.iter_mut().find(|row| {
+                            row.chat == target.chat && row.id == target.message
+                        })
+                        && row.starred == starred
+                    {
+                        row.starred = !starred;
+                    }
+                    this.send_error = Some(error.ui_message().to_string());
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
     pub(crate) fn select_settings_section(
         &mut self,
         section: SettingsSection,

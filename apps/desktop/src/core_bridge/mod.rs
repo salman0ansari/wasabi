@@ -19,8 +19,8 @@ use wasabi_core::events::{Invalidation, InvalidationPublisher};
 use wasabi_core::state::SessionState;
 use wasabi_domain::{
     ChatId, ChatPage, ChatScope, DirectContactDetails, ErrorKind, GroupDetails, GroupPermissions,
-    MessageId, MessagePage, PageCursor, Participant, ParticipantRole, SearchPage, SendContent,
-    SendReceipt, SendRequest, ServiceError,
+    MessageAction, MessageId, MessagePage, PageCursor, Participant, ParticipantRole, SearchPage,
+    SendContent, SendReceipt, SendRequest, ServiceError,
 };
 use wasabi_repository::AccountStore;
 use wasabi_whatsapp::lifecycle::QrState;
@@ -69,6 +69,7 @@ pub trait DesktopBackend: Send + Sync {
         draft: Option<wasabi_domain::Draft>,
     ) -> Result<(), String>;
     async fn send(&self, request: SendRequest) -> Result<SendReceipt, ServiceError>;
+    async fn perform_message_action(&self, action: MessageAction) -> Result<(), ServiceError>;
 }
 
 /// Shared handle bundle handed to the UI.
@@ -432,6 +433,118 @@ impl CoreBridge {
         .await
     }
 
+    pub async fn perform_message_action(
+        &self,
+        action: MessageAction,
+    ) -> Result<(), ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let session = self
+            .session_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
+        self.run_on_core_service(async move {
+            let client = session.client().await.ok_or_else(|| {
+                ServiceError::new(ErrorKind::NotConnected, "no live protocol client")
+            })?;
+            let target = action.target();
+            let chat = target
+                .chat
+                .as_str()
+                .parse::<whatsapp_rust::Jid>()
+                .map_err(|error| {
+                    ServiceError::new(ErrorKind::InvalidRequest, error.to_string())
+                })?;
+            let participant = (!target.from_me && target.chat.as_str().ends_with("@g.us"))
+                .then(|| target.sender.parse::<whatsapp_rust::Jid>())
+                .transpose()
+                .map_err(|error| {
+                    ServiceError::new(ErrorKind::InvalidRequest, error.to_string())
+                })?;
+
+            match action {
+                MessageAction::Star { target, starred } => {
+                    let actions = client.chat_actions();
+                    let result = if starred {
+                        actions
+                            .star_message(
+                                &chat,
+                                participant.as_ref(),
+                                target.message.as_str(),
+                                target.from_me,
+                            )
+                            .await
+                    } else {
+                        actions
+                            .unstar_message(
+                                &chat,
+                                participant.as_ref(),
+                                target.message.as_str(),
+                                target.from_me,
+                            )
+                            .await
+                    };
+                    result.map_err(|error| {
+                        ServiceError::new(ErrorKind::Protocol, error.to_string())
+                    })?;
+                }
+                MessageAction::React { target, emoji } => {
+                    let key = whatsapp_rust::message_key(
+                        target.message.as_str(),
+                        &chat,
+                        target.from_me,
+                        participant.as_ref(),
+                    );
+                    client
+                        .send_reaction(chat, key, &emoji)
+                        .await
+                        .map_err(|error| {
+                            ServiceError::new(ErrorKind::Protocol, error.to_string())
+                        })?;
+                }
+                MessageAction::DeleteForMe {
+                    target,
+                    delete_media,
+                } => {
+                    client
+                        .chat_actions()
+                        .delete_message_for_me(
+                            &chat,
+                            participant.as_ref(),
+                            target.message.as_str(),
+                            target.from_me,
+                            delete_media,
+                            Some(target.timestamp_ms),
+                        )
+                        .await
+                        .map_err(|error| {
+                            ServiceError::new(ErrorKind::Protocol, error.to_string())
+                        })?;
+                }
+                MessageAction::RevokeForEveryone { target } => {
+                    if !target.from_me {
+                        return Err(ServiceError::new(
+                            ErrorKind::InvalidRequest,
+                            "admin revocation requires an explicit permission-checked action",
+                        ));
+                    }
+                    client
+                        .revoke_message(
+                            chat,
+                            target.message.as_str(),
+                            whatsapp_rust::RevokeType::Sender,
+                        )
+                        .await
+                        .map_err(|error| {
+                            ServiceError::new(ErrorKind::Protocol, error.to_string())
+                        })?;
+                }
+            }
+            Ok(())
+        })
+        .await
+    }
+
     // ---- Plumbing -----------------------------------------------------------
 
     fn store_snapshot(&self) -> Result<Arc<AccountStore>, String> {
@@ -597,5 +710,9 @@ impl DesktopBackend for CoreBridge {
 
     async fn send(&self, request: SendRequest) -> Result<SendReceipt, ServiceError> {
         CoreBridge::send(self, request).await
+    }
+
+    async fn perform_message_action(&self, action: MessageAction) -> Result<(), ServiceError> {
+        CoreBridge::perform_message_action(self, action).await
     }
 }

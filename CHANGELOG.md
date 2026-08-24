@@ -7,6 +7,7 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 ### Added
 
 - Per-chat text drafts with 400 ms durable saves, chat-bound generation guards, restoration on conversation switch, visible `Draft:` previews, and a final save before shutdown.
+- Immutable message-action commands for star, react, delete-for-me, and revoke-for-everyone, with a working optimistic star/unstar bubble action.
 - Additive account migrations for device-local chat preferences, contact/group metadata caches, participant caches, and durable transfer jobs; Favorites now persist separately from protocol pinning.
 - Typed direct-contact and group information projections, on-demand metadata loading with stale-result cancellation, and real group participant/admin rows when connected.
 - Debounced, generation-cancelled global message search backed by the account FTS index, shown alongside matching loaded chats.

@@ -4,6 +4,7 @@
 //! durable-shaped lives here; protocol types never cross this boundary
 //!.
 
+pub mod actions;
 pub mod conversation;
 pub mod error;
 pub mod ids;
@@ -13,6 +14,7 @@ pub mod preferences;
 pub mod search;
 pub mod send;
 
+pub use actions::{MessageAction, MessageActionTarget};
 pub use conversation::{
     AvatarRef, ChatKind, ConversationDetails, DirectContactDetails, GroupDetails, GroupPermissions,
     Participant, ParticipantRole,

@@ -205,17 +205,23 @@ fn timeline(
                 .child(err.clone())
                 .into_any_element()
         } else {
-            v_virtual_list(view, "timeline-list", item_sizes, |this, range, _, _| {
+            v_virtual_list(view, "timeline-list", item_sizes, |this, range, _, cx| {
                 this.first_visible = range.start;
                 this.near_bottom = range.end >= this.messages.items.len().saturating_sub(2);
-                range.map(|ix| timeline_row(this, ix)).collect::<Vec<_>>()
+                range
+                    .map(|ix| timeline_row(this, ix, cx))
+                    .collect::<Vec<_>>()
             })
             .track_scroll(&this.msg_scroll)
             .into_any_element()
         })
 }
 
-fn timeline_row(this: &mut MainWindow, ix: usize) -> gpui::AnyElement {
+fn timeline_row(
+    this: &mut MainWindow,
+    ix: usize,
+    cx: &mut Context<MainWindow>,
+) -> gpui::AnyElement {
     match this.messages.items.get(ix) {
         Some(TimelineItem::Date(label)) => gpui::div()
             .flex()
@@ -233,14 +239,19 @@ fn timeline_row(this: &mut MainWindow, ix: usize) -> gpui::AnyElement {
             )
             .into_any_element(),
         Some(TimelineItem::Message(row_ix)) => match this.messages.rows.get(*row_ix) {
-            Some(row) => bubble(row, this.settings.text_scale).into_any_element(),
+            Some(row) => bubble(row.clone(), *row_ix, this.settings.text_scale, cx).into_any_element(),
             None => gpui::div().into_any_element(),
         },
         None => gpui::div().into_any_element(),
     }
 }
 
-fn bubble(row: &wasabi_domain::MessageRow, text_scale: u16) -> gpui::Div {
+fn bubble(
+    row: wasabi_domain::MessageRow,
+    row_index: usize,
+    text_scale: u16,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Div {
     use wasabi_domain::{MessageDirection, MessageKind};
 
     let outgoing = row.direction == MessageDirection::Outgoing;
@@ -250,7 +261,7 @@ fn bubble(row: &wasabi_domain::MessageRow, text_scale: u16) -> gpui::Div {
             gpui::div()
                 .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
                 .text_color(theme::text_secondary())
-                .child(messages::body_text(row)),
+                .child(messages::body_text(&row)),
         );
     }
 
@@ -260,8 +271,8 @@ fn bubble(row: &wasabi_domain::MessageRow, text_scale: u16) -> gpui::Div {
         (theme::bubble_in(), theme::text_primary())
     };
 
-    let show_sender = messages::sender_is_group_member(row);
-    let sender_label = messages::sender_display(row);
+    let show_sender = messages::sender_is_group_member(&row);
+    let sender_label = messages::sender_display(&row);
     let sender_color = theme::sender_color(&sender_label);
 
     let meta_ticks = if outgoing {
@@ -296,7 +307,7 @@ fn bubble(row: &wasabi_domain::MessageRow, text_scale: u16) -> gpui::Div {
             gpui::div()
                 .text_size(px(theme::scaled_text(theme::TEXT_SIZE, text_scale)))
                 .text_color(text_color)
-                .child(messages::body_text(row)),
+                .child(messages::body_text(&row)),
         );
     }
     content = content.child(
@@ -306,8 +317,8 @@ fn bubble(row: &wasabi_domain::MessageRow, text_scale: u16) -> gpui::Div {
             .gap(px(4.0))
             .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
             .text_color(messages::status_color(row.status))
-            .when(row.starred, |el| el.child("★"))
-            .child(meta_ticks),
+            .child(meta_ticks)
+            .child(message_star_action(&row, row_index, cx)),
     );
 
     let alignment = if outgoing {
@@ -328,6 +339,32 @@ fn bubble(row: &wasabi_domain::MessageRow, text_scale: u16) -> gpui::Div {
             .bg(bubble_bg)
             .child(content),
     )
+}
+
+fn message_star_action(
+    row: &wasabi_domain::MessageRow,
+    row_index: usize,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Stateful<gpui::Div> {
+    let starred = row.starred;
+    let action = wasabi_domain::MessageAction::Star {
+        target: row.into(),
+        starred: !starred,
+    };
+    gpui::div()
+        .id(("star-message", row_index))
+        .ml(px(2.0))
+        .cursor_pointer()
+        .text_color(if starred {
+            theme::accent_text()
+        } else {
+            theme::text_secondary()
+        })
+        .hover(|style| style.text_color(theme::accent_text()))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.perform_message_action(action.clone(), cx)
+        }))
+        .child(if starred { "★" } else { "☆" })
 }
 
 /// Width is ignored by the vertical list; only heights matter.
