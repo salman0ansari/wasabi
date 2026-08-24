@@ -664,6 +664,73 @@ impl MainWindow {
         cx.notify();
     }
 
+    pub(crate) fn perform_chat_action(
+        &mut self,
+        action: wasabi_domain::ChatAction,
+        cx: &mut Context<Self>,
+    ) {
+        let chat_id = action.chat().as_str().to_string();
+        let Some(index) = self
+            .chats
+            .chats
+            .iter()
+            .position(|chat| chat.id.as_str() == chat_id)
+        else {
+            return;
+        };
+        let previous = {
+            let chat = &self.chats.chats[index];
+            (
+                chat.pinned_at_ms,
+                chat.muted_until_ms,
+                chat.archived,
+                chat.unread_count,
+            )
+        };
+        {
+            let chat = &mut self.chats.chats[index];
+            match &action {
+                wasabi_domain::ChatAction::Pin { pinned, .. } => {
+                    chat.pinned_at_ms = pinned.then(|| chrono::Utc::now().timestamp_millis());
+                }
+                wasabi_domain::ChatAction::Mute { muted, .. } => {
+                    chat.muted_until_ms = muted.then_some(i64::MAX);
+                }
+                wasabi_domain::ChatAction::Archive { archived, .. } => {
+                    chat.archived = *archived;
+                }
+                wasabi_domain::ChatAction::MarkRead { read, .. } => {
+                    chat.unread_count = if *read { 0 } else { -1 };
+                }
+            }
+        }
+        self.refresh_visible();
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.perform_chat_action(action).await;
+            this.update(cx, |this, cx| {
+                if let Err(error) = result {
+                    if let Some(chat) = this
+                        .chats
+                        .chats
+                        .iter_mut()
+                        .find(|chat| chat.id.as_str() == chat_id)
+                    {
+                        chat.pinned_at_ms = previous.0;
+                        chat.muted_until_ms = previous.1;
+                        chat.archived = previous.2;
+                        chat.unread_count = previous.3;
+                    }
+                    this.send_error = Some(error.ui_message().to_string());
+                    this.refresh_visible();
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
     pub(crate) fn select_settings_section(
         &mut self,
         section: SettingsSection,

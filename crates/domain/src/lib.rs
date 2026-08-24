@@ -14,7 +14,7 @@ pub mod preferences;
 pub mod search;
 pub mod send;
 
-pub use actions::{MessageAction, MessageActionTarget};
+pub use actions::{ChatAction, MessageAction, MessageActionTarget};
 pub use conversation::{
     AvatarRef, ChatKind, ConversationDetails, DirectContactDetails, GroupDetails, GroupPermissions,
     Participant, ParticipantRole,

@@ -18,9 +18,9 @@ use tokio_util::sync::CancellationToken;
 use wasabi_core::events::{Invalidation, InvalidationPublisher};
 use wasabi_core::state::SessionState;
 use wasabi_domain::{
-    ChatId, ChatPage, ChatScope, DirectContactDetails, ErrorKind, GroupDetails, GroupPermissions,
-    MessageAction, MessageId, MessagePage, PageCursor, Participant, ParticipantRole, SearchPage,
-    SendContent, SendReceipt, SendRequest, ServiceError,
+    ChatAction, ChatId, ChatPage, ChatScope, DirectContactDetails, ErrorKind, GroupDetails,
+    GroupPermissions, MessageAction, MessageId, MessagePage, PageCursor, Participant,
+    ParticipantRole, SearchPage, SendContent, SendReceipt, SendRequest, ServiceError,
 };
 use wasabi_repository::AccountStore;
 use wasabi_whatsapp::lifecycle::QrState;
@@ -70,6 +70,7 @@ pub trait DesktopBackend: Send + Sync {
     ) -> Result<(), String>;
     async fn send(&self, request: SendRequest) -> Result<SendReceipt, ServiceError>;
     async fn perform_message_action(&self, action: MessageAction) -> Result<(), ServiceError>;
+    async fn perform_chat_action(&self, action: ChatAction) -> Result<(), ServiceError>;
 }
 
 /// Shared handle bundle handed to the UI.
@@ -545,6 +546,56 @@ impl CoreBridge {
         .await
     }
 
+    pub async fn perform_chat_action(&self, action: ChatAction) -> Result<(), ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let session = self
+            .session_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
+        self.run_on_core_service(async move {
+            let client = session.client().await.ok_or_else(|| {
+                ServiceError::new(ErrorKind::NotConnected, "no live protocol client")
+            })?;
+            let chat = action
+                .chat()
+                .as_str()
+                .parse::<whatsapp_rust::Jid>()
+                .map_err(|error| {
+                    ServiceError::new(ErrorKind::InvalidRequest, error.to_string())
+                })?;
+            let actions = client.chat_actions();
+            let result = match action {
+                ChatAction::Pin { pinned, .. } => {
+                    if pinned {
+                        actions.pin_chat(&chat).await
+                    } else {
+                        actions.unpin_chat(&chat).await
+                    }
+                }
+                ChatAction::Mute { muted, .. } => {
+                    if muted {
+                        actions.mute_chat(&chat).await
+                    } else {
+                        actions.unmute_chat(&chat).await
+                    }
+                }
+                ChatAction::Archive { archived, .. } => {
+                    if archived {
+                        actions.archive_chat(&chat, None).await
+                    } else {
+                        actions.unarchive_chat(&chat, None).await
+                    }
+                }
+                ChatAction::MarkRead { read, .. } => {
+                    actions.mark_chat_as_read(&chat, read, None).await
+                }
+            };
+            result.map_err(|error| ServiceError::new(ErrorKind::Protocol, error.to_string()))
+        })
+        .await
+    }
+
     // ---- Plumbing -----------------------------------------------------------
 
     fn store_snapshot(&self) -> Result<Arc<AccountStore>, String> {
@@ -714,5 +765,9 @@ impl DesktopBackend for CoreBridge {
 
     async fn perform_message_action(&self, action: MessageAction) -> Result<(), ServiceError> {
         CoreBridge::perform_message_action(self, action).await
+    }
+
+    async fn perform_chat_action(&self, action: ChatAction) -> Result<(), ServiceError> {
+        CoreBridge::perform_chat_action(self, action).await
     }
 }

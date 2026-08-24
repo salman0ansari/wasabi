@@ -46,6 +46,25 @@ pub enum MessageAction {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChatAction {
+    Pin { chat: ChatId, pinned: bool },
+    Mute { chat: ChatId, muted: bool },
+    Archive { chat: ChatId, archived: bool },
+    MarkRead { chat: ChatId, read: bool },
+}
+
+impl ChatAction {
+    pub fn chat(&self) -> &ChatId {
+        match self {
+            Self::Pin { chat, .. }
+            | Self::Mute { chat, .. }
+            | Self::Archive { chat, .. }
+            | Self::MarkRead { chat, .. } => chat,
+        }
+    }
+}
+
 impl MessageAction {
     pub fn target(&self) -> &MessageActionTarget {
         match self {
@@ -89,5 +108,14 @@ mod tests {
 
         assert_eq!(action.target().chat.as_str(), "chat-a@s.whatsapp.net");
         assert_eq!(action.target().message.as_str(), "message-a");
+    }
+
+    #[test]
+    fn chat_action_captures_destination() {
+        let action = ChatAction::Mute {
+            chat: ChatId::new("chat-a@s.whatsapp.net"),
+            muted: true,
+        };
+        assert_eq!(action.chat().as_str(), "chat-a@s.whatsapp.net");
     }
 }

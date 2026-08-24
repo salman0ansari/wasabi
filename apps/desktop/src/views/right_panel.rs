@@ -140,6 +140,8 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
         .child(action_row("Media, links and documents", "No cached media"))
         .child(action_row("Starred messages", "None cached"))
         .child(action_row("Notifications", "Default"))
+        .child(chat_sync_action(this, cx, ChatSyncAction::Pin))
+        .child(chat_sync_action(this, cx, ChatSyncAction::Mute))
         .child(favorite_action(this, cx))
         .child(action_row("Disappearing messages", "Off"))
         .child(action_row("Encryption", "End-to-end encrypted"));
@@ -249,6 +251,87 @@ fn favorite_action(
                     theme::text_secondary()
                 })
                 .child(if favorite { "On this device" } else { "Off" }),
+        )
+}
+
+#[derive(Clone, Copy)]
+enum ChatSyncAction {
+    Pin,
+    Mute,
+}
+
+fn chat_sync_action(
+    this: &mut MainWindow,
+    cx: &mut Context<MainWindow>,
+    kind: ChatSyncAction,
+) -> gpui::Stateful<gpui::Div> {
+    let selected = this.chats.selected.clone().unwrap_or_default();
+    let summary = this
+        .chats
+        .chats
+        .iter()
+        .find(|chat| chat.id.as_str() == selected);
+    let (label, enabled, action) = match kind {
+        ChatSyncAction::Pin => {
+            let enabled = summary.is_some_and(|chat| chat.pinned_at_ms.is_some());
+            (
+                "Pin chat",
+                enabled,
+                wasabi_domain::ChatAction::Pin {
+                    chat: wasabi_domain::ChatId::new(selected),
+                    pinned: !enabled,
+                },
+            )
+        }
+        ChatSyncAction::Mute => {
+            let now = chrono::Utc::now().timestamp_millis();
+            let enabled = summary.is_some_and(|chat| {
+                chat.muted_until_ms.is_some_and(|until| until == 0 || until > now)
+            });
+            (
+                "Mute notifications",
+                enabled,
+                wasabi_domain::ChatAction::Mute {
+                    chat: wasabi_domain::ChatId::new(selected),
+                    muted: !enabled,
+                },
+            )
+        }
+    };
+    gpui::div()
+        .id(match kind {
+            ChatSyncAction::Pin => "toggle-pin",
+            ChatSyncAction::Mute => "toggle-mute",
+        })
+        .mx(px(16.0))
+        .min_h(px(52.0))
+        .py(px(10.0))
+        .flex()
+        .items_center()
+        .gap(px(12.0))
+        .cursor_pointer()
+        .border_t_1()
+        .border_color(theme::border())
+        .hover(|style| style.bg(theme::row_hover()))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.perform_chat_action(action.clone(), cx)
+        }))
+        .child(
+            gpui::div()
+                .flex_1()
+                .text_size(px(theme::TEXT_SIZE))
+                .text_color(theme::text_primary())
+                .child(label),
+        )
+        .child(
+            gpui::div()
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .text_color(if enabled {
+                    theme::accent_text()
+                } else {
+                    theme::text_secondary()
+                })
+                .child(if enabled { "On" } else { "Off" }),
         )
 }
 
