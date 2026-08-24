@@ -1,7 +1,7 @@
 # Build artifacts
 /target/
 apps/desktop/target/
-third_party/target/
+benchmarks/*/target/
 
 # Cargo lockfiles: root + nested workspaces commit theirs.
 # (Cargo.lock files are tracked; do not ignore them.)
