@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{TimeZone, Utc};
+use diesel::prelude::*;
 use wacore::proto_helpers::MessageBuilderExt;
 use wacore::types::events::{BatchOrigin, Event, InboundMessage, MessageBatch};
 use wacore::types::message::{MessageInfo, MessageSource};
@@ -70,6 +71,100 @@ async fn open_empty_db_yields_empty_pages() {
     let page = store.message_page(PEER1, None, 10).await.unwrap();
     assert!(page.rows.is_empty());
     assert!(page.next_before.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn contact_pages_are_stable_searchable_and_direct_only() {
+    let dir = TestDir::new("contact-pagination");
+    let store = open(&dir).await;
+    store.sqlite().create_new_device().await.unwrap();
+    let device_id = store.device_id();
+    store
+        .shared_db()
+        .run(move |connection| {
+            let contacts: [(&str, Option<&str>, Option<&str>, Option<&str>, Option<&str>); 6] = [
+                ("3@s.whatsapp.net", Some("Charlie"), None, None, None),
+                ("1@s.whatsapp.net", None, None, Some("alice"), None),
+                ("2@s.whatsapp.net", Some("Bob"), None, None, None),
+                (
+                    "4@s.whatsapp.net",
+                    Some("Percent% Person"),
+                    None,
+                    None,
+                    None,
+                ),
+                ("not-a-contact@g.us", Some("Not a person"), None, None, None),
+                ("222@lid", Some("Bob"), None, None, None),
+            ];
+            for (jid, push, full, first, business) in contacts {
+                diesel::sql_query(
+                    "INSERT INTO contacts
+                     (device_id, jid, push_name, full_name, first_name, business_name)
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                )
+                .bind::<diesel::sql_types::Integer, _>(device_id)
+                .bind::<diesel::sql_types::Text, _>(jid)
+                .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(push)
+                .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(full)
+                .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(first)
+                .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(business)
+                .execute(connection)
+                .map_err(|error| wacore::store::error::StoreError::Database(Box::new(error)))?;
+            }
+            diesel::sql_query(
+                "INSERT INTO lid_pn_mapping
+                 (lid, phone_number, created_at, learning_source, updated_at, device_id)
+                 VALUES ('222', '2', 1, 'test', 1, ?)",
+            )
+            .bind::<diesel::sql_types::Integer, _>(device_id)
+            .execute(connection)
+            .map_err(|error| wacore::store::error::StoreError::Database(Box::new(error)))?;
+            diesel::sql_query(
+                "INSERT INTO wasabi_contact_cache
+                 (device_id, jid, display_name, about, avatar_ref, fetched_at_ms)
+                 VALUES (?, '2@s.whatsapp.net', NULL, NULL, 'avatar-bob', 1)",
+            )
+            .bind::<diesel::sql_types::Integer, _>(device_id)
+            .execute(connection)
+            .map_err(|error| wacore::store::error::StoreError::Database(Box::new(error)))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let first = store.contact_page(String::new(), None, 2).await.unwrap();
+    assert_eq!(
+        first
+            .rows
+            .iter()
+            .map(|row| row.display_name.as_str())
+            .collect::<Vec<_>>(),
+        ["alice", "Bob"]
+    );
+    assert_eq!(
+        first.rows[1]
+            .avatar
+            .as_ref()
+            .map(|avatar| avatar.0.as_str()),
+        Some("avatar-bob")
+    );
+    let second = store
+        .contact_page(String::new(), first.next_after, 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        second
+            .rows
+            .iter()
+            .map(|row| row.display_name.as_str())
+            .collect::<Vec<_>>(),
+        ["Charlie", "Percent% Person"]
+    );
+    assert!(second.next_after.is_none());
+
+    let literal = store.contact_page("%".to_string(), None, 20).await.unwrap();
+    assert_eq!(literal.rows.len(), 1, "percent must be searched literally");
+    assert_eq!(literal.rows[0].display_name, "Percent% Person");
 }
 
 #[tokio::test(flavor = "multi_thread")]

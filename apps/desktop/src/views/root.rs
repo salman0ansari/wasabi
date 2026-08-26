@@ -22,7 +22,7 @@ use crate::core_bridge::DesktopBackend;
 use crate::state::chats::ChatFilter;
 use crate::state::{ChatListModel, DeviceSettings, MessageWindowModel, SessionMirror, SettingsSection};
 use crate::theme;
-use crate::views::{chat_list, composer, conversation, pairing, right_panel, settings};
+use crate::views::{chat_list, composer, conversation, new_chat, pairing, right_panel, settings};
 use wasabi_domain::{ChatKind, ChatScope, ConversationDetails};
 
 gpui::actions!(wasabi_desktop, [FocusSearch, OpenSettings, CloseInfo]);
@@ -31,6 +31,8 @@ pub const MAIN_KEY_CONTEXT: &str = "Main";
 const CHAT_PAGE_LIMIT: usize = 100;
 const MESSAGE_PAGE_LIMIT: usize = 60;
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
+const CONTACT_SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(200);
+const CONTACT_PAGE_LIMIT: usize = 100;
 const DRAFT_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
 const TYPING_PAUSE_AFTER: std::time::Duration = std::time::Duration::from_secs(3);
 const TYPING_REFRESH_AFTER: std::time::Duration = std::time::Duration::from_secs(4);
@@ -147,8 +149,14 @@ pub struct MainWindow {
     pub(crate) retrying_messages: HashSet<(String, String)>,
     pub(crate) editing_messages: HashSet<(String, String)>,
     pub(crate) destructive_chats: HashSet<String>,
+    pub(crate) new_chat_open: bool,
+    pub(crate) contacts: Vec<wasabi_domain::ContactSummary>,
+    pub(crate) contacts_next: Option<wasabi_domain::ContactPageCursor>,
+    pub(crate) contacts_loading: bool,
+    pub(crate) contacts_error: Option<String>,
     pub(crate) composer_input: gpui::Entity<InputState>,
     pub(crate) search_input: gpui::Entity<InputState>,
+    pub(crate) contact_search_input: gpui::Entity<InputState>,
     pub(crate) phone_pair_input: gpui::Entity<InputState>,
     pub(crate) chat_scroll: VirtualListScrollHandle,
     pub(crate) msg_scroll: ListState,
@@ -168,6 +176,7 @@ pub struct MainWindow {
     outbound_typing_sent_at: HashMap<String, std::time::Instant>,
     chats_gen: AtomicU64,
     search_gen: AtomicU64,
+    contacts_gen: AtomicU64,
     messages_gen: AtomicU64,
     details_gen: AtomicU64,
     qr_ticker_gen: AtomicU64,
@@ -221,6 +230,8 @@ impl MainWindow {
         let composer_input = composer::build_input(window, cx);
         let search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search or start new chat"));
+        let contact_search_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search contacts"));
         let phone_pair_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Country code and phone number")
         });
@@ -255,8 +266,14 @@ impl MainWindow {
             retrying_messages: HashSet::new(),
             editing_messages: HashSet::new(),
             destructive_chats: HashSet::new(),
+            new_chat_open: false,
+            contacts: Vec::new(),
+            contacts_next: None,
+            contacts_loading: false,
+            contacts_error: None,
             composer_input,
             search_input,
+            contact_search_input,
             phone_pair_input,
             chat_scroll: VirtualListScrollHandle::new(),
             msg_scroll: ListState::new(0, ListAlignment::Bottom, px(800.0)),
@@ -276,6 +293,7 @@ impl MainWindow {
             outbound_typing_sent_at: HashMap::new(),
             chats_gen: AtomicU64::new(0),
             search_gen: AtomicU64::new(0),
+            contacts_gen: AtomicU64::new(0),
             messages_gen: AtomicU64::new(0),
             details_gen: AtomicU64::new(0),
             qr_ticker_gen: AtomicU64::new(0),
@@ -315,6 +333,15 @@ impl MainWindow {
             }
         });
         this.subscriptions.push(on_search_change);
+
+        let on_contact_search_change = cx.subscribe_in(&this.contact_search_input, window, {
+            move |this, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) && this.new_chat_open {
+                    this.queue_contact_search(cx);
+                }
+            }
+        });
+        this.subscriptions.push(on_contact_search_change);
 
         let on_composer_change = cx.subscribe_in(&this.composer_input, window, {
             move |this, _, event: &InputEvent, window, cx| {
@@ -529,6 +556,25 @@ impl MainWindow {
                 }
             }));
         }
+        if mode == "new-chat" {
+            self.new_chat_open = true;
+            self.contacts = [
+                ("Amara Okafor", "15550000001@s.whatsapp.net"),
+                ("Avery Chen", "15550000002@s.whatsapp.net"),
+                ("Diego Morales", "15550000003@s.whatsapp.net"),
+                ("Fatima Zahra", "15550000004@s.whatsapp.net"),
+                ("Priya Sharma", "15550000005@s.whatsapp.net"),
+                ("佐藤 美咲", "15550000006@s.whatsapp.net"),
+            ]
+            .into_iter()
+            .map(|(display_name, jid)| wasabi_domain::ContactSummary {
+                jid: wasabi_domain::ChatId::new(jid),
+                display_name: display_name.to_string(),
+                phone_number: jid.split('@').next().map(str::to_string),
+                avatar: None,
+            })
+            .collect();
+        }
         if matches!(mode, "settings" | "settings-dark" | "account") {
             self.nav_destination = NavDestination::Settings;
             self.settings_section = if mode == "account" {
@@ -541,6 +587,143 @@ impl MainWindow {
     }
 
     // ---- User intents ------------------------------------------------------
+
+    pub(crate) fn open_new_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_chat_open = true;
+        self.contacts.clear();
+        self.contacts_next = None;
+        self.contacts_error = None;
+        self.contact_search_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.load_contact_query(false, cx);
+        self.contact_search_input
+            .update(cx, |input, cx| input.focus(window, cx));
+        cx.notify();
+    }
+
+    pub(crate) fn close_new_chat(&mut self, cx: &mut Context<Self>) {
+        if self.new_chat_open {
+            self.new_chat_open = false;
+            self.contacts_gen.fetch_add(1, Ordering::AcqRel);
+            self.contacts_loading = false;
+            cx.notify();
+        }
+    }
+
+    fn queue_contact_search(&mut self, cx: &mut Context<Self>) {
+        self.load_contact_query(true, cx);
+    }
+
+    fn load_contact_query(&mut self, debounce: bool, cx: &mut Context<Self>) {
+        let generation = self.contacts_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        let query = self.contact_search_input.read(cx).value().to_string();
+        self.contacts.clear();
+        self.contacts_next = None;
+        self.contacts_error = None;
+        self.contacts_loading = true;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            if debounce {
+                cx.background_executor().timer(CONTACT_SEARCH_DEBOUNCE).await;
+            }
+            let current = this
+                .update(cx, |this, _| {
+                    this.new_chat_open
+                        && this.contacts_gen.load(Ordering::Acquire) == generation
+                })
+                .unwrap_or(false);
+            if !current {
+                return;
+            }
+            let result = bridge.contact_page(query, None, CONTACT_PAGE_LIMIT).await;
+            this.update(cx, |this, cx| {
+                if !this.new_chat_open
+                    || this.contacts_gen.load(Ordering::Acquire) != generation
+                {
+                    return;
+                }
+                this.contacts_loading = false;
+                match result {
+                    Ok(page) => {
+                        this.contacts = page.rows;
+                        this.contacts_next = page.next_after;
+                    }
+                    Err(error) => this.contacts_error = Some(error),
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn load_more_contacts(&mut self, cx: &mut Context<Self>) {
+        let Some(after) = self.contacts_next.clone() else {
+            return;
+        };
+        if self.contacts_loading || !self.new_chat_open {
+            return;
+        }
+        let generation = self.contacts_gen.load(Ordering::Acquire);
+        let query = self.contact_search_input.read(cx).value().to_string();
+        self.contacts_loading = true;
+        self.contacts_error = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge
+                .contact_page(query, Some(after), CONTACT_PAGE_LIMIT)
+                .await;
+            this.update(cx, |this, cx| {
+                if !this.new_chat_open
+                    || this.contacts_gen.load(Ordering::Acquire) != generation
+                {
+                    return;
+                }
+                this.contacts_loading = false;
+                match result {
+                    Ok(page) => {
+                        for contact in page.rows {
+                            if !this.contacts.iter().any(|row| row.jid == contact.jid) {
+                                this.contacts.push(contact);
+                            }
+                        }
+                        this.contacts_next = page.next_after;
+                    }
+                    Err(error) => this.contacts_error = Some(error),
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn start_contact_chat(
+        &mut self,
+        contact: wasabi_domain::ContactSummary,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let chat_id = contact.jid.as_str().to_string();
+        if self.chats.scope != wasabi_domain::ChatScope::Active {
+            self.switch_chat_scope(wasabi_domain::ChatScope::Active, cx);
+        } else {
+            self.chats.filter = ChatFilter::All;
+        }
+        self.new_chat_open = false;
+        self.contacts_gen.fetch_add(1, Ordering::AcqRel);
+        self.open_chat(chat_id, None, window, cx);
+        self.conversation_details = Some(wasabi_domain::ConversationDetails::Direct(
+            wasabi_domain::DirectContactDetails {
+                jid: contact.jid.as_str().to_string(),
+                display_name: contact.display_name,
+                phone_number: contact.phone_number,
+                about: None,
+                avatar: contact.avatar,
+            },
+        ));
+        cx.notify();
+    }
 
     pub(crate) fn set_chat_filter(&mut self, filter: ChatFilter, cx: &mut Context<Self>) {
         self.chats.filter = filter;
@@ -643,6 +826,8 @@ impl MainWindow {
     }
 
     fn select_nav(&mut self, destination: NavDestination, cx: &mut Context<Self>) {
+        self.new_chat_open = false;
+        self.contacts_gen.fetch_add(1, Ordering::AcqRel);
         self.nav_destination = destination;
         if let Some(filter) = destination.chat_filter() {
             self.set_chat_filter(filter, cx);
@@ -1848,7 +2033,9 @@ impl MainWindow {
     }
 
     pub(crate) fn dismiss_overlay_or_drawer(&mut self, cx: &mut Context<Self>) {
-        if self.settings_overlay.take().is_some() || self.message_overlay.take().is_some() {
+        if self.new_chat_open {
+            self.close_new_chat(cx);
+        } else if self.settings_overlay.take().is_some() || self.message_overlay.take().is_some() {
             cx.notify();
         } else {
             self.close_right_panel(cx);
@@ -2249,6 +2436,12 @@ impl MainWindow {
                         this.editing_messages.clear();
                         this.retrying_messages.clear();
                         this.destructive_chats.clear();
+                        this.new_chat_open = false;
+                        this.contacts.clear();
+                        this.contacts_next = None;
+                        this.contacts_loading = false;
+                        this.contacts_error = None;
+                        this.contacts_gen.fetch_add(1, Ordering::AcqRel);
                         this.typing.clear();
                         this.notification_seen.clear();
                         this.notification_seen_order.clear();
@@ -2550,7 +2743,13 @@ impl MainWindow {
                 handle.update(cx, |this, cx| {
                     use wasabi_core::events::Invalidation;
                     match invalidation {
-                        Invalidation::Chats | Invalidation::Contacts => this.refresh_chats(cx),
+                        Invalidation::Chats => this.refresh_chats(cx),
+                        Invalidation::Contacts => {
+                            this.refresh_chats(cx);
+                            if this.new_chat_open {
+                                this.load_contact_query(false, cx);
+                            }
+                        }
                         Invalidation::Messages { chat } => {
                             if this.chats.selected.as_deref() == Some(chat.as_str()) {
                                 this.refresh_current_messages(cx);
@@ -2813,9 +3012,10 @@ impl Render for MainWindow {
             return pairing_gate(self, cx);
         }
 
-        div()
+        let mut root = div()
             .id("root")
             .size_full()
+            .relative()
             .flex()
             .bg(theme::canvas())
             .text_color(theme::text_primary())
@@ -2832,8 +3032,11 @@ impl Render for MainWindow {
             .on_action(cx.listener(|this, _: &CloseInfo, _, cx| {
                 this.dismiss_overlay_or_drawer(cx);
             }))
-            .child(main_content(self, window, cx, pairing_active))
-            .into_any_element()
+            .child(main_content(self, window, cx, pairing_active));
+        if self.new_chat_open {
+            root = root.child(new_chat::overlay(self, cx));
+        }
+        root.into_any_element()
     }
 }
 

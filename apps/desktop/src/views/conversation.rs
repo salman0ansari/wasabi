@@ -91,12 +91,34 @@ fn header(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
                 theme::sender_color(&name),
             )
         }
-        None => (
-            "Conversation".to_string(),
-            String::new(),
-            "#".to_string(),
-            theme::skeleton(),
-        ),
+        None => match this.conversation_details.as_ref() {
+            Some(wasabi_domain::ConversationDetails::Direct(contact)) => {
+                let initials = contact
+                    .display_name
+                    .chars()
+                    .next()
+                    .unwrap_or('#')
+                    .to_uppercase()
+                    .to_string();
+                let subtitle = contact
+                    .phone_number
+                    .as_ref()
+                    .map(|number| format!("+{number}"))
+                    .unwrap_or_else(|| "Contact".to_string());
+                (
+                    contact.display_name.clone(),
+                    subtitle,
+                    initials,
+                    theme::sender_color(&contact.display_name),
+                )
+            }
+            _ => (
+                "Conversation".to_string(),
+                String::new(),
+                "#".to_string(),
+                theme::skeleton(),
+            ),
+        },
     };
 
     let panel_open = this.show_right_panel;

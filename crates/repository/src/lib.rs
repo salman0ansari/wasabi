@@ -3,6 +3,7 @@
 //! leak past this crate.
 
 pub mod config;
+mod contacts;
 pub mod preferences;
 pub mod search;
 pub mod store;

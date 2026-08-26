@@ -19,11 +19,11 @@ use tokio_util::sync::CancellationToken;
 use wasabi_core::events::{Invalidation, InvalidationPublisher};
 use wasabi_core::state::SessionState;
 use wasabi_domain::{
-    CachedMedia, ChatAction, ChatId, ChatPage, ChatScope, DirectContactDetails, ErrorKind,
-    GroupDetails, GroupPermissions, MediaDownloadRequest, MessageAction, MessageContext, MessageId,
-    MessagePage, NotificationCandidate, PageCursor, PairingPhoneNumber, Participant,
-    ParticipantRole, PhonePairCode, SearchPage, SendContent, SendReceipt, SendRequest, ServiceError,
-    StagedAttachment, TransferId, TransferJob,
+    CachedMedia, ChatAction, ChatId, ChatPage, ChatScope, ContactPage, ContactPageCursor,
+    DirectContactDetails, ErrorKind, GroupDetails, GroupPermissions, MediaDownloadRequest,
+    MessageAction, MessageContext, MessageId, MessagePage, NotificationCandidate, PageCursor,
+    PairingPhoneNumber, Participant, ParticipantRole, PhonePairCode, SearchPage, SendContent,
+    SendReceipt, SendRequest, ServiceError, StagedAttachment, TransferId, TransferJob,
 };
 use wasabi_repository::AccountStore;
 use whatsapp_rust::wacore::proto_helpers::MessageBuilderExt;
@@ -64,6 +64,12 @@ pub trait DesktopBackend: Send + Sync {
         after: Option<wasabi_domain::ChatPageCursor>,
         limit: usize,
     ) -> Result<ChatPage, String>;
+    async fn contact_page(
+        &self,
+        query: String,
+        after: Option<ContactPageCursor>,
+        limit: usize,
+    ) -> Result<ContactPage, String>;
     async fn load_message_page(
         &self,
         chat: &str,
@@ -394,6 +400,22 @@ impl CoreBridge {
         self.run_on_core(async move {
             store
                 .message_page(&chat, before, limit)
+                .await
+                .map_err(service_message)
+        })
+        .await
+    }
+
+    pub async fn contact_page(
+        &self,
+        query: String,
+        after: Option<ContactPageCursor>,
+        limit: usize,
+    ) -> Result<ContactPage, String> {
+        let store = self.store_snapshot()?;
+        self.run_on_core(async move {
+            store
+                .contact_page(query, after, limit)
                 .await
                 .map_err(service_message)
         })
@@ -1666,6 +1688,15 @@ impl DesktopBackend for CoreBridge {
         limit: usize,
     ) -> Result<MessagePage, String> {
         CoreBridge::load_message_page(self, chat, before, limit).await
+    }
+
+    async fn contact_page(
+        &self,
+        query: String,
+        after: Option<ContactPageCursor>,
+        limit: usize,
+    ) -> Result<ContactPage, String> {
+        CoreBridge::contact_page(self, query, after, limit).await
     }
 
     async fn load_message_context(

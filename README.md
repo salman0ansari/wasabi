@@ -63,6 +63,13 @@ inserts a newline.
 
 ![Wasabi multiline composer](docs/screenshots/multiline-composer.png)
 
+New Chat searches the linked account's durable contact cache with cancellable,
+keyset-paginated queries. It remains useful offline, filters out non-contact
+identities, and opens an honest empty conversation without inventing a chat
+timestamp before the first message is stored.
+
+![Wasabi New Chat contact picker](docs/screenshots/new-chat-contacts.png)
+
 ### Attachments
 
 Selected files are copied into restart-safe Wasabi staging before upload. The composer shows the real filename, media class, and size without exposing local paths.
@@ -114,6 +121,7 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 - Link an account using a rotating QR code or a short-lived phone-number code.
 - Reopen cached chats immediately while reconnecting in the background.
 - Browse cursor-paginated active chats using All, Unread, device-local Favorites, and Groups filters, with a separate Archived destination.
+- Search the cached address book from New Chat, page through deterministic name ordering, and open existing contacts while offline.
 - Search loaded chats and the complete local message FTS index with cancellable, paginated results that open the exact message in context.
 - Read paginated message history and send text, image, video, audio, and document messages with optional supported captions.
 - Read actually measured multiline and multilingual bubbles that reflow across supported window sizes and text scaling without overlap.

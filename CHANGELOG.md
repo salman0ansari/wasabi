@@ -6,6 +6,13 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 
 ### Added
 
+- New Chat now searches real cached direct contacts through a typed,
+  repository-owned keyset query with deterministic name/JID ordering, PN/LID
+  alias merging, literal wildcard handling, cached avatars, bounded pages,
+  debounced generation cancellation, offline/empty/error states, and contact
+  invalidation refresh.
+  Selecting a contact opens a real empty conversation without fabricating a
+  chat row or timestamp; the modal scrim prevents click-through.
 - Conversation information now exposes synchronized archive/unarchive and
   mark-read/unread controls alongside pin and mute. Clear and delete use
   separate immutable protocol commands, exact-chat cancel-first dialogs,

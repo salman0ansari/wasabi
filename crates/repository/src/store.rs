@@ -464,6 +464,15 @@ impl AccountStore {
         })
     }
 
+    pub async fn contact_page(
+        &self,
+        query: String,
+        after: Option<domain::ContactPageCursor>,
+        limit: usize,
+    ) -> Result<domain::ContactPage, domain::ServiceError> {
+        crate::contacts::page(self.shared_db(), self.device_id(), query, after, limit).await
+    }
+
     pub async fn chat_preference(
         &self,
         chat: domain::ChatId,

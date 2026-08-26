@@ -5,6 +5,7 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{Context, Window, px, size};
 use gpui_component::v_virtual_list;
+use gpui_component::tooltip::Tooltip;
 use gpui_component::{Icon, IconName};
 
 use crate::state::chats::{self, ChatFilter};
@@ -12,7 +13,7 @@ use crate::state::messages;
 use crate::theme;
 use crate::views::root::MainWindow;
 
-pub fn pane_header(_this: &mut MainWindow, _cx: &mut Context<MainWindow>) -> gpui::Div {
+pub fn pane_header(_this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
     gpui::div()
         .h(px(58.0))
         .flex_shrink_0()
@@ -26,6 +27,21 @@ pub fn pane_header(_this: &mut MainWindow, _cx: &mut Context<MainWindow>) -> gpu
                 .font_weight(gpui::FontWeight::BOLD)
                 .text_color(theme::text_primary())
                 .child("Wasabi"),
+        )
+        .child(
+            gpui::div()
+                .id("open-new-chat")
+                .size(px(34.0))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .aria_label("New chat")
+                .tooltip(|window, cx| Tooltip::new("New chat").build(window, cx))
+                .hover(|button| button.bg(theme::row_hover()))
+                .on_click(cx.listener(|this, _, window, cx| this.open_new_chat(window, cx)))
+                .child(Icon::new(IconName::Plus).size(px(18.0))),
         )
 }
 
