@@ -11,7 +11,9 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
   input/result diagnostics, persists upstream PN/LID resolution, distinguishes
   offline, timeout, rate-limit, rejection, and not-registered outcomes, and
   drops stale results after query, modal, navigation, logout, or connection
-  changes without inserting synthetic contacts or chat timestamps.
+  changes without inserting synthetic contacts or chat timestamps. Formatted
+  numbers are canonicalized for the local cache first, avoiding redundant live
+  checks for already-saved contacts.
 - New Chat now searches real cached direct contacts through a typed,
   repository-owned keyset query with deterministic name/JID ordering, PN/LID
   alias merging, literal wildcard handling, cached avatars, bounded pages,
