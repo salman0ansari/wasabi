@@ -70,6 +70,13 @@ timestamp before the first message is stored.
 
 ![Wasabi New Chat contact picker](docs/screenshots/new-chat-contacts.png)
 
+An international number that is not already cached can be checked against the
+live linked account. Wasabi exposes Start chat only after a positive server
+result, handles disconnects and rate limits explicitly, and never adds an
+unregistered number to the contact list.
+
+![Wasabi verified phone-number lookup](docs/screenshots/new-chat-phone-lookup.png)
+
 ### Attachments
 
 Selected files are copied into restart-safe Wasabi staging before upload. The composer shows the real filename, media class, and size without exposing local paths.
@@ -121,7 +128,7 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 - Link an account using a rotating QR code or a short-lived phone-number code.
 - Reopen cached chats immediately while reconnecting in the background.
 - Browse cursor-paginated active chats using All, Unread, device-local Favorites, and Groups filters, with a separate Archived destination.
-- Search the cached address book from New Chat, page through deterministic name ordering, and open existing contacts while offline.
+- Search the cached address book from New Chat, page through deterministic name ordering, open existing contacts while offline, and verify an international number before starting an unknown-number chat.
 - Search loaded chats and the complete local message FTS index with cancellable, paginated results that open the exact message in context.
 - Read paginated message history and send text, image, video, audio, and document messages with optional supported captions.
 - Read actually measured multiline and multilingual bubbles that reflow across supported window sizes and text scaling without overlap.

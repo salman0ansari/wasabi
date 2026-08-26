@@ -73,6 +73,15 @@ pub(crate) enum MediaDownloadUi {
 }
 
 #[derive(Clone)]
+pub(crate) enum PhoneLookupUi {
+    Idle,
+    Checking,
+    Registered(wasabi_domain::ContactSummary),
+    NotRegistered,
+    Failed(String),
+}
+
+#[derive(Clone)]
 pub(crate) struct TypingDisplay {
     pub state: wasabi_domain::TypingState,
     pub participant: Option<String>,
@@ -154,6 +163,7 @@ pub struct MainWindow {
     pub(crate) contacts_next: Option<wasabi_domain::ContactPageCursor>,
     pub(crate) contacts_loading: bool,
     pub(crate) contacts_error: Option<String>,
+    pub(crate) phone_lookup: PhoneLookupUi,
     pub(crate) composer_input: gpui::Entity<InputState>,
     pub(crate) search_input: gpui::Entity<InputState>,
     pub(crate) contact_search_input: gpui::Entity<InputState>,
@@ -177,6 +187,7 @@ pub struct MainWindow {
     chats_gen: AtomicU64,
     search_gen: AtomicU64,
     contacts_gen: AtomicU64,
+    phone_lookup_gen: AtomicU64,
     messages_gen: AtomicU64,
     details_gen: AtomicU64,
     qr_ticker_gen: AtomicU64,
@@ -271,6 +282,7 @@ impl MainWindow {
             contacts_next: None,
             contacts_loading: false,
             contacts_error: None,
+            phone_lookup: PhoneLookupUi::Idle,
             composer_input,
             search_input,
             contact_search_input,
@@ -294,6 +306,7 @@ impl MainWindow {
             chats_gen: AtomicU64::new(0),
             search_gen: AtomicU64::new(0),
             contacts_gen: AtomicU64::new(0),
+            phone_lookup_gen: AtomicU64::new(0),
             messages_gen: AtomicU64::new(0),
             details_gen: AtomicU64::new(0),
             qr_ticker_gen: AtomicU64::new(0),
@@ -556,7 +569,7 @@ impl MainWindow {
                 }
             }));
         }
-        if mode == "new-chat" {
+        if matches!(mode, "new-chat" | "new-chat-phone") {
             self.new_chat_open = true;
             self.contacts = [
                 ("Amara Okafor", "15550000001@s.whatsapp.net"),
@@ -574,6 +587,19 @@ impl MainWindow {
                 avatar: None,
             })
             .collect();
+            if mode == "new-chat-phone" {
+                let contact = wasabi_domain::ContactSummary {
+                    jid: wasabi_domain::ChatId::new("15551234567@s.whatsapp.net"),
+                    display_name: "Northwind Coffee".to_string(),
+                    phone_number: Some("15551234567".to_string()),
+                    avatar: None,
+                };
+                self.phone_lookup = PhoneLookupUi::Registered(contact);
+                self.contact_search_input.update(cx, |input, cx| {
+                    input.set_value("+1 (555) 123-4567", window, cx)
+                });
+                self.contacts.clear();
+            }
         }
         if matches!(mode, "settings" | "settings-dark" | "account") {
             self.nav_destination = NavDestination::Settings;
@@ -593,6 +619,8 @@ impl MainWindow {
         self.contacts.clear();
         self.contacts_next = None;
         self.contacts_error = None;
+        self.phone_lookup = PhoneLookupUi::Idle;
+        self.phone_lookup_gen.fetch_add(1, Ordering::AcqRel);
         self.contact_search_input
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.load_contact_query(false, cx);
@@ -605,18 +633,73 @@ impl MainWindow {
         if self.new_chat_open {
             self.new_chat_open = false;
             self.contacts_gen.fetch_add(1, Ordering::AcqRel);
+            self.phone_lookup_gen.fetch_add(1, Ordering::AcqRel);
             self.contacts_loading = false;
+            self.phone_lookup = PhoneLookupUi::Idle;
             cx.notify();
         }
     }
 
     fn queue_contact_search(&mut self, cx: &mut Context<Self>) {
+        self.phone_lookup_gen.fetch_add(1, Ordering::AcqRel);
+        self.phone_lookup = PhoneLookupUi::Idle;
         self.load_contact_query(true, cx);
+    }
+
+    pub(crate) fn lookup_phone_contact(&mut self, cx: &mut Context<Self>) {
+        let input = self.contact_search_input.read(cx).value().to_string();
+        let Ok(phone) = wasabi_domain::ContactPhoneNumber::parse(&input) else {
+            return;
+        };
+        if !self.session.state.is_connected() {
+            self.phone_lookup = PhoneLookupUi::Failed(
+                "Connect to check whether this number has an account.".to_string(),
+            );
+            cx.notify();
+            return;
+        }
+
+        let generation = self.phone_lookup_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        self.phone_lookup = PhoneLookupUi::Checking;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.lookup_contact(phone).await;
+            this.update(cx, |this, cx| {
+                if !this.new_chat_open
+                    || this.phone_lookup_gen.load(Ordering::Acquire) != generation
+                {
+                    return;
+                }
+                this.phone_lookup = match result {
+                    Ok(wasabi_domain::ContactLookupResult::Registered(contact)) => {
+                        PhoneLookupUi::Registered(contact)
+                    }
+                    Ok(wasabi_domain::ContactLookupResult::NotRegistered) => {
+                        PhoneLookupUi::NotRegistered
+                    }
+                    Err(error) => PhoneLookupUi::Failed(match error.kind {
+                        wasabi_domain::ErrorKind::RateLimited => {
+                            "Too many checks. Wait a little, then try again.".to_string()
+                        }
+                        wasabi_domain::ErrorKind::Timeout => {
+                            "The check timed out. Try again.".to_string()
+                        }
+                        wasabi_domain::ErrorKind::NotConnected => {
+                            "Connection lost. Reconnect, then try again.".to_string()
+                        }
+                        _ => "Couldn’t check this number. Try again.".to_string(),
+                    }),
+                };
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
     }
 
     fn load_contact_query(&mut self, debounce: bool, cx: &mut Context<Self>) {
         let generation = self.contacts_gen.fetch_add(1, Ordering::AcqRel) + 1;
-        let query = self.contact_search_input.read(cx).value().to_string();
+        let query = normalized_contact_query(&self.contact_search_input.read(cx).value());
         self.contacts.clear();
         self.contacts_next = None;
         self.contacts_error = None;
@@ -665,7 +748,7 @@ impl MainWindow {
             return;
         }
         let generation = self.contacts_gen.load(Ordering::Acquire);
-        let query = self.contact_search_input.read(cx).value().to_string();
+        let query = normalized_contact_query(&self.contact_search_input.read(cx).value());
         self.contacts_loading = true;
         self.contacts_error = None;
         let bridge = Arc::clone(&self.bridge);
@@ -712,6 +795,8 @@ impl MainWindow {
         }
         self.new_chat_open = false;
         self.contacts_gen.fetch_add(1, Ordering::AcqRel);
+        self.phone_lookup_gen.fetch_add(1, Ordering::AcqRel);
+        self.phone_lookup = PhoneLookupUi::Idle;
         self.open_chat(chat_id, None, window, cx);
         self.conversation_details = Some(wasabi_domain::ConversationDetails::Direct(
             wasabi_domain::DirectContactDetails {
@@ -828,6 +913,8 @@ impl MainWindow {
     fn select_nav(&mut self, destination: NavDestination, cx: &mut Context<Self>) {
         self.new_chat_open = false;
         self.contacts_gen.fetch_add(1, Ordering::AcqRel);
+        self.phone_lookup_gen.fetch_add(1, Ordering::AcqRel);
+        self.phone_lookup = PhoneLookupUi::Idle;
         self.nav_destination = destination;
         if let Some(filter) = destination.chat_filter() {
             self.set_chat_filter(filter, cx);
@@ -2442,6 +2529,8 @@ impl MainWindow {
                         this.contacts_loading = false;
                         this.contacts_error = None;
                         this.contacts_gen.fetch_add(1, Ordering::AcqRel);
+                        this.phone_lookup = PhoneLookupUi::Idle;
+                        this.phone_lookup_gen.fetch_add(1, Ordering::AcqRel);
                         this.typing.clear();
                         this.notification_seen.clear();
                         this.notification_seen_order.clear();
@@ -3357,6 +3446,12 @@ fn timeline_splice<T: PartialEq>(before: &[T], after: &[T]) -> (std::ops::Range<
     )
 }
 
+fn normalized_contact_query(input: &str) -> String {
+    wasabi_domain::ContactPhoneNumber::parse(input)
+        .map(|phone| phone.as_str().to_string())
+        .unwrap_or_else(|_| input.to_string())
+}
+
 // ---- Watch appliers --------------------------------------------------------
 
 /// Apply one session-state update plus derived side effects.
@@ -3377,6 +3472,12 @@ fn apply_state(
         }
         if !state.is_connected() {
             this.typing.clear();
+            if matches!(this.phone_lookup, PhoneLookupUi::Checking) {
+                this.phone_lookup_gen.fetch_add(1, Ordering::AcqRel);
+                this.phone_lookup = PhoneLookupUi::Failed(
+                    "Connection lost. Reconnect, then try again.".to_string(),
+                );
+            }
         }
         let left_pairing = this.session.qr_deadline.is_some()
             && !matches!(state, wasabi_core::state::SessionState::Pairing);
@@ -3450,9 +3551,19 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        TYPING_REFRESH_AFTER, TypingDisplay, should_restore_composer, submitted_edit_matches,
-        should_clear_visible_edit, optimistic_own_reaction, timeline_splice, typing_refresh_due,
+        TYPING_REFRESH_AFTER, TypingDisplay, normalized_contact_query, optimistic_own_reaction,
+        should_clear_visible_edit, should_restore_composer, submitted_edit_matches,
+        timeline_splice, typing_refresh_due,
     };
+
+    #[test]
+    fn formatted_phone_searches_use_canonical_digits_for_the_cache() {
+        assert_eq!(
+            normalized_contact_query("+1 (555) 123-4567"),
+            "15551234567"
+        );
+        assert_eq!(normalized_contact_query("Avery Chen"), "Avery Chen");
+    }
 
     #[test]
     fn composing_updates_are_throttled_until_refresh_interval() {

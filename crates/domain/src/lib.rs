@@ -20,7 +20,9 @@ pub mod search;
 pub mod send;
 
 pub use actions::{ChatAction, MessageAction, MessageActionTarget};
-pub use contact::{ContactPage, ContactPageCursor, ContactSummary};
+pub use contact::{
+    ContactLookupResult, ContactPage, ContactPageCursor, ContactPhoneNumber, ContactSummary,
+};
 pub use conversation::{
     AvatarRef, ChatKind, ConversationDetails, DirectContactDetails, GroupDetails, GroupPermissions,
     Participant, ParticipantRole,

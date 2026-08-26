@@ -13,6 +13,7 @@ These images are captures of the native GPUI application—not design mockups or
 | Durable message reaction summaries | Light | 1280×850 | [`message-reactions.png`](message-reactions.png) |
 | Auto-growing multiline composer | Light | 1280×850 | [`multiline-composer.png`](multiline-composer.png) |
 | Searchable New Chat contact picker | Light | 1280×850 | [`new-chat-contacts.png`](new-chat-contacts.png) |
+| Verified phone-number lookup | Dark | 1280×850 | [`new-chat-phone-lookup.png`](new-chat-phone-lookup.png) |
 | Durable attachment composer | Light | 1280×922 | [`attachment-composer-light.png`](attachment-composer-light.png) |
 | Archived conversations | Light | 1280×922 | [`archived-empty.png`](archived-empty.png) |
 | Operational Storage settings | Light | 1280×922 | [`settings-storage-light.png`](settings-storage-light.png) |

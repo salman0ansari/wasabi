@@ -19,11 +19,12 @@ use tokio_util::sync::CancellationToken;
 use wasabi_core::events::{Invalidation, InvalidationPublisher};
 use wasabi_core::state::SessionState;
 use wasabi_domain::{
-    CachedMedia, ChatAction, ChatId, ChatPage, ChatScope, ContactPage, ContactPageCursor,
-    DirectContactDetails, ErrorKind, GroupDetails, GroupPermissions, MediaDownloadRequest,
-    MessageAction, MessageContext, MessageId, MessagePage, NotificationCandidate, PageCursor,
-    PairingPhoneNumber, Participant, ParticipantRole, PhonePairCode, SearchPage, SendContent,
-    SendReceipt, SendRequest, ServiceError, StagedAttachment, TransferId, TransferJob,
+    CachedMedia, ChatAction, ChatId, ChatPage, ChatScope, ContactLookupResult, ContactPage,
+    ContactPageCursor, ContactPhoneNumber, ContactSummary, DirectContactDetails, ErrorKind,
+    GroupDetails, GroupPermissions, MediaDownloadRequest, MessageAction, MessageContext, MessageId,
+    MessagePage, NotificationCandidate, PageCursor, PairingPhoneNumber, Participant,
+    ParticipantRole, PhonePairCode, SearchPage, SendContent, SendReceipt, SendRequest, ServiceError,
+    StagedAttachment, TransferId, TransferJob,
 };
 use wasabi_repository::AccountStore;
 use whatsapp_rust::wacore::proto_helpers::MessageBuilderExt;
@@ -70,6 +71,10 @@ pub trait DesktopBackend: Send + Sync {
         after: Option<ContactPageCursor>,
         limit: usize,
     ) -> Result<ContactPage, String>;
+    async fn lookup_contact(
+        &self,
+        phone: ContactPhoneNumber,
+    ) -> Result<ContactLookupResult, ServiceError>;
     async fn load_message_page(
         &self,
         chat: &str,
@@ -418,6 +423,70 @@ impl CoreBridge {
                 .contact_page(query, after, limit)
                 .await
                 .map_err(service_message)
+        })
+        .await
+    }
+
+    pub async fn lookup_contact(
+        &self,
+        phone: ContactPhoneNumber,
+    ) -> Result<ContactLookupResult, ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let session = self
+            .session_snapshot()
+            .map_err(|_| ServiceError::new(ErrorKind::NotPaired, "session unavailable"))?;
+        if !session.state().is_connected() {
+            return Err(ServiceError::new(
+                ErrorKind::NotConnected,
+                "registration lookup requires a connected session",
+            ));
+        }
+        self.run_on_core_service(async move {
+            let client = session.client().await.ok_or_else(|| {
+                ServiceError::new(ErrorKind::NotConnected, "protocol client unavailable")
+            })?;
+            let query = whatsapp_rust::Jid::pn(phone.as_str());
+            let mut results = client
+                .contacts()
+                .is_on_whatsapp(&[query])
+                .await
+                .map_err(contact_lookup_error)?;
+            let Some(result) = results.pop() else {
+                return Err(ServiceError::new(
+                    ErrorKind::Protocol,
+                    "registration lookup returned no result",
+                ));
+            };
+            if let Some(error) = result.contact_error.as_ref() {
+                let kind = if error.code == Some(429) {
+                    ErrorKind::RateLimited
+                } else {
+                    ErrorKind::Protocol
+                };
+                return Err(ServiceError::new(
+                    kind,
+                    format!("registration subprotocol rejected lookup: code={:?}", error.code),
+                ));
+            }
+            if !result.is_registered {
+                return Ok(ContactLookupResult::NotRegistered);
+            }
+
+            let display_name = result
+                .verified_name
+                .and_then(|verified| verified.name)
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| format!("+{}", phone.as_str()));
+            Ok(ContactLookupResult::Registered(ContactSummary {
+                // Direct-chat persistence is PN-canonical. The upstream query
+                // has already saved any returned PN/LID mapping for encryption.
+                jid: ChatId::new(format!("{}@s.whatsapp.net", phone.as_str())),
+                display_name,
+                phone_number: Some(phone.as_str().to_string()),
+                avatar: None,
+            }))
         })
         .await
     }
@@ -1601,6 +1670,28 @@ fn service_message(e: ServiceError) -> String {
     e.ui_message().to_string()
 }
 
+fn contact_lookup_error(error: whatsapp_rust::ContactError) -> ServiceError {
+    use whatsapp_rust::ContactError;
+    use whatsapp_rust::request::IqError;
+
+    let kind = match &error {
+        ContactError::InvalidJid(_) => ErrorKind::InvalidRequest,
+        ContactError::Iq(IqError::Timeout) => ErrorKind::Timeout,
+        ContactError::Iq(IqError::NotConnected)
+        | ContactError::Iq(IqError::Socket(_))
+        | ContactError::Iq(IqError::EncryptSend(_))
+        | ContactError::Iq(IqError::ClientState(_))
+        | ContactError::Iq(IqError::Disconnected(_))
+        | ContactError::Iq(IqError::InternalChannelClosed) => ErrorKind::NotConnected,
+        ContactError::Iq(IqError::ServerError { code: 429, .. }) => ErrorKind::RateLimited,
+        ContactError::Iq(_) => ErrorKind::Protocol,
+        _ => ErrorKind::Protocol,
+    };
+    // Do not retain the upstream string: future variants may include the
+    // queried JID. Phone numbers must stay out of normal diagnostics.
+    ServiceError::new(kind, "registration lookup failed")
+}
+
 #[async_trait::async_trait]
 impl DesktopBackend for CoreBridge {
     fn store_ready(&self) -> bool {
@@ -1697,6 +1788,13 @@ impl DesktopBackend for CoreBridge {
         limit: usize,
     ) -> Result<ContactPage, String> {
         CoreBridge::contact_page(self, query, after, limit).await
+    }
+
+    async fn lookup_contact(
+        &self,
+        phone: ContactPhoneNumber,
+    ) -> Result<ContactLookupResult, ServiceError> {
+        CoreBridge::lookup_contact(self, phone).await
     }
 
     async fn load_message_context(
@@ -1841,6 +1939,27 @@ mod tests {
         assert_eq!(
             transfer_failure_state(ErrorKind::NotConnected),
             wasabi_domain::TransferState::FailedRetryable
+        );
+    }
+
+    #[test]
+    fn contact_lookup_errors_keep_actionable_typed_kinds() {
+        use whatsapp_rust::request::IqError;
+
+        assert_eq!(
+            contact_lookup_error(whatsapp_rust::ContactError::Iq(IqError::Timeout)).kind,
+            ErrorKind::Timeout
+        );
+        assert_eq!(
+            contact_lookup_error(whatsapp_rust::ContactError::Iq(IqError::NotConnected)).kind,
+            ErrorKind::NotConnected
+        );
+        assert_eq!(
+            contact_lookup_error(whatsapp_rust::ContactError::InvalidJid(
+                "redacted".to_string()
+            ))
+            .kind,
+            ErrorKind::InvalidRequest
         );
     }
 

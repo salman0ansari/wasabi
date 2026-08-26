@@ -6,6 +6,12 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 
 ### Added
 
+- New Chat can now validate an international number against the live linked
+  account before offering Start chat. The typed lookup boundary redacts its
+  input/result diagnostics, persists upstream PN/LID resolution, distinguishes
+  offline, timeout, rate-limit, rejection, and not-registered outcomes, and
+  drops stale results after query, modal, navigation, logout, or connection
+  changes without inserting synthetic contacts or chat timestamps.
 - New Chat now searches real cached direct contacts through a typed,
   repository-owned keyset query with deterministic name/JID ordering, PN/LID
   alias merging, literal wildcard handling, cached avatars, bounded pages,
