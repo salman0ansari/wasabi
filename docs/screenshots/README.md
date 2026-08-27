@@ -23,6 +23,7 @@ All identities and conversation content in committed captures are synthetic.
 | Operational Storage settings | Dark | 1280×922 | [`settings-storage-dark.png`](settings-storage-dark.png) |
 | Account logout confirmation | Light | 1280×922 | [`account-logout-confirm-light.png`](account-logout-confirm-light.png) |
 | Group information and real participant roles | Light | 1280×922 | [`group-info-light.png`](group-info-light.png) |
+| Acknowledged group description editor | Light | 1280×922 | [`group-description-edit.png`](group-description-edit.png) |
 | Synchronized chat lifecycle actions | Light | 1440×900 | [`chat-lifecycle-actions.png`](chat-lifecycle-actions.png) |
 | Exact-chat clear confirmation | Light | 1280×850 | [`clear-chat-confirmation.png`](clear-chat-confirmation.png) |
 

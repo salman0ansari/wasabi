@@ -53,6 +53,13 @@ pub(crate) enum MessageOverlay {
     Actions(wasabi_domain::MessageId),
     Confirm(wasabi_domain::MessageAction),
     ConfirmChat(wasabi_domain::ChatAction),
+    EditGroupText(GroupTextField),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GroupTextField {
+    Subject,
+    Description,
 }
 
 #[derive(Clone, Copy)]
@@ -151,6 +158,7 @@ pub struct MainWindow {
     pub(crate) details_error: Option<String>,
     pub(crate) group_mutation_in_progress: bool,
     pub(crate) group_mutation_error: Option<String>,
+    pub(crate) group_text_edit_error: Option<String>,
     pub(crate) settings: DeviceSettings,
     pub(crate) settings_section: SettingsSection,
     pub(crate) settings_overlay: Option<SettingsOverlay>,
@@ -184,6 +192,8 @@ pub struct MainWindow {
     pub(crate) search_input: gpui::Entity<InputState>,
     pub(crate) contact_search_input: gpui::Entity<InputState>,
     pub(crate) group_subject_input: gpui::Entity<InputState>,
+    pub(crate) group_info_subject_input: gpui::Entity<InputState>,
+    pub(crate) group_info_description_input: gpui::Entity<InputState>,
     pub(crate) phone_pair_input: gpui::Entity<InputState>,
     pub(crate) chat_scroll: VirtualListScrollHandle,
     pub(crate) msg_scroll: ListState,
@@ -264,6 +274,14 @@ impl MainWindow {
             cx.new(|cx| InputState::new(window, cx).placeholder("Search contacts"));
         let group_subject_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Group name"));
+        let group_info_subject_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Group name"));
+        let group_info_description_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .multi_line(true)
+                .auto_grow(3, 6)
+                .placeholder("Add a group description")
+        });
         let phone_pair_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Country code and phone number")
         });
@@ -283,6 +301,7 @@ impl MainWindow {
             details_error: None,
             group_mutation_in_progress: false,
             group_mutation_error: None,
+            group_text_edit_error: None,
             settings: DeviceSettings::load(),
             settings_section: SettingsSection::Chats,
             settings_overlay: None,
@@ -315,6 +334,8 @@ impl MainWindow {
             search_input,
             contact_search_input,
             group_subject_input,
+            group_info_subject_input,
+            group_info_description_input,
             phone_pair_input,
             chat_scroll: VirtualListScrollHandle::new(),
             msg_scroll: ListState::new(0, ListAlignment::Bottom, px(800.0)),
@@ -600,7 +621,7 @@ impl MainWindow {
         if mode == "chat-actions" {
             self.show_right_panel = true;
         }
-        if mode == "group-info" {
+        if matches!(mode, "group-info" | "group-description-edit") {
             let group_chat = "preview-group@g.us";
             if let Some(summary) = self.chats.chats.first_mut() {
                 summary.id = wasabi_domain::ChatId::new(group_chat);
@@ -612,6 +633,14 @@ impl MainWindow {
                 crate::state::preview::group_details_preview(),
             ));
             self.show_right_panel = true;
+            if mode == "group-description-edit" {
+                self.begin_group_text_edit(
+                    GroupTextField::Description,
+                    "Trail plans, weather checks, and shared packing lists.".to_string(),
+                    window,
+                    cx,
+                );
+            }
         }
         if matches!(mode, "chat-clear" | "chat-delete") {
             let chat = preview.chat.clone();
@@ -2108,7 +2137,65 @@ impl MainWindow {
 
     pub(crate) fn close_message_overlay(&mut self, cx: &mut Context<Self>) {
         self.message_overlay = None;
+        self.group_text_edit_error = None;
         cx.notify();
+    }
+
+    pub(crate) fn begin_group_text_edit(
+        &mut self,
+        field: GroupTextField,
+        value: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = match field {
+            GroupTextField::Subject => &self.group_info_subject_input,
+            GroupTextField::Description => &self.group_info_description_input,
+        };
+        input.update(cx, |input, cx| {
+            input.set_value(value, window, cx);
+            input.focus(window, cx);
+        });
+        self.group_text_edit_error = None;
+        self.message_overlay = Some(MessageOverlay::EditGroupText(field));
+        cx.notify();
+    }
+
+    pub(crate) fn submit_group_text_edit(&mut self, cx: &mut Context<Self>) {
+        let Some(MessageOverlay::EditGroupText(field)) = self.message_overlay.clone() else {
+            return;
+        };
+        let Some(ConversationDetails::Group(details)) = self.conversation_details.as_ref() else {
+            self.close_message_overlay(cx);
+            return;
+        };
+        let value = match field {
+            GroupTextField::Subject => self.group_info_subject_input.read(cx).value().to_string(),
+            GroupTextField::Description => self
+                .group_info_description_input
+                .read(cx)
+                .value()
+                .to_string(),
+        };
+        let patch = match field {
+            GroupTextField::Subject => {
+                wasabi_domain::GroupPatch::subject(details.chat.clone(), value)
+            }
+            GroupTextField::Description => {
+                wasabi_domain::GroupPatch::description(details.chat.clone(), value)
+            }
+        };
+        let patch = match patch {
+            Ok(patch) => patch,
+            Err(error) => {
+                self.group_text_edit_error = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        self.message_overlay = None;
+        self.group_text_edit_error = None;
+        self.apply_group_patch(patch, cx);
     }
 
     pub(crate) fn confirm_message_action(

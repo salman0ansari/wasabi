@@ -14,6 +14,11 @@ All notable user-visible changes to wasabi are recorded here. The format follows
   enabling an inert control. The same redacted product boundary now supports
   subject, description, member, role, and leave operations for their upcoming
   UI workflows.
+- Group admins can now edit the real group name or multiline description from
+  the information drawer. Both editors preload the current server value,
+  enforce protocol character limits, treat an empty description as removal,
+  retain validation errors in the modal, and apply the update through the same
+  chat-bound acknowledged mutation path.
 
 ## [0.2.0-alpha.2] - 2026-08-27
 

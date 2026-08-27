@@ -3,6 +3,7 @@
 
 use gpui::prelude::*;
 use gpui::{Context, ListSizingBehavior, list, px};
+use gpui_component::input::Input;
 use gpui_component::{Icon, IconName};
 
 use crate::state::chats;
@@ -857,6 +858,9 @@ pub fn message_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> g
         crate::views::root::MessageOverlay::ConfirmChat(action) => {
             chat_action_confirmation(this, action, cx)
         }
+        crate::views::root::MessageOverlay::EditGroupText(field) => {
+            group_text_edit_card(this, field, cx)
+        }
     };
     gpui::div()
         .absolute()
@@ -866,6 +870,80 @@ pub fn message_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> g
         .justify_center()
         .bg(theme::scrim())
         .child(card)
+}
+
+fn group_text_edit_card(
+    this: &mut MainWindow,
+    field: crate::views::root::GroupTextField,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Div {
+    let (title, detail, input, count, limit) = match field {
+        crate::views::root::GroupTextField::Subject => {
+            let input = this.group_info_subject_input.clone();
+            let count = input.read(cx).value().chars().count();
+            (
+                "Edit group name",
+                "The new name is synchronized with every participant.",
+                input,
+                count,
+                wasabi_domain::GROUP_SUBJECT_MAX_CHARS,
+            )
+        }
+        crate::views::root::GroupTextField::Description => {
+            let input = this.group_info_description_input.clone();
+            let count = input.read(cx).value().chars().count();
+            (
+                "Edit group description",
+                "Leave this empty to remove the current description.",
+                input,
+                count,
+                wasabi_domain::GROUP_DESCRIPTION_MAX_CHARS,
+            )
+        }
+    };
+    action_card()
+        .child(
+            gpui::div()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme::text_primary())
+                .child(title),
+        )
+        .child(
+            gpui::div()
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .text_color(theme::text_secondary())
+                .child(detail),
+        )
+        .child(Input::new(&input).cleanable(true))
+        .child(
+            gpui::div()
+                .flex()
+                .justify_between()
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .text_color(if count > limit {
+                    theme::danger()
+                } else {
+                    theme::text_secondary()
+                })
+                .child(format!("{count} / {limit} characters"))
+                .children(this.group_text_edit_error.clone().map(|error| {
+                    gpui::div().text_color(theme::danger()).child(error)
+                })),
+        )
+        .child(
+            gpui::div()
+                .flex()
+                .justify_end()
+                .gap(px(8.0))
+                .child(
+                    sheet_button("cancel-group-text-edit", "Cancel", false)
+                        .on_click(cx.listener(|this, _, _, cx| this.close_message_overlay(cx))),
+                )
+                .child(
+                    sheet_button("save-group-text-edit", "Save", false)
+                        .on_click(cx.listener(|this, _, _, cx| this.submit_group_text_edit(cx))),
+                ),
+        )
 }
 
 fn message_action_sheet(

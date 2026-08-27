@@ -150,6 +150,7 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
 
     if is_group {
         if let Some(ConversationDetails::Group(details)) = this.conversation_details.clone() {
+            panel = panel.child(group_text_actions(this, cx, &details));
             panel = panel.child(group_permissions(this, cx, &details));
         }
         if let Some(error) = this.group_mutation_error.clone() {
@@ -163,6 +164,94 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
         .child(destructive_chat_action(this, cx, DestructiveChatAction::Delete));
 
     panel
+}
+
+fn group_text_actions(
+    this: &mut MainWindow,
+    cx: &mut Context<MainWindow>,
+    details: &wasabi_domain::GroupDetails,
+) -> gpui::Div {
+    gpui::div()
+        .child(group_text_action(
+            this,
+            cx,
+            "edit-group-name",
+            "Group name",
+            details.subject.clone(),
+            crate::views::root::GroupTextField::Subject,
+            details,
+        ))
+        .child(group_text_action(
+            this,
+            cx,
+            "edit-group-description",
+            "Description",
+            details
+                .description
+                .clone()
+                .unwrap_or_else(|| "Not set".to_string()),
+            crate::views::root::GroupTextField::Description,
+            details,
+        ))
+}
+
+fn group_text_action(
+    this: &MainWindow,
+    cx: &mut Context<MainWindow>,
+    id: &'static str,
+    label: &'static str,
+    value: String,
+    field: crate::views::root::GroupTextField,
+    details: &wasabi_domain::GroupDetails,
+) -> gpui::Stateful<gpui::Div> {
+    let allowed = details.permissions.can_manage_members();
+    let pending = this.group_mutation_in_progress;
+    let edit_value = match field {
+        crate::views::root::GroupTextField::Subject => details.subject.clone(),
+        crate::views::root::GroupTextField::Description => {
+            details.description.clone().unwrap_or_default()
+        }
+    };
+    gpui::div()
+        .id(id)
+        .mx(px(16.0))
+        .min_h(px(52.0))
+        .py(px(10.0))
+        .flex()
+        .items_center()
+        .gap(px(12.0))
+        .border_t_1()
+        .border_color(theme::border())
+        .when(allowed && !pending, |row| {
+            row.cursor_pointer()
+                .hover(|style| style.bg(theme::row_hover()))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.begin_group_text_edit(field, edit_value.clone(), window, cx)
+                }))
+        })
+        .child(
+            gpui::div()
+                .flex_1()
+                .text_size(px(theme::TEXT_SIZE))
+                .text_color(if allowed {
+                    theme::text_primary()
+                } else {
+                    theme::text_secondary()
+                })
+                .child(label),
+        )
+        .child(
+            gpui::div()
+                .max_w(px(190.0))
+                .truncate()
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .text_color(theme::text_secondary())
+                .child(if allowed {
+                    value
+                } else {
+                    format!("{value} · Admin required")
+                }),
+        )
 }
 
 #[derive(Clone, Copy)]
