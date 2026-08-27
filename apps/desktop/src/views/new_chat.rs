@@ -225,6 +225,65 @@ pub fn overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div
                                 .cleanable(true),
                         ),
                 )
+                .when(query.is_empty(), |dialog| {
+                    dialog.child(
+                        gpui::div()
+                            .id("begin-new-group")
+                            .min_h(px(54.0))
+                            .mx(px(14.0))
+                            .mb(px(10.0))
+                            .px(px(10.0))
+                            .rounded(px(theme::RADIUS_SM))
+                            .flex()
+                            .items_center()
+                            .gap(px(11.0))
+                            .cursor_pointer()
+                            .aria_label("Create a new group")
+                            .hover(|row| row.bg(theme::row_hover()))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.begin_new_group(window, cx)
+                            }))
+                            .child(
+                                gpui::div()
+                                    .size(px(38.0))
+                                    .rounded_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .bg(theme::chip_idle())
+                                    .text_color(theme::accent_text())
+                                    .child(Icon::new(IconName::Plus).size(px(17.0))),
+                            )
+                            .child(
+                                gpui::div()
+                                    .flex_1()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        gpui::div()
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .text_color(theme::text_primary())
+                                            .child("New group"),
+                                    )
+                                    .child(
+                                        gpui::div()
+                                            .text_size(px(theme::TEXT_SIZE_SM))
+                                            .text_color(theme::text_secondary())
+                                            .child(if connected {
+                                                "Choose contacts and a group name"
+                                            } else {
+                                                "Choose members now; connect before creating"
+                                            }),
+                                    ),
+                            )
+                            .child(
+                                Icon::new(IconName::ChevronRight)
+                                    .size(px(16.0))
+                                    .text_color(theme::text_secondary()),
+                            ),
+                    )
+                })
                 .children(phone_panel)
                 .child(list),
         )

@@ -6,6 +6,14 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 
 ### Added
 
+- New Group now provides searchable multi-selection over the real cached
+  address book, a validated subject step, immutable participant capture, and
+  one typed server creation command. Acknowledged groups are inserted using
+  their real server JID and creation time without a fake message; ambiguous
+  transport outcomes block blind retry so an already-created group is not
+  duplicated. Successful and on-demand group metadata snapshots, including
+  actual participants and signed-in admin role, are atomically cached for
+  truthful disconnected drawer rendering.
 - New Chat can now validate an international number against the live linked
   account before offering Start chat. The typed lookup boundary redacts its
   input/result diagnostics, persists upstream PN/LID resolution, distinguishes

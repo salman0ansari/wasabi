@@ -8,6 +8,7 @@ pub mod actions;
 pub mod contact;
 pub mod conversation;
 pub mod error;
+pub mod group;
 pub mod ids;
 pub mod media;
 pub mod message;
@@ -28,6 +29,7 @@ pub use conversation::{
     Participant, ParticipantRole,
 };
 pub use error::{ErrorKind, ServiceError};
+pub use group::{CreateGroupRequest, GROUP_INVITEE_MAX, GROUP_SUBJECT_MAX_CHARS};
 pub use ids::{AccountId, ChatId, LocalCursor, MediaId, MessageId, TransferId};
 pub use media::{
     AttachmentKind, CachedMedia, MediaDownloadRequest, StagedAttachment, TransferDirection,

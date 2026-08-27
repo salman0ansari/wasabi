@@ -74,6 +74,114 @@ async fn open_empty_db_yields_empty_pages() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn acknowledged_empty_group_is_durable_without_a_fake_message() {
+    let dir = TestDir::new("created-group");
+    let store = open(&dir).await;
+    let created_at_ms = 1_800_000_000_000;
+    store
+        .record_created_group(
+            domain::ChatId::new("120363000000000001@g.us"),
+            "Weekend plans".to_string(),
+            created_at_ms,
+        )
+        .await
+        .unwrap();
+
+    let chats = store
+        .chat_page(domain::ChatScope::Active, None, 50)
+        .await
+        .unwrap();
+    assert_eq!(chats.rows.len(), 1);
+    assert_eq!(chats.rows[0].kind, domain::ChatKind::Group);
+    assert_eq!(chats.rows[0].display_name.as_deref(), Some("Weekend plans"));
+    assert_eq!(chats.rows[0].last_activity_ms, created_at_ms);
+    assert!(chats.rows[0].last_message_preview.is_none());
+
+    let messages = store
+        .message_page("120363000000000001@g.us", None, 10)
+        .await
+        .unwrap();
+    assert!(messages.rows.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn group_details_cache_reopens_and_replaces_participants_atomically() {
+    let dir = TestDir::new("group-details-cache");
+    let group = domain::ChatId::new("120363000000000002@g.us");
+    {
+        let store = open(&dir).await;
+        store
+            .save_group_details(
+                domain::GroupDetails {
+                    chat: group.clone(),
+                    subject: "Weekend plans".to_string(),
+                    description: Some("Bring water".to_string()),
+                    avatar: Some(domain::AvatarRef("group-avatar".to_string())),
+                    participant_count: 3,
+                    participants: vec![
+                        domain::Participant {
+                            jid: PEER1.to_string(),
+                            display_name: "Zara".to_string(),
+                            avatar: None,
+                            role: domain::ParticipantRole::Member,
+                            is_self: false,
+                        },
+                        domain::Participant {
+                            jid: PEER2.to_string(),
+                            display_name: "You".to_string(),
+                            avatar: Some(domain::AvatarRef("self-avatar".to_string())),
+                            role: domain::ParticipantRole::Admin,
+                            is_self: true,
+                        },
+                    ],
+                    permissions: domain::GroupPermissions {
+                        only_admins_edit: true,
+                        only_admins_send: false,
+                        membership_approval: true,
+                        current_user_role: Some(domain::ParticipantRole::Admin),
+                    },
+                },
+                1_800_000_000_000,
+            )
+            .await
+            .unwrap();
+    }
+
+    let store = open(&dir).await;
+    let cached = store
+        .cached_group_details(group.as_str())
+        .await
+        .unwrap()
+        .expect("cached group details");
+    assert_eq!(cached.subject, "Weekend plans");
+    assert_eq!(cached.description.as_deref(), Some("Bring water"));
+    assert_eq!(cached.participant_count, 3);
+    assert_eq!(cached.participants.len(), 2);
+    assert!(cached.participants[0].is_self, "self is sorted first");
+    assert_eq!(
+        cached.permissions.current_user_role,
+        Some(domain::ParticipantRole::Admin)
+    );
+
+    let mut replacement = cached;
+    replacement.subject = "Updated plans".to_string();
+    replacement.participant_count = 1;
+    replacement.participants = vec![replacement.participants.remove(0)];
+    store
+        .save_group_details(replacement, 1_800_000_001_000)
+        .await
+        .unwrap();
+    let updated = store
+        .cached_group_details(group.as_str())
+        .await
+        .unwrap()
+        .expect("updated group details");
+    assert_eq!(updated.subject, "Updated plans");
+    assert_eq!(updated.participants.len(), 1);
+    assert!(updated.participants[0].is_self);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn contact_pages_are_stable_searchable_and_direct_only() {
     let dir = TestDir::new("contact-pagination");
     let store = open(&dir).await;

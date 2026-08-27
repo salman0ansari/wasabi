@@ -12,6 +12,7 @@ use tokio::sync::broadcast;
 
 use wasabi_domain as domain;
 use whatsapp_rust::wacore::proto_helpers::MessageExt;
+use whatsapp_rust::wacore_binary::JidExt as _;
 use whatsapp_rust::waproto::whatsapp as wa;
 use whatsapp_rust_chat_store::{
     ChatStore,
@@ -129,6 +130,79 @@ impl AccountStore {
     /// false-success never).
     pub async fn flush(&self) -> Result<(), whatsapp_rust_chat_store::ChatStoreError> {
         self.chats.flush().await
+    }
+
+    /// Persist a server-acknowledged empty group so it remains discoverable
+    /// before its first message. The timestamp comes from server metadata;
+    /// no preview or synthetic system message is invented.
+    pub async fn record_created_group(
+        &self,
+        chat: domain::ChatId,
+        subject: String,
+        created_at_ms: i64,
+    ) -> Result<(), domain::ServiceError> {
+        let jid = parse_jid(chat.as_str())?;
+        if !jid.is_group() {
+            return Err(domain::ServiceError::new(
+                domain::ErrorKind::InvalidRequest,
+                "created conversation is not a group",
+            ));
+        }
+        let subject = subject.trim().to_string();
+        if subject.is_empty() {
+            return Err(domain::ServiceError::new(
+                domain::ErrorKind::InvalidRequest,
+                "created group has no subject",
+            ));
+        }
+        let device_id = self.device_id();
+        let chat = jid.to_string();
+        self.sqlite
+            .shared()
+            .run(move |connection| {
+                diesel::sql_query(
+                    "INSERT INTO chats (device_id, jid, name, last_message_ts) \
+                     VALUES (?, ?, ?, ?) \
+                     ON CONFLICT(device_id, jid) DO UPDATE SET \
+                       name = excluded.name, \
+                       last_message_ts = MAX(chats.last_message_ts, excluded.last_message_ts)",
+                )
+                .bind::<diesel::sql_types::Integer, _>(device_id)
+                .bind::<diesel::sql_types::Text, _>(chat)
+                .bind::<diesel::sql_types::Text, _>(subject)
+                .bind::<diesel::sql_types::BigInt, _>(created_at_ms.max(0))
+                .execute(connection)
+                .map(|_| ())
+                .map_err(|error| wacore::store::error::StoreError::Database(Box::new(error)))
+            })
+            .await
+            .map_err(|error| {
+                domain::ServiceError::new(domain::ErrorKind::Database, error.to_string())
+            })
+    }
+
+    /// Replace the last-known group metadata and participant snapshot in one
+    /// transaction. A partial participant refresh is never exposed.
+    pub async fn save_group_details(
+        &self,
+        details: domain::GroupDetails,
+        fetched_at_ms: i64,
+    ) -> Result<(), domain::ServiceError> {
+        crate::group_cache::save(
+            self.sqlite.shared(),
+            self.device_id(),
+            details,
+            fetched_at_ms,
+        )
+        .await
+    }
+
+    /// Read the last truthful group snapshot for disconnected rendering.
+    pub async fn cached_group_details(
+        &self,
+        chat: &str,
+    ) -> Result<Option<domain::GroupDetails>, domain::ServiceError> {
+        crate::group_cache::load(self.sqlite.shared(), self.device_id(), chat.to_string()).await
     }
 
     // ---- Query facade -------------------------------------------------

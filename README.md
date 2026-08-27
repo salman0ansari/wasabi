@@ -77,6 +77,19 @@ unregistered number to the contact list.
 
 ![Wasabi verified phone-number lookup](docs/screenshots/new-chat-phone-lookup.png)
 
+New Group uses the same real cached address book, supports searchable
+multi-selection, validates and de-duplicates the captured participant set,
+and sends one immutable create request only after a subject is entered.
+
+![Wasabi New Group member selection](docs/screenshots/new-group-members.png)
+
+The subject step names the selected people and makes connection or ambiguous
+delivery failures explicit. If the server may already have accepted a group,
+Wasabi asks the user to check Chats instead of offering a duplicate-producing
+blind retry.
+
+![Wasabi New Group subject](docs/screenshots/new-group-subject.png)
+
 ### Attachments
 
 Selected files are copied into restart-safe Wasabi staging before upload. The composer shows the real filename, media class, and size without exposing local paths.
@@ -129,6 +142,7 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 - Reopen cached chats immediately while reconnecting in the background.
 - Browse cursor-paginated active chats using All, Unread, device-local Favorites, and Groups filters, with a separate Archived destination.
 - Search the cached address book from New Chat, page through deterministic name ordering, open existing contacts while offline, and verify an international number before starting an unknown-number chat.
+- Create a real group from selected cached contacts with a validated subject, immutable participant set, server-acknowledged chat identity, and duplicate-safe uncertain-delivery handling.
 - Search loaded chats and the complete local message FTS index with cancellable, paginated results that open the exact message in context.
 - Read paginated message history and send text, image, video, audio, and document messages with optional supported captions.
 - Read actually measured multiline and multilingual bubbles that reflow across supported window sizes and text scaling without overlap.
@@ -154,7 +168,7 @@ More verified captures are available in [`docs/screenshots`](docs/screenshots/RE
 - Persist device settings independently from the linked account.
 - Enable standards-based XDG autostart.
 - Open direct-contact information without incorrect participant rows.
-- When connected, load group subject, description, participant count, identities, and admin roles without fabricated rows.
+- Load group subject, description, participant count, identities, and admin roles without fabricated rows; retain the last server-backed snapshot for disconnected viewing.
 
 ## Native footprint
 
@@ -164,7 +178,7 @@ This is a reproducible runtime-baseline comparison, not a fabricated measurement
 
 ## Before the stable release
 
-The stable release is gated on live-account media interoperability testing, durable contact/group metadata refresh, remaining account controls, expanded recovery/interaction tests, and performance validation on large synchronized histories.
+The stable release is gated on live-account media interoperability testing, durable contact metadata refresh, remaining group/account controls, expanded recovery/interaction tests, and performance validation on large synchronized histories.
 
 Calls, Status, Channels, and Communities remain hidden until their complete workflows are ready. Wasabi does not ship placeholder destinations.
 

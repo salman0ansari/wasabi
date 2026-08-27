@@ -4,6 +4,7 @@
 
 pub mod config;
 mod contacts;
+mod group_cache;
 pub mod preferences;
 pub mod search;
 pub mod store;

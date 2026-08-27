@@ -22,7 +22,9 @@ use crate::core_bridge::DesktopBackend;
 use crate::state::chats::ChatFilter;
 use crate::state::{ChatListModel, DeviceSettings, MessageWindowModel, SessionMirror, SettingsSection};
 use crate::theme;
-use crate::views::{chat_list, composer, conversation, new_chat, pairing, right_panel, settings};
+use crate::views::{
+    chat_list, composer, conversation, new_chat, new_group, pairing, right_panel, settings,
+};
 use wasabi_domain::{ChatKind, ChatScope, ConversationDetails};
 
 gpui::actions!(wasabi_desktop, [FocusSearch, OpenSettings, CloseInfo]);
@@ -79,6 +81,13 @@ pub(crate) enum PhoneLookupUi {
     Registered(wasabi_domain::ContactSummary),
     NotRegistered,
     Failed(String),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NewChatMode {
+    Direct,
+    GroupParticipants,
+    GroupSubject,
 }
 
 #[derive(Clone)]
@@ -164,9 +173,15 @@ pub struct MainWindow {
     pub(crate) contacts_loading: bool,
     pub(crate) contacts_error: Option<String>,
     pub(crate) phone_lookup: PhoneLookupUi,
+    pub(crate) new_chat_mode: NewChatMode,
+    pub(crate) group_participants: Vec<wasabi_domain::ContactSummary>,
+    pub(crate) group_creation_error: Option<String>,
+    pub(crate) group_creating: bool,
+    pub(crate) group_creation_uncertain: bool,
     pub(crate) composer_input: gpui::Entity<InputState>,
     pub(crate) search_input: gpui::Entity<InputState>,
     pub(crate) contact_search_input: gpui::Entity<InputState>,
+    pub(crate) group_subject_input: gpui::Entity<InputState>,
     pub(crate) phone_pair_input: gpui::Entity<InputState>,
     pub(crate) chat_scroll: VirtualListScrollHandle,
     pub(crate) msg_scroll: ListState,
@@ -188,6 +203,7 @@ pub struct MainWindow {
     search_gen: AtomicU64,
     contacts_gen: AtomicU64,
     phone_lookup_gen: AtomicU64,
+    group_creation_gen: AtomicU64,
     messages_gen: AtomicU64,
     details_gen: AtomicU64,
     qr_ticker_gen: AtomicU64,
@@ -243,6 +259,8 @@ impl MainWindow {
             cx.new(|cx| InputState::new(window, cx).placeholder("Search or start new chat"));
         let contact_search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search contacts"));
+        let group_subject_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Group name"));
         let phone_pair_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Country code and phone number")
         });
@@ -283,9 +301,15 @@ impl MainWindow {
             contacts_loading: false,
             contacts_error: None,
             phone_lookup: PhoneLookupUi::Idle,
+            new_chat_mode: NewChatMode::Direct,
+            group_participants: Vec::new(),
+            group_creation_error: None,
+            group_creating: false,
+            group_creation_uncertain: false,
             composer_input,
             search_input,
             contact_search_input,
+            group_subject_input,
             phone_pair_input,
             chat_scroll: VirtualListScrollHandle::new(),
             msg_scroll: ListState::new(0, ListAlignment::Bottom, px(800.0)),
@@ -307,6 +331,7 @@ impl MainWindow {
             search_gen: AtomicU64::new(0),
             contacts_gen: AtomicU64::new(0),
             phone_lookup_gen: AtomicU64::new(0),
+            group_creation_gen: AtomicU64::new(0),
             messages_gen: AtomicU64::new(0),
             details_gen: AtomicU64::new(0),
             qr_ticker_gen: AtomicU64::new(0),
@@ -355,6 +380,21 @@ impl MainWindow {
             }
         });
         this.subscriptions.push(on_contact_search_change);
+
+        let on_group_subject_change = cx.subscribe_in(&this.group_subject_input, window, {
+            move |this, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change)
+                    && this.new_chat_mode == NewChatMode::GroupSubject
+                {
+                    let had_error = this.group_creation_error.take().is_some();
+                    let was_uncertain = std::mem::take(&mut this.group_creation_uncertain);
+                    if had_error || was_uncertain {
+                        cx.notify();
+                    }
+                }
+            }
+        });
+        this.subscriptions.push(on_group_subject_change);
 
         let on_composer_change = cx.subscribe_in(&this.composer_input, window, {
             move |this, _, event: &InputEvent, window, cx| {
@@ -569,7 +609,14 @@ impl MainWindow {
                 }
             }));
         }
-        if matches!(mode, "new-chat" | "new-chat-phone") {
+        if matches!(
+            mode,
+            "new-chat"
+                | "new-chat-phone"
+                | "new-group-participants"
+                | "new-group-subject"
+                | "new-group-creating"
+        ) {
             self.new_chat_open = true;
             self.contacts = [
                 ("Amara Okafor", "15550000001@s.whatsapp.net"),
@@ -599,6 +646,22 @@ impl MainWindow {
                     input.set_value("+1 (555) 123-4567", window, cx)
                 });
                 self.contacts.clear();
+            } else if matches!(
+                mode,
+                "new-group-participants" | "new-group-subject" | "new-group-creating"
+            ) {
+                self.group_participants = self.contacts.iter().take(3).cloned().collect();
+                self.new_chat_mode = if mode == "new-group-participants" {
+                    NewChatMode::GroupParticipants
+                } else {
+                    NewChatMode::GroupSubject
+                };
+                if self.new_chat_mode == NewChatMode::GroupSubject {
+                    self.group_subject_input.update(cx, |input, cx| {
+                        input.set_value("Weekend hiking crew", window, cx)
+                    });
+                }
+                self.group_creating = mode == "new-group-creating";
             }
         }
         if matches!(mode, "settings" | "settings-dark" | "account") {
@@ -616,6 +679,12 @@ impl MainWindow {
 
     pub(crate) fn open_new_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.new_chat_open = true;
+        self.new_chat_mode = NewChatMode::Direct;
+        self.group_participants.clear();
+        self.group_creation_error = None;
+        self.group_creating = false;
+        self.group_creation_uncertain = false;
+        self.group_creation_gen.fetch_add(1, Ordering::AcqRel);
         self.contacts.clear();
         self.contacts_next = None;
         self.contacts_error = None;
@@ -636,13 +705,181 @@ impl MainWindow {
             self.phone_lookup_gen.fetch_add(1, Ordering::AcqRel);
             self.contacts_loading = false;
             self.phone_lookup = PhoneLookupUi::Idle;
+            self.new_chat_mode = NewChatMode::Direct;
+            self.group_participants.clear();
+            self.group_creation_error = None;
+            self.group_creating = false;
+            self.group_creation_uncertain = false;
+            self.group_creation_gen.fetch_add(1, Ordering::AcqRel);
             cx.notify();
         }
+    }
+
+    pub(crate) fn begin_new_group(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_chat_mode = NewChatMode::GroupParticipants;
+        self.group_participants.clear();
+        self.group_creation_error = None;
+        self.group_creating = false;
+        self.group_creation_uncertain = false;
+        self.group_creation_gen.fetch_add(1, Ordering::AcqRel);
+        self.contact_search_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.load_contact_query(false, cx);
+        self.contact_search_input
+            .update(cx, |input, cx| input.focus(window, cx));
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_group_participant(
+        &mut self,
+        contact: wasabi_domain::ContactSummary,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(index) = self
+            .group_participants
+            .iter()
+            .position(|selected| selected.jid == contact.jid)
+        {
+            self.group_participants.remove(index);
+        } else if self.group_participants.len() < wasabi_domain::GROUP_INVITEE_MAX {
+            self.group_participants.push(contact);
+        } else {
+            self.group_creation_error = Some(
+                "A group can include up to 256 invited participants.".to_string(),
+            );
+        }
+        self.group_creation_uncertain = false;
+        cx.notify();
+    }
+
+    pub(crate) fn continue_new_group(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.group_participants.is_empty() {
+            self.group_creation_error = Some("Select at least one participant.".to_string());
+            cx.notify();
+            return;
+        }
+        self.new_chat_mode = NewChatMode::GroupSubject;
+        self.group_creation_error = None;
+        self.group_creation_uncertain = false;
+        self.group_subject_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.group_subject_input
+            .update(cx, |input, cx| input.focus(window, cx));
+        cx.notify();
+    }
+
+    pub(crate) fn back_new_group(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.group_creating {
+            return;
+        }
+        self.group_creation_error = None;
+        self.group_creation_uncertain = false;
+        match self.new_chat_mode {
+            NewChatMode::GroupSubject => {
+                self.new_chat_mode = NewChatMode::GroupParticipants;
+                self.contact_search_input
+                    .update(cx, |input, cx| input.focus(window, cx));
+            }
+            NewChatMode::GroupParticipants => {
+                self.new_chat_mode = NewChatMode::Direct;
+                self.group_participants.clear();
+            }
+            NewChatMode::Direct => {}
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn submit_new_group(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.group_creating || self.new_chat_mode != NewChatMode::GroupSubject {
+            return;
+        }
+        if self.group_creation_uncertain {
+            self.group_creation_error = Some(
+                "Check Chats for the group, or change its name before creating again.".to_string(),
+            );
+            cx.notify();
+            return;
+        }
+        let subject = self.group_subject_input.read(cx).value().to_string();
+        let request = match wasabi_domain::CreateGroupRequest::new(
+            subject,
+            self.group_participants
+                .iter()
+                .map(|contact| contact.jid.clone())
+                .collect(),
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                self.group_creation_error = Some(format!("{error}."));
+                cx.notify();
+                return;
+            }
+        };
+        if !self.session.state.is_connected() {
+            self.group_creation_error =
+                Some("Reconnect before creating this group.".to_string());
+            cx.notify();
+            return;
+        }
+
+        let generation = self.group_creation_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        self.group_creating = true;
+        self.group_creation_uncertain = false;
+        self.group_creation_error = None;
+        let bridge = Arc::clone(&self.bridge);
+        let window_handle = window.window_handle();
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.create_group(request).await;
+            let navigation = this.update(cx, |state, cx| {
+                if !state.new_chat_open
+                    || state.new_chat_mode != NewChatMode::GroupSubject
+                    || state.group_creation_gen.load(Ordering::Acquire) != generation
+                {
+                    return None;
+                }
+                state.group_creating = false;
+                match result {
+                    Ok(details) => {
+                        let chat = details.chat.as_str().to_string();
+                        state.new_chat_open = false;
+                        state.new_chat_mode = NewChatMode::Direct;
+                        state.group_participants.clear();
+                        state.contacts_gen.fetch_add(1, Ordering::AcqRel);
+                        state.refresh_chats(cx);
+                        cx.notify();
+                        Some((chat, details))
+                    }
+                    Err(error) => {
+                        let (message, uncertain) = group_creation_failure(error.kind);
+                        state.group_creation_error = Some(message);
+                        state.group_creation_uncertain = uncertain;
+                        cx.notify();
+                        None
+                    }
+                }
+            });
+            if let Ok(Some((chat, details))) = navigation {
+                window_handle
+                    .update(cx, |_, window, cx| {
+                        this.update(cx, |state, cx| {
+                            state.open_chat(chat, None, window, cx);
+                            state.conversation_details =
+                                Some(wasabi_domain::ConversationDetails::Group(details));
+                        })
+                        .ok();
+                    })
+                    .ok();
+            }
+        });
+        cx.notify();
     }
 
     fn queue_contact_search(&mut self, cx: &mut Context<Self>) {
         self.phone_lookup_gen.fetch_add(1, Ordering::AcqRel);
         self.phone_lookup = PhoneLookupUi::Idle;
+        if self.new_chat_mode == NewChatMode::GroupParticipants {
+            self.group_creation_error = None;
+        }
         self.load_contact_query(true, cx);
     }
 
@@ -915,6 +1152,12 @@ impl MainWindow {
         self.contacts_gen.fetch_add(1, Ordering::AcqRel);
         self.phone_lookup_gen.fetch_add(1, Ordering::AcqRel);
         self.phone_lookup = PhoneLookupUi::Idle;
+        self.new_chat_mode = NewChatMode::Direct;
+        self.group_participants.clear();
+        self.group_creation_error = None;
+        self.group_creating = false;
+        self.group_creation_uncertain = false;
+        self.group_creation_gen.fetch_add(1, Ordering::AcqRel);
         self.nav_destination = destination;
         if let Some(filter) = destination.chat_filter() {
             self.set_chat_filter(filter, cx);
@@ -2121,7 +2364,9 @@ impl MainWindow {
 
     pub(crate) fn dismiss_overlay_or_drawer(&mut self, cx: &mut Context<Self>) {
         if self.new_chat_open {
-            self.close_new_chat(cx);
+            if !self.group_creating {
+                self.close_new_chat(cx);
+            }
         } else if self.settings_overlay.take().is_some() || self.message_overlay.take().is_some() {
             cx.notify();
         } else {
@@ -2531,6 +2776,12 @@ impl MainWindow {
                         this.contacts_gen.fetch_add(1, Ordering::AcqRel);
                         this.phone_lookup = PhoneLookupUi::Idle;
                         this.phone_lookup_gen.fetch_add(1, Ordering::AcqRel);
+                        this.new_chat_mode = NewChatMode::Direct;
+                        this.group_participants.clear();
+                        this.group_creation_error = None;
+                        this.group_creating = false;
+                        this.group_creation_uncertain = false;
+                        this.group_creation_gen.fetch_add(1, Ordering::AcqRel);
                         this.typing.clear();
                         this.notification_seen.clear();
                         this.notification_seen_order.clear();
@@ -3123,7 +3374,11 @@ impl Render for MainWindow {
             }))
             .child(main_content(self, window, cx, pairing_active));
         if self.new_chat_open {
-            root = root.child(new_chat::overlay(self, cx));
+            root = root.child(if self.new_chat_mode == NewChatMode::Direct {
+                new_chat::overlay(self, cx)
+            } else {
+                new_group::overlay(self, cx)
+            });
         }
         root.into_any_element()
     }
@@ -3452,6 +3707,27 @@ fn normalized_contact_query(input: &str) -> String {
         .unwrap_or_else(|_| input.to_string())
 }
 
+fn group_creation_failure(kind: wasabi_domain::ErrorKind) -> (String, bool) {
+    match kind {
+        wasabi_domain::ErrorKind::RateLimited => (
+            "Too many group requests. Wait a little, then try again.".to_string(),
+            false,
+        ),
+        wasabi_domain::ErrorKind::Timeout => (
+            "Group creation timed out. Check Chats before retrying.".to_string(),
+            true,
+        ),
+        wasabi_domain::ErrorKind::NotConnected => (
+            "Connection lost. Reconnect, then try again.".to_string(),
+            false,
+        ),
+        _ => (
+            "Couldn’t create this group. Review the members and try again.".to_string(),
+            false,
+        ),
+    }
+}
+
 // ---- Watch appliers --------------------------------------------------------
 
 /// Apply one session-state update plus derived side effects.
@@ -3476,6 +3752,15 @@ fn apply_state(
                 this.phone_lookup_gen.fetch_add(1, Ordering::AcqRel);
                 this.phone_lookup = PhoneLookupUi::Failed(
                     "Connection lost. Reconnect, then try again.".to_string(),
+                );
+            }
+            if this.group_creating {
+                this.group_creation_gen.fetch_add(1, Ordering::AcqRel);
+                this.group_creating = false;
+                this.group_creation_uncertain = true;
+                this.group_creation_error = Some(
+                    "Connection lost while creating the group. Check Chats after reconnecting."
+                        .to_string(),
                 );
             }
         }
@@ -3551,9 +3836,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        TYPING_REFRESH_AFTER, TypingDisplay, normalized_contact_query, optimistic_own_reaction,
-        should_clear_visible_edit, should_restore_composer, submitted_edit_matches,
-        timeline_splice, typing_refresh_due,
+        TYPING_REFRESH_AFTER, TypingDisplay, group_creation_failure, normalized_contact_query,
+        optimistic_own_reaction, should_clear_visible_edit, should_restore_composer,
+        submitted_edit_matches, timeline_splice, typing_refresh_due,
     };
 
     #[test]
@@ -3563,6 +3848,18 @@ mod tests {
             "15551234567"
         );
         assert_eq!(normalized_contact_query("Avery Chen"), "Avery Chen");
+    }
+
+    #[test]
+    fn ambiguous_group_creation_failure_blocks_blind_retry() {
+        let (_, timeout_uncertain) = group_creation_failure(wasabi_domain::ErrorKind::Timeout);
+        let (_, offline_uncertain) =
+            group_creation_failure(wasabi_domain::ErrorKind::NotConnected);
+        let (_, rejected_uncertain) =
+            group_creation_failure(wasabi_domain::ErrorKind::Protocol);
+        assert!(timeout_uncertain);
+        assert!(!offline_uncertain);
+        assert!(!rejected_uncertain);
     }
 
     #[test]

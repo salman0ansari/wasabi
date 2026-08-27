@@ -14,6 +14,8 @@ These images are captures of the native GPUI application—not design mockups or
 | Auto-growing multiline composer | Light | 1280×850 | [`multiline-composer.png`](multiline-composer.png) |
 | Searchable New Chat contact picker | Light | 1280×850 | [`new-chat-contacts.png`](new-chat-contacts.png) |
 | Verified phone-number lookup | Dark | 1280×850 | [`new-chat-phone-lookup.png`](new-chat-phone-lookup.png) |
+| New Group member selection | Light | 1280×850 | [`new-group-members.png`](new-group-members.png) |
+| New Group subject and selected people | Light | 980×700 | [`new-group-subject.png`](new-group-subject.png) |
 | Durable attachment composer | Light | 1280×922 | [`attachment-composer-light.png`](attachment-composer-light.png) |
 | Archived conversations | Light | 1280×922 | [`archived-empty.png`](archived-empty.png) |
 | Operational Storage settings | Light | 1280×922 | [`settings-storage-light.png`](settings-storage-light.png) |

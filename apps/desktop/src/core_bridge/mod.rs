@@ -20,14 +20,15 @@ use wasabi_core::events::{Invalidation, InvalidationPublisher};
 use wasabi_core::state::SessionState;
 use wasabi_domain::{
     CachedMedia, ChatAction, ChatId, ChatPage, ChatScope, ContactLookupResult, ContactPage,
-    ContactPageCursor, ContactPhoneNumber, ContactSummary, DirectContactDetails, ErrorKind,
-    GroupDetails, GroupPermissions, MediaDownloadRequest, MessageAction, MessageContext, MessageId,
-    MessagePage, NotificationCandidate, PageCursor, PairingPhoneNumber, Participant,
-    ParticipantRole, PhonePairCode, SearchPage, SendContent, SendReceipt, SendRequest, ServiceError,
-    StagedAttachment, TransferId, TransferJob,
+    ContactPageCursor, ContactPhoneNumber, ContactSummary, CreateGroupRequest,
+    DirectContactDetails, ErrorKind, GroupDetails, GroupPermissions, MediaDownloadRequest,
+    MessageAction, MessageContext, MessageId, MessagePage, NotificationCandidate, PageCursor,
+    PairingPhoneNumber, Participant, ParticipantRole, PhonePairCode, SearchPage, SendContent,
+    SendReceipt, SendRequest, ServiceError, StagedAttachment, TransferId, TransferJob,
 };
 use wasabi_repository::AccountStore;
 use whatsapp_rust::wacore::proto_helpers::MessageBuilderExt;
+use whatsapp_rust::wacore_binary::JidExt as _;
 use wasabi_whatsapp::lifecycle::QrState;
 use wasabi_whatsapp::outbox::Outbox;
 use wasabi_whatsapp::session::{AccountSession, SessionConfig};
@@ -100,6 +101,7 @@ pub trait DesktopBackend: Send + Sync {
     ) -> Result<SearchPage, String>;
     async fn direct_contact_details(&self, jid: String) -> Result<DirectContactDetails, String>;
     async fn group_details(&self, chat: String) -> Result<GroupDetails, String>;
+    async fn create_group(&self, request: CreateGroupRequest) -> Result<GroupDetails, ServiceError>;
     async fn set_favorite(&self, chat: ChatId, favorite: bool) -> Result<(), String>;
     async fn save_draft(
         &self,
@@ -552,85 +554,141 @@ impl CoreBridge {
         .await
     }
 
-    /// Fetch complete group metadata from the live client and immediately
-    /// project it into product types. No protocol value crosses this method.
+    /// Fetch complete group metadata, preferring the live client and falling
+    /// back to the last truthful snapshot while disconnected. No protocol
+    /// value crosses this method.
     pub async fn group_details(&self, chat: String) -> Result<GroupDetails, String> {
         let session = self.session_snapshot()?;
+        let store = Arc::clone(&session.store);
         self.run_on_core(async move {
             let jid: whatsapp_rust::Jid = chat
                 .parse()
                 .map_err(|error| format!("Invalid group identity: {error}"))?;
-            let client = session
-                .client()
-                .await
-                .ok_or_else(|| "Connect to refresh group information".to_string())?;
-            let metadata = client
-                .groups()
-                .get_metadata(&jid)
-                .await
-                .map_err(|error| error.to_string())?;
-
-            let mut participants = Vec::with_capacity(metadata.participants.len());
-            for participant in metadata.participants {
-                let identity = participant
-                    .phone_number
-                    .as_ref()
-                    .unwrap_or(&participant.jid)
-                    .clone();
-                let contact = session
-                    .chats
-                    .contact(&identity)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                let display_name = contact
-                    .as_ref()
-                    .and_then(|contact| contact.display_name())
-                    .map(str::to_string)
-                    .or_else(|| participant.username.as_ref().map(ToString::to_string))
-                    .unwrap_or_else(|| identity.user.to_string());
-                let role = match participant.participant_type {
-                    whatsapp_rust::ParticipantType::Member => ParticipantRole::Member,
-                    whatsapp_rust::ParticipantType::Admin => ParticipantRole::Admin,
-                    whatsapp_rust::ParticipantType::SuperAdmin => ParticipantRole::SuperAdmin,
-                };
-                participants.push(Participant {
-                    jid: identity.to_string(),
-                    display_name,
-                    avatar: None,
-                    role,
-                    // The dependency intentionally keeps own-JID matching
-                    // internal. Until the profile projection exposes it, the
-                    // UI does not guess which participant is the local user.
-                    is_self: false,
-                });
+            if !jid.is_group() {
+                return Err("This conversation is not a group".to_string());
             }
-
-            participants.sort_by(|left, right| {
-                role_rank(right.role)
-                    .cmp(&role_rank(left.role))
-                    .then_with(|| {
-                        left.display_name
-                            .to_lowercase()
-                            .cmp(&right.display_name.to_lowercase())
-                    })
-            });
-            let participant_count = metadata.size.map_or(participants.len(), |size| size as usize);
-            Ok(GroupDetails {
-                chat: ChatId::new(metadata.id.to_string()),
-                subject: metadata.subject,
-                description: metadata.description,
-                avatar: None,
-                participant_count,
-                participants,
-                permissions: GroupPermissions {
-                    only_admins_edit: metadata.is_locked,
-                    only_admins_send: metadata.is_announcement,
-                    membership_approval: metadata.membership_approval,
-                    current_user_role: None,
-                },
-            })
+            let cached = store.cached_group_details(&chat).await;
+            if !session.state().is_connected() {
+                return cached
+                    .map_err(service_message)?
+                    .ok_or_else(|| "Connect to load group information".to_string());
+            }
+            let client = match session.client().await {
+                Some(client) => client,
+                None => {
+                    if let Ok(Some(cached)) = &cached {
+                        return Ok(cached.clone());
+                    }
+                    return Err("Connect to load group information".to_string());
+                }
+            };
+            let metadata = match client.groups().get_metadata(&jid).await {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    let error = group_service_error(error);
+                    if let Ok(Some(cached)) = cached {
+                        tracing::warn!(kind = %error.kind, "live group refresh failed; using cache");
+                        return Ok(cached);
+                    }
+                    return Err(service_message(error));
+                }
+            };
+            let details = project_group_metadata(&session, metadata, false).await;
+            if let Err(error) = store
+                .save_group_details(
+                    details.clone(),
+                    chrono::Utc::now().timestamp_millis(),
+                )
+                .await
+            {
+                tracing::warn!(kind = %error.kind, "group details cache write failed");
+            }
+            Ok(details)
         })
         .await
+    }
+
+    pub async fn create_group(
+        &self,
+        request: CreateGroupRequest,
+    ) -> Result<GroupDetails, ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let session = self
+            .session_snapshot()
+            .map_err(|_| ServiceError::new(ErrorKind::NotPaired, "session unavailable"))?;
+        if !session.state().is_connected() {
+            return Err(ServiceError::new(
+                ErrorKind::NotConnected,
+                "group creation requires a connected session",
+            ));
+        }
+        let store = Arc::clone(&session.store);
+        let result = self
+            .run_on_core_service(async move {
+                let client = session.client().await.ok_or_else(|| {
+                    ServiceError::new(ErrorKind::NotConnected, "protocol client unavailable")
+                })?;
+                let participants = request
+                    .participants()
+                    .iter()
+                    .map(|participant| {
+                        let jid = participant
+                            .as_str()
+                            .parse::<whatsapp_rust::Jid>()
+                            .map_err(|_| {
+                                ServiceError::new(
+                                    ErrorKind::InvalidRequest,
+                                    "invalid group participant identity",
+                                )
+                            })?;
+                        if !jid.is_pn() && !jid.is_lid() {
+                            return Err(ServiceError::new(
+                                ErrorKind::InvalidRequest,
+                                "group participants must be direct contacts",
+                            ));
+                        }
+                        Ok(whatsapp_rust::GroupParticipantOptions::new(jid))
+                    })
+                    .collect::<Result<Vec<_>, ServiceError>>()?;
+                let options = whatsapp_rust::GroupCreateOptions::new(request.subject())
+                    .with_participants(participants);
+                let created = client
+                    .groups()
+                    .create_group(options)
+                    .await
+                    .map_err(group_service_error)?;
+                let created_at_ms = created
+                    .metadata
+                    .creation_time
+                    .and_then(|seconds| i64::try_from(seconds).ok())
+                    .and_then(|seconds| seconds.checked_mul(1_000))
+                    .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+                let details = project_group_metadata(&session, created.metadata, true).await;
+                if let Err(error) = store
+                    .record_created_group(
+                        details.chat.clone(),
+                        details.subject.clone(),
+                        created_at_ms,
+                    )
+                    .await
+                {
+                    // The remote group already exists. Never turn a local
+                    // cache failure into a retryable create operation.
+                    tracing::warn!(kind = %error.kind, "created group cache write failed");
+                }
+                if let Err(error) = store
+                    .save_group_details(details.clone(), chrono::Utc::now().timestamp_millis())
+                    .await
+                {
+                    tracing::warn!(kind = %error.kind, "created group details cache write failed");
+                }
+                Ok(details)
+            })
+            .await?;
+        self.invalidations.publish(Invalidation::Chats);
+        Ok(result)
     }
 
     pub async fn set_favorite(&self, chat: ChatId, favorite: bool) -> Result<(), String> {
@@ -1692,6 +1750,136 @@ fn contact_lookup_error(error: whatsapp_rust::ContactError) -> ServiceError {
     ServiceError::new(kind, "registration lookup failed")
 }
 
+fn group_service_error(error: whatsapp_rust::GroupError) -> ServiceError {
+    use whatsapp_rust::GroupError;
+    use whatsapp_rust::request::IqError;
+
+    let kind = match &error {
+        GroupError::InvalidRequest(_) => ErrorKind::InvalidRequest,
+        GroupError::Iq(IqError::NotConnected) | GroupError::Iq(IqError::ClientState(_)) => {
+            ErrorKind::NotConnected
+        }
+        // These may happen after bytes left the process. Surface them as an
+        // ambiguous timeout so the UI blocks blind retry and asks the user to
+        // check Chats after reconnecting.
+        GroupError::Iq(IqError::Timeout)
+        | GroupError::Iq(IqError::Socket(_))
+        | GroupError::Iq(IqError::EncryptSend(_))
+        | GroupError::Iq(IqError::Disconnected(_))
+        | GroupError::Iq(IqError::InternalChannelClosed) => ErrorKind::Timeout,
+        GroupError::Iq(IqError::ServerError { code: 429, .. }) => ErrorKind::RateLimited,
+        GroupError::Internal(_) => ErrorKind::Internal,
+        GroupError::Iq(_) | GroupError::Mex(_) | GroupError::DescriptionConflict => {
+            ErrorKind::Protocol
+        }
+        _ => ErrorKind::Protocol,
+    };
+    ServiceError::new(kind, "group operation failed")
+}
+
+async fn project_group_metadata(
+    session: &AccountSession,
+    metadata: whatsapp_rust::GroupMetadata,
+    created_by_self: bool,
+) -> GroupDetails {
+    let mut own_identities = session
+        .store
+        .sqlite()
+        .load_device_data_for_device(session.store.device_id())
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .flat_map(|device| [device.pn, device.lid])
+        .flatten()
+        .map(|jid| jid.to_non_ad().to_string())
+        .collect::<std::collections::HashSet<_>>();
+    if created_by_self {
+        own_identities.extend(
+            metadata
+                .creator
+                .iter()
+                .chain(metadata.creator_pn.iter())
+                .map(|jid| jid.to_non_ad().to_string()),
+        );
+    }
+    let mut participants = Vec::with_capacity(metadata.participants.len());
+    for participant in metadata.participants {
+        let identity = participant
+            .phone_number
+            .as_ref()
+            .unwrap_or(&participant.jid)
+            .clone();
+        let is_self = [
+            Some(&participant.jid),
+            participant.phone_number.as_ref(),
+            participant.lid.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|jid| own_identities.contains(&jid.to_non_ad().to_string()));
+        let contact = session
+            .chats
+            .contact(&identity)
+            .await
+            .ok()
+            .flatten();
+        let display_name = if is_self {
+            "You".to_string()
+        } else {
+            contact
+                .as_ref()
+                .and_then(|contact| contact.display_name())
+                .map(str::to_string)
+                .or_else(|| participant.username.as_ref().map(ToString::to_string))
+                .unwrap_or_else(|| identity.user.to_string())
+        };
+        let role = match participant.participant_type {
+            whatsapp_rust::ParticipantType::Member => ParticipantRole::Member,
+            whatsapp_rust::ParticipantType::Admin => ParticipantRole::Admin,
+            whatsapp_rust::ParticipantType::SuperAdmin => ParticipantRole::SuperAdmin,
+        };
+        participants.push(Participant {
+            jid: identity.to_string(),
+            display_name,
+            avatar: None,
+            role,
+            is_self,
+        });
+    }
+
+    let current_user_role = participants
+        .iter()
+        .find(|participant| participant.is_self)
+        .map(|participant| participant.role)
+        .or_else(|| created_by_self.then_some(ParticipantRole::SuperAdmin));
+    participants.sort_by(|left, right| {
+        right
+            .is_self
+            .cmp(&left.is_self)
+            .then_with(|| role_rank(right.role).cmp(&role_rank(left.role)))
+            .then_with(|| {
+                left.display_name
+                    .to_lowercase()
+                    .cmp(&right.display_name.to_lowercase())
+            })
+    });
+    let participant_count = metadata.size.map_or(participants.len(), |size| size as usize);
+    GroupDetails {
+        chat: ChatId::new(metadata.id.to_string()),
+        subject: metadata.subject,
+        description: metadata.description,
+        avatar: None,
+        participant_count,
+        participants,
+        permissions: GroupPermissions {
+            only_admins_edit: metadata.is_locked,
+            only_admins_send: metadata.is_announcement,
+            membership_approval: metadata.membership_approval,
+            current_user_role,
+        },
+    }
+}
+
 #[async_trait::async_trait]
 impl DesktopBackend for CoreBridge {
     fn store_ready(&self) -> bool {
@@ -1831,6 +2019,10 @@ impl DesktopBackend for CoreBridge {
         CoreBridge::group_details(self, chat).await
     }
 
+    async fn create_group(&self, request: CreateGroupRequest) -> Result<GroupDetails, ServiceError> {
+        CoreBridge::create_group(self, request).await
+    }
+
     async fn set_favorite(&self, chat: ChatId, favorite: bool) -> Result<(), String> {
         CoreBridge::set_favorite(self, chat, favorite).await
     }
@@ -1957,6 +2149,26 @@ mod tests {
         assert_eq!(
             contact_lookup_error(whatsapp_rust::ContactError::InvalidJid(
                 "redacted".to_string()
+            ))
+            .kind,
+            ErrorKind::InvalidRequest
+        );
+    }
+
+    #[test]
+    fn group_errors_keep_actionable_typed_kinds_without_content() {
+        use whatsapp_rust::request::IqError;
+
+        let timeout = group_service_error(whatsapp_rust::GroupError::Iq(IqError::Timeout));
+        assert_eq!(timeout.kind, ErrorKind::Timeout);
+        assert_eq!(timeout.detail, "group operation failed");
+        assert_eq!(
+            group_service_error(whatsapp_rust::GroupError::Iq(IqError::NotConnected)).kind,
+            ErrorKind::NotConnected
+        );
+        assert_eq!(
+            group_service_error(whatsapp_rust::GroupError::InvalidRequest(
+                "private group subject".to_string()
             ))
             .kind,
             ErrorKind::InvalidRequest
