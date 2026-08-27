@@ -1,8 +1,8 @@
-# Releasing Wasabi
+# Releasing wasabi
 
 ## Version policy
 
-Wasabi uses Semantic Versioning:
+wasabi uses Semantic Versioning:
 
 - `0.MINOR.PATCH` is the pre-1.0 development series. A minor bump may contain breaking storage, API, or behavior changes. A patch bump is compatible within its minor line.
 - `alpha.N` is incomplete and intended for contributors or deliberate testers.
@@ -11,6 +11,20 @@ Wasabi uses Semantic Versioning:
 - `1.0.0` begins the stable compatibility promise.
 
 The root `VERSION` file is authoritative. The root workspace and isolated desktop workspace repeat the value because Cargo does not support inheriting package metadata across nested workspaces. `scripts/check-release-metadata.sh` prevents drift.
+
+## Development and preview cadence
+
+- Commit each coherent, verified change when it reaches its own acceptance
+  gate. Do not accumulate unrelated product work into one end-of-cycle commit.
+- Keep commit subjects focused and use the Conventional Commit prefixes
+  documented in `CONTRIBUTING.md`.
+- Normally cut the next prerelease after 4–7 user-visible changes have landed
+  under `Unreleased`. The range is a cadence, not a reason to split one feature
+  artificially or hold an urgent security/recovery fix.
+- A release commit contains version, changelog, and release metadata only; it
+  does not absorb the preceding implementation commits.
+- Security fixes and unusable-build regressions may trigger an immediate
+  prerelease outside the normal batch.
 
 ## Release checklist
 

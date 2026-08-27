@@ -1,6 +1,6 @@
-# Contributing to Wasabi
+# Contributing to wasabi
 
-Wasabi welcomes focused, well-tested contributions to the native Linux client.
+wasabi welcomes focused, well-tested contributions to the native Linux client.
 
 ## Before changing code
 
@@ -22,6 +22,6 @@ WASABI_UI_PREVIEW=media cargo run --manifest-path apps/desktop/Cargo.toml
 The preview is compiled out of release builds, uses fictitious identities and
 metadata, does not hydrate account data, and performs no backend mutations.
 
-Use Conventional Commit-style subjects where practical (`feat:`, `fix:`, `perf:`, `docs:`, `test:`, `refactor:`, `build:`). User-visible changes belong in `CHANGELOG.md` under `Unreleased`.
+Use Conventional Commit-style subjects where practical (`feat:`, `fix:`, `perf:`, `docs:`, `test:`, `refactor:`, `build:`). Commit each coherent change after its own verification instead of waiting to bundle unrelated work. User-visible changes belong in `CHANGELOG.md` under `Unreleased`.
 
 By contributing, you agree that your contribution is provided under the repository's MIT license.
