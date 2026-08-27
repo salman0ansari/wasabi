@@ -29,7 +29,10 @@ pub use conversation::{
     Participant, ParticipantRole,
 };
 pub use error::{ErrorKind, ServiceError};
-pub use group::{CreateGroupRequest, GROUP_INVITEE_MAX, GROUP_SUBJECT_MAX_CHARS};
+pub use group::{
+    CreateGroupRequest, GROUP_DESCRIPTION_MAX_CHARS, GROUP_INVITEE_MAX, GROUP_SUBJECT_MAX_CHARS,
+    GroupChange, GroupPatch, GroupPatchResult,
+};
 pub use ids::{AccountId, ChatId, LocalCursor, MediaId, MessageId, TransferId};
 pub use media::{
     AttachmentKind, CachedMedia, MediaDownloadRequest, StagedAttachment, TransferDirection,

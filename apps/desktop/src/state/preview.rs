@@ -2,7 +2,8 @@
 
 use wasabi_domain::{
     ChatId, ChatKind, ChatSummary, LocalCursor, MediaAvailability, MediaDescriptor, MediaId,
-    MessageDirection, MessageId, MessageKind, MessagePage, MessageRow, MessageStatus, SenderJid,
+    MessageDirection, MessageId, MessageKind, MessagePage, MessageRow, MessageStatus, Participant,
+    ParticipantRole, SenderJid,
 };
 
 pub(crate) struct MediaPreview {
@@ -160,6 +161,39 @@ pub(crate) fn media_preview() -> MediaPreview {
                 ),
             ],
             next_before: None,
+        },
+    }
+}
+
+pub(crate) fn group_details_preview() -> wasabi_domain::GroupDetails {
+    let participants = [
+        ("You", "preview-owner@s.whatsapp.net", ParticipantRole::SuperAdmin, true),
+        ("Avery Chen", "preview-avery@s.whatsapp.net", ParticipantRole::Admin, false),
+        ("Amara Okafor", "preview-amara@s.whatsapp.net", ParticipantRole::Member, false),
+        ("Diego Morales", "preview-diego@s.whatsapp.net", ParticipantRole::Member, false),
+    ]
+    .into_iter()
+    .map(|(display_name, jid, role, is_self)| Participant {
+        jid: jid.to_string(),
+        display_name: display_name.to_string(),
+        avatar: None,
+        role,
+        is_self,
+    })
+    .collect();
+
+    wasabi_domain::GroupDetails {
+        chat: ChatId::new("preview-group@g.us"),
+        subject: "Weekend hiking crew".to_string(),
+        description: Some("Trail plans, weather checks, and shared packing lists.".to_string()),
+        avatar: None,
+        participant_count: 4,
+        participants,
+        permissions: wasabi_domain::GroupPermissions {
+            only_admins_edit: true,
+            only_admins_send: false,
+            membership_approval: true,
+            current_user_role: Some(ParticipantRole::SuperAdmin),
         },
     }
 }

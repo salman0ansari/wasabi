@@ -149,6 +149,8 @@ pub struct MainWindow {
     pub(crate) conversation_details: Option<ConversationDetails>,
     pub(crate) details_loading: bool,
     pub(crate) details_error: Option<String>,
+    pub(crate) group_mutation_in_progress: bool,
+    pub(crate) group_mutation_error: Option<String>,
     pub(crate) settings: DeviceSettings,
     pub(crate) settings_section: SettingsSection,
     pub(crate) settings_overlay: Option<SettingsOverlay>,
@@ -206,6 +208,7 @@ pub struct MainWindow {
     group_creation_gen: AtomicU64,
     messages_gen: AtomicU64,
     details_gen: AtomicU64,
+    group_mutation_gen: AtomicU64,
     qr_ticker_gen: AtomicU64,
     phone_pair_ticker_gen: AtomicU64,
     pairing_request_gen: AtomicU64,
@@ -278,6 +281,8 @@ impl MainWindow {
             conversation_details: None,
             details_loading: false,
             details_error: None,
+            group_mutation_in_progress: false,
+            group_mutation_error: None,
             settings: DeviceSettings::load(),
             settings_section: SettingsSection::Chats,
             settings_overlay: None,
@@ -334,6 +339,7 @@ impl MainWindow {
             group_creation_gen: AtomicU64::new(0),
             messages_gen: AtomicU64::new(0),
             details_gen: AtomicU64::new(0),
+            group_mutation_gen: AtomicU64::new(0),
             qr_ticker_gen: AtomicU64::new(0),
             phone_pair_ticker_gen: AtomicU64::new(0),
             pairing_request_gen: AtomicU64::new(0),
@@ -592,6 +598,19 @@ impl MainWindow {
             self.near_bottom = false;
         }
         if mode == "chat-actions" {
+            self.show_right_panel = true;
+        }
+        if mode == "group-info" {
+            let group_chat = "preview-group@g.us";
+            if let Some(summary) = self.chats.chats.first_mut() {
+                summary.id = wasabi_domain::ChatId::new(group_chat);
+                summary.kind = ChatKind::Group;
+                summary.display_name = Some("Weekend hiking crew".to_string());
+            }
+            self.chats.selected = Some(group_chat.to_string());
+            self.conversation_details = Some(ConversationDetails::Group(
+                crate::state::preview::group_details_preview(),
+            ));
             self.show_right_panel = true;
         }
         if matches!(mode, "chat-clear" | "chat-delete") {
@@ -1138,12 +1157,15 @@ impl MainWindow {
         self.chats.selected = None;
         self.chats.loading = true;
         self.details_gen.fetch_add(1, Ordering::AcqRel);
+        self.group_mutation_gen.fetch_add(1, Ordering::AcqRel);
         self.show_right_panel = false;
         self.message_overlay = None;
         self.active_draft = wasabi_domain::Draft::default();
         self.conversation_details = None;
         self.details_loading = false;
         self.details_error = None;
+        self.group_mutation_in_progress = false;
+        self.group_mutation_error = None;
         self.refresh_chats(cx);
     }
 
@@ -1203,6 +1225,7 @@ impl MainWindow {
         // Bump first so any in-flight message load is discarded as stale.
         self.messages_gen.fetch_add(1, Ordering::AcqRel);
         self.details_gen.fetch_add(1, Ordering::AcqRel);
+        self.group_mutation_gen.fetch_add(1, Ordering::AcqRel);
         self.chats.selected = Some(chat_id.clone());
         self.messages.reset_for_chat(&chat_id);
         self.msg_scroll.reset(0);
@@ -1211,6 +1234,8 @@ impl MainWindow {
         self.conversation_details = None;
         self.details_loading = false;
         self.details_error = None;
+        self.group_mutation_in_progress = false;
+        self.group_mutation_error = None;
         self.first_visible = 0;
         self.pending_new_messages = 0;
         // An anchored search result starts in the middle of its context; do
@@ -1829,8 +1854,11 @@ impl MainWindow {
 
     pub(crate) fn close_right_panel(&mut self, cx: &mut Context<Self>) {
         self.details_gen.fetch_add(1, Ordering::AcqRel);
+        self.group_mutation_gen.fetch_add(1, Ordering::AcqRel);
         self.show_right_panel = false;
         self.details_loading = false;
+        self.group_mutation_in_progress = false;
+        self.group_mutation_error = None;
         cx.notify();
     }
 
@@ -1855,6 +1883,7 @@ impl MainWindow {
         self.conversation_details = None;
         self.details_loading = true;
         self.details_error = None;
+        self.group_mutation_error = None;
         let bridge = Arc::clone(&self.bridge);
         spawn_main(cx, async move |this, cx| {
             let result = match kind {
@@ -1880,6 +1909,53 @@ impl MainWindow {
                 match result {
                     Ok(details) => this.conversation_details = Some(details),
                     Err(error) => this.details_error = Some(error),
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn apply_group_patch(
+        &mut self,
+        patch: wasabi_domain::GroupPatch,
+        cx: &mut Context<Self>,
+    ) {
+        if self.group_mutation_in_progress {
+            return;
+        }
+        let target = patch.chat().as_str().to_string();
+        let generation = self.group_mutation_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        self.group_mutation_in_progress = true;
+        self.group_mutation_error = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.update_group(patch).await;
+            this.update(cx, |this, cx| {
+                if this.group_mutation_gen.load(Ordering::Acquire) != generation {
+                    return;
+                }
+                this.group_mutation_in_progress = false;
+                if this.chats.selected.as_deref() != Some(target.as_str())
+                    || !this.show_right_panel
+                {
+                    return;
+                }
+                match result {
+                    Ok(result) => {
+                        this.group_mutation_error = None;
+                        if let Some(details) = result.details {
+                            this.conversation_details = Some(ConversationDetails::Group(details));
+                        } else {
+                            this.close_right_panel(cx);
+                            return;
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(kind = %error.kind, "group mutation failed");
+                        this.group_mutation_error = Some(error.ui_message().to_string());
+                    }
                 }
                 cx.notify();
             })

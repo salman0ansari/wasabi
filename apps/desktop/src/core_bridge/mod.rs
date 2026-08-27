@@ -21,10 +21,11 @@ use wasabi_core::state::SessionState;
 use wasabi_domain::{
     CachedMedia, ChatAction, ChatId, ChatPage, ChatScope, ContactLookupResult, ContactPage,
     ContactPageCursor, ContactPhoneNumber, ContactSummary, CreateGroupRequest,
-    DirectContactDetails, ErrorKind, GroupDetails, GroupPermissions, MediaDownloadRequest,
-    MessageAction, MessageContext, MessageId, MessagePage, NotificationCandidate, PageCursor,
-    PairingPhoneNumber, Participant, ParticipantRole, PhonePairCode, SearchPage, SendContent,
-    SendReceipt, SendRequest, ServiceError, StagedAttachment, TransferId, TransferJob,
+    DirectContactDetails, ErrorKind, GroupChange, GroupDetails, GroupPatch, GroupPatchResult,
+    GroupPermissions, MediaDownloadRequest, MessageAction, MessageContext, MessageId, MessagePage,
+    NotificationCandidate, PageCursor, PairingPhoneNumber, Participant, ParticipantRole,
+    PhonePairCode, SearchPage, SendContent, SendReceipt, SendRequest, ServiceError,
+    StagedAttachment, TransferId, TransferJob,
 };
 use wasabi_repository::AccountStore;
 use whatsapp_rust::wacore::proto_helpers::MessageBuilderExt;
@@ -102,6 +103,7 @@ pub trait DesktopBackend: Send + Sync {
     async fn direct_contact_details(&self, jid: String) -> Result<DirectContactDetails, String>;
     async fn group_details(&self, chat: String) -> Result<GroupDetails, String>;
     async fn create_group(&self, request: CreateGroupRequest) -> Result<GroupDetails, ServiceError>;
+    async fn update_group(&self, patch: GroupPatch) -> Result<GroupPatchResult, ServiceError>;
     async fn set_favorite(&self, chat: ChatId, favorite: bool) -> Result<(), String>;
     async fn save_draft(
         &self,
@@ -685,6 +687,133 @@ impl CoreBridge {
                     tracing::warn!(kind = %error.kind, "created group details cache write failed");
                 }
                 Ok(details)
+            })
+            .await?;
+        self.invalidations.publish(Invalidation::Chats);
+        Ok(result)
+    }
+
+    pub async fn update_group(
+        &self,
+        patch: GroupPatch,
+    ) -> Result<GroupPatchResult, ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let session = self
+            .session_snapshot()
+            .map_err(|_| ServiceError::new(ErrorKind::NotPaired, "session unavailable"))?;
+        if !session.state().is_connected() {
+            return Err(ServiceError::new(
+                ErrorKind::NotConnected,
+                "group mutation requires a connected session",
+            ));
+        }
+        let store = Arc::clone(&session.store);
+        let result = self
+            .run_on_core_service(async move {
+                let chat = patch
+                    .chat()
+                    .as_str()
+                    .parse::<whatsapp_rust::Jid>()
+                    .map_err(|_| {
+                        ServiceError::new(ErrorKind::InvalidRequest, "invalid group identity")
+                    })?;
+                if !chat.is_group() {
+                    return Err(ServiceError::new(
+                        ErrorKind::InvalidRequest,
+                        "conversation is not a group",
+                    ));
+                }
+                let client = session.client().await.ok_or_else(|| {
+                    ServiceError::new(ErrorKind::NotConnected, "protocol client unavailable")
+                })?;
+                let groups = client.groups();
+                let (applied_participants, rejected_participants, left) = match patch.change() {
+                    GroupChange::Subject(subject) => {
+                        let subject = whatsapp_rust::GroupSubject::new(subject)
+                            .map_err(|_| ServiceError::new(ErrorKind::InvalidRequest, "invalid group subject"))?;
+                        groups.set_subject(chat.clone(), subject).await.map_err(group_service_error)?;
+                        (0, 0, false)
+                    }
+                    GroupChange::Description(description) => {
+                        let description = description
+                            .as_deref()
+                            .map(whatsapp_rust::GroupDescription::new)
+                            .transpose()
+                            .map_err(|_| ServiceError::new(ErrorKind::InvalidRequest, "invalid group description"))?;
+                        groups
+                            .set_description(
+                                chat.clone(),
+                                description,
+                                whatsapp_rust::PreviousDescription::Resolve,
+                            )
+                            .await
+                            .map_err(group_service_error)?;
+                        (0, 0, false)
+                    }
+                    GroupChange::OnlyAdminsEdit(enabled) => {
+                        groups.set_locked(chat.clone(), *enabled).await.map_err(group_service_error)?;
+                        (0, 0, false)
+                    }
+                    GroupChange::OnlyAdminsSend(enabled) => {
+                        groups.set_announce(chat.clone(), *enabled).await.map_err(group_service_error)?;
+                        (0, 0, false)
+                    }
+                    GroupChange::MembershipApproval(enabled) => {
+                        let mode = if *enabled {
+                            whatsapp_rust::MembershipApprovalMode::On
+                        } else {
+                            whatsapp_rust::MembershipApprovalMode::Off
+                        };
+                        groups.set_membership_approval(chat.clone(), mode).await.map_err(group_service_error)?;
+                        (0, 0, false)
+                    }
+                    GroupChange::AddParticipants(participants) => {
+                        let participants = participant_jids(participants)?;
+                        let responses = groups.add_participants(chat.clone(), &participants).await.map_err(group_service_error)?;
+                        participant_result_counts(&responses)
+                    }
+                    GroupChange::RemoveParticipant(participant) => {
+                        let participants = participant_jids(std::slice::from_ref(participant))?;
+                        let responses = groups.remove_participants(chat.clone(), &participants).await.map_err(group_service_error)?;
+                        participant_result_counts(&responses)
+                    }
+                    GroupChange::PromoteParticipant(participant) => {
+                        let participants = participant_jids(std::slice::from_ref(participant))?;
+                        let responses = groups.promote_participants(chat.clone(), &participants).await.map_err(group_service_error)?;
+                        participant_result_counts(&responses)
+                    }
+                    GroupChange::DemoteParticipant(participant) => {
+                        let participants = participant_jids(std::slice::from_ref(participant))?;
+                        let responses = groups.demote_participants(chat.clone(), &participants).await.map_err(group_service_error)?;
+                        participant_result_counts(&responses)
+                    }
+                    GroupChange::Leave => {
+                        groups.leave(chat.clone()).await.map_err(group_service_error)?;
+                        (0, 0, true)
+                    }
+                };
+                if left {
+                    return Ok(GroupPatchResult {
+                        details: None,
+                        applied_participants,
+                        rejected_participants,
+                    });
+                }
+                let metadata = groups.get_metadata(&chat).await.map_err(group_service_error)?;
+                let details = project_group_metadata(&session, metadata, false).await;
+                if let Err(error) = store
+                    .save_group_details(details.clone(), chrono::Utc::now().timestamp_millis())
+                    .await
+                {
+                    tracing::warn!(kind = %error.kind, "updated group details cache write failed");
+                }
+                Ok(GroupPatchResult {
+                    details: Some(details),
+                    applied_participants,
+                    rejected_participants,
+                })
             })
             .await?;
         self.invalidations.publish(Invalidation::Chats);
@@ -1722,6 +1851,37 @@ fn role_rank(role: ParticipantRole) -> u8 {
     }
 }
 
+fn participant_jids(participants: &[ChatId]) -> Result<Vec<whatsapp_rust::Jid>, ServiceError> {
+    participants
+        .iter()
+        .map(|participant| {
+            let jid = participant
+                .as_str()
+                .parse::<whatsapp_rust::Jid>()
+                .map_err(|_| {
+                    ServiceError::new(
+                        ErrorKind::InvalidRequest,
+                        "invalid group participant identity",
+                    )
+                })?;
+            if !jid.is_pn() && !jid.is_lid() {
+                return Err(ServiceError::new(
+                    ErrorKind::InvalidRequest,
+                    "group participants must be direct contacts",
+                ));
+            }
+            Ok(jid)
+        })
+        .collect()
+}
+
+fn participant_result_counts(
+    responses: &[whatsapp_rust::ParticipantChangeResponse],
+) -> (usize, usize, bool) {
+    let applied = responses.iter().filter(|response| response.is_ok()).count();
+    (applied, responses.len().saturating_sub(applied), false)
+}
+
 /// Coarse, user-renderable message; diagnostics stay in logs.
 fn service_message(e: ServiceError) -> String {
     tracing::warn!(kind = %e.kind, detail = %e.detail, "core query failed");
@@ -2023,6 +2183,10 @@ impl DesktopBackend for CoreBridge {
         CoreBridge::create_group(self, request).await
     }
 
+    async fn update_group(&self, patch: GroupPatch) -> Result<GroupPatchResult, ServiceError> {
+        CoreBridge::update_group(self, patch).await
+    }
+
     async fn set_favorite(&self, chat: ChatId, favorite: bool) -> Result<(), String> {
         CoreBridge::set_favorite(self, chat, favorite).await
     }
@@ -2173,6 +2337,18 @@ mod tests {
             .kind,
             ErrorKind::InvalidRequest
         );
+    }
+
+    #[test]
+    fn group_participant_mutations_accept_only_direct_identities() {
+        let participants = [
+            ChatId::new("15550000001@s.whatsapp.net"),
+            ChatId::new("123456789012345@lid"),
+        ];
+        let parsed = participant_jids(&participants).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert!(participant_jids(&[ChatId::new("120363000000000001@g.us")]).is_err());
+        assert_eq!(participant_result_counts(&[]), (0, 0, false));
     }
 
 }

@@ -4,6 +4,17 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Group details now expose acknowledged, admin-gated controls for who may edit
+  group information, who may send messages, and whether new members require
+  approval. Mutations capture an immutable group identity, use typed protocol
+  operations, refresh and cache real server metadata after success, discard
+  stale results after navigation, and explain missing admin permission without
+  enabling an inert control. The same redacted product boundary now supports
+  subject, description, member, role, and leave operations for their upcoming
+  UI workflows.
+
 ## [0.2.0-alpha.2] - 2026-08-27
 
 ### Added

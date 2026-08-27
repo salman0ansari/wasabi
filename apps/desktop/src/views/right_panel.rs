@@ -149,6 +149,12 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
     }
 
     if is_group {
+        if let Some(ConversationDetails::Group(details)) = this.conversation_details.clone() {
+            panel = panel.child(group_permissions(this, cx, &details));
+        }
+        if let Some(error) = this.group_mutation_error.clone() {
+            panel = panel.child(section("GROUP UPDATE FAILED", error));
+        }
         panel = panel.child(participants_section(this));
     }
 
@@ -157,6 +163,134 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
         .child(destructive_chat_action(this, cx, DestructiveChatAction::Delete));
 
     panel
+}
+
+#[derive(Clone, Copy)]
+enum GroupPermissionAction {
+    EditInfo,
+    SendMessages,
+    ApproveMembers,
+}
+
+fn group_permissions(
+    this: &mut MainWindow,
+    cx: &mut Context<MainWindow>,
+    details: &wasabi_domain::GroupDetails,
+) -> gpui::Div {
+    gpui::div()
+        .child(group_permission_row(
+            this,
+            cx,
+            details,
+            GroupPermissionAction::EditInfo,
+        ))
+        .child(group_permission_row(
+            this,
+            cx,
+            details,
+            GroupPermissionAction::SendMessages,
+        ))
+        .child(group_permission_row(
+            this,
+            cx,
+            details,
+            GroupPermissionAction::ApproveMembers,
+        ))
+}
+
+fn group_permission_row(
+    this: &mut MainWindow,
+    cx: &mut Context<MainWindow>,
+    details: &wasabi_domain::GroupDetails,
+    action: GroupPermissionAction,
+) -> gpui::Stateful<gpui::Div> {
+    let allowed = details.permissions.can_manage_members();
+    let pending = this.group_mutation_in_progress;
+    let chat = details.chat.clone();
+    let (id, label, enabled, patch) = match action {
+        GroupPermissionAction::EditInfo => (
+            "group-only-admins-edit",
+            "Edit group info",
+            details.permissions.only_admins_edit,
+            wasabi_domain::GroupPatch::only_admins_edit(
+                chat,
+                !details.permissions.only_admins_edit,
+            ),
+        ),
+        GroupPermissionAction::SendMessages => (
+            "group-only-admins-send",
+            "Send messages",
+            details.permissions.only_admins_send,
+            wasabi_domain::GroupPatch::only_admins_send(
+                chat,
+                !details.permissions.only_admins_send,
+            ),
+        ),
+        GroupPermissionAction::ApproveMembers => (
+            "group-membership-approval",
+            "Approve new members",
+            details.permissions.membership_approval,
+            wasabi_domain::GroupPatch::membership_approval(
+                chat,
+                !details.permissions.membership_approval,
+            ),
+        ),
+    };
+    let value = match action {
+        GroupPermissionAction::EditInfo | GroupPermissionAction::SendMessages => {
+            if enabled { "Admins only" } else { "All participants" }
+        }
+        GroupPermissionAction::ApproveMembers => {
+            if enabled { "On" } else { "Off" }
+        }
+    };
+    let detail = if pending {
+        "Saving…".to_string()
+    } else if allowed {
+        value.to_string()
+    } else {
+        format!("{value} · Admin required")
+    };
+
+    gpui::div()
+        .id(id)
+        .mx(px(16.0))
+        .min_h(px(52.0))
+        .py(px(10.0))
+        .flex()
+        .items_center()
+        .gap(px(12.0))
+        .border_t_1()
+        .border_color(theme::border())
+        .when(allowed && !pending, |row| {
+            row.cursor_pointer()
+                .hover(|style| style.bg(theme::row_hover()))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.apply_group_patch(patch.clone(), cx)
+                }))
+        })
+        .child(
+            gpui::div()
+                .flex_1()
+                .text_size(px(theme::TEXT_SIZE))
+                .text_color(if allowed {
+                    theme::text_primary()
+                } else {
+                    theme::text_secondary()
+                })
+                .child(label),
+        )
+        .child(
+            gpui::div()
+                .max_w(px(190.0))
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .text_color(if enabled && allowed {
+                    theme::accent_text()
+                } else {
+                    theme::text_secondary()
+                })
+                .child(detail),
+        )
 }
 
 fn section(label: &'static str, body: impl Into<String>) -> gpui::Div {
