@@ -5,7 +5,18 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use gpui::Rgba;
+use gpui::{App, Rgba};
+
+pub const UI_FONT_FAMILY: &str = "Inter Variable";
+
+/// Apply the selected component theme and restore wasabi's bundled typeface.
+/// gpui-component theme changes reset typography to the theme default, so the
+/// font family must be reapplied whenever the appearance changes.
+pub fn apply_component_theme(mode: gpui_component::theme::ThemeMode, cx: &mut App) {
+    set_dark_mode(mode.is_dark());
+    gpui_component::Theme::change(mode, None, cx);
+    cx.global_mut::<gpui_component::Theme>().font_family = UI_FONT_FAMILY.into();
+}
 
 // Accent family
 

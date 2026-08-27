@@ -14,6 +14,7 @@ mod state;
 mod theme;
 mod views;
 
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -32,6 +33,8 @@ use crate::views::{BridgeGlobal, MainWindow, key_bindings};
 
 const WINDOW_SIZE: f32 = 1280.0;
 const WINDOW_MIN_SIZE: f32 = 980.0;
+const INTER_REGULAR: &[u8] = include_bytes!("../assets/fonts/InterVariable.ttf");
+const INTER_ITALIC: &[u8] = include_bytes!("../assets/fonts/InterVariable-Italic.ttf");
 
 fn main() -> anyhow::Result<()> {
     install_tracing();
@@ -76,6 +79,12 @@ fn main() -> anyhow::Result<()> {
         .with_assets(gpui_component_assets::Assets)
         .run(move |cx| {
             gpui_component::init(cx);
+            cx.text_system()
+                .add_fonts(vec![
+                    Cow::Borrowed(INTER_REGULAR),
+                    Cow::Borrowed(INTER_ITALIC),
+                ])
+                .expect("load bundled Inter fonts");
             let preference = if cfg!(debug_assertions)
                 && matches!(
                     std::env::var("WASABI_UI_PREVIEW").as_deref(),
@@ -90,8 +99,7 @@ fn main() -> anyhow::Result<()> {
                 ThemePreference::Dark => gpui_component::theme::ThemeMode::Dark,
                 ThemePreference::System => cx.window_appearance().into(),
             };
-            theme::set_dark_mode(mode.is_dark());
-            gpui_component::Theme::change(mode, None, cx);
+            theme::apply_component_theme(mode, cx);
 
             cx.bind_keys(key_bindings());
             let ui_backend: Arc<dyn DesktopBackend> = bridge.clone();
@@ -109,7 +117,7 @@ fn main() -> anyhow::Result<()> {
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Wasabi".into()),
+                    title: Some("wasabi".into()),
                     appears_transparent: false,
                     traffic_light_position: None,
                 }),

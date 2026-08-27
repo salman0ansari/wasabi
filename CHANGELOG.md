@@ -1,11 +1,20 @@
 # Changelog
 
-All notable user-visible changes to Wasabi are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and releases follow [Semantic Versioning](https://semver.org/).
+All notable user-visible changes to wasabi are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and releases follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0-alpha.2] - 2026-08-27
+
 ### Added
 
+- Inter 4.1 is now bundled under the SIL Open Font License and applied across
+  every GPUI surface, including after live theme changes. This replaces
+  distribution-dependent UI typography while leaving unsupported scripts and
+  emoji to the platform fallback stack.
+- Customer documentation is now split into a compact landing page, a
+  screenshot gallery, an honest `What works today` inventory, and a complete
+  status-labelled roadmap.
 - New Group now provides searchable multi-selection over the real cached
   address book, a validated subject step, immutable participant capture, and
   one typed server creation command. Acknowledged groups are inserted using
@@ -131,6 +140,13 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 
 ### Changed
 
+- The visible product name is consistently lowercase `wasabi` in the native
+  window title, chat heading, Settings, Linux notifications, and XDG autostart
+  entry.
+- Captures containing personal contact data were removed from the current tree
+  and rewritten out of branch history. The screenshot gallery now requires
+  synthetic identities and content.
+
 - Removed visible diagnostics, spellcheck, link-preview, automatic-download,
   disappearing-message, and blocklist controls until each has a working
   product service; Settings no longer promises behavior it cannot execute.
@@ -173,5 +189,6 @@ All notable user-visible changes to Wasabi are recorded here. The format follows
 - Selecting a different chat now closes the information drawer.
 - Narrow windows use a dismissible overlay drawer instead of permanently crushing the conversation.
 
-[Unreleased]: https://github.com/salman0ansari/wasabi/compare/v0.2.0-alpha.1...HEAD
+[Unreleased]: https://github.com/salman0ansari/wasabi/compare/v0.2.0-alpha.2...HEAD
+[0.2.0-alpha.2]: https://github.com/salman0ansari/wasabi/compare/v0.2.0-alpha.1...v0.2.0-alpha.2
 [0.2.0-alpha.1]: https://github.com/salman0ansari/wasabi/releases/tag/v0.2.0-alpha.1

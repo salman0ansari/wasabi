@@ -26,7 +26,7 @@ pub fn pane_header(_this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui
                 .text_size(px(theme::TEXT_TITLE))
                 .font_weight(gpui::FontWeight::BOLD)
                 .text_color(theme::text_primary())
-                .child("Wasabi"),
+                .child("wasabi"),
         )
         .child(
             gpui::div()

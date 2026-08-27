@@ -56,7 +56,7 @@ fn settings_navigation(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> g
                     gpui::div()
                         .text_size(px(theme::TEXT_NAME))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child("Wasabi account"),
+                        .child("wasabi account"),
                 )
                 .child(
                     gpui::div()
@@ -337,7 +337,7 @@ fn general(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElem
         .child(value_row("Language", this.settings.language.clone()))
         .child(toggle_row(
             "setting-startup",
-            "Launch Wasabi at startup",
+            "Launch wasabi at startup",
             "Start after you sign in to the Linux desktop.",
             this.settings.launch_at_startup,
             cx,
@@ -423,8 +423,7 @@ fn chats(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElemen
                         ThemePreference::Dark => gpui_component::theme::ThemeMode::Dark,
                         ThemePreference::System => cx.window_appearance().into(),
                     };
-                    theme::set_dark_mode(mode.is_dark());
-                    gpui_component::Theme::change(mode, None, cx);
+                    theme::apply_component_theme(mode, cx);
                     this.save_settings(cx);
                 })),
         );
@@ -473,7 +472,7 @@ fn chats(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElemen
 
     card("APPEARANCE AND COMPOSING")
         .child(theme_picker)
-        .child(value_row("Wallpaper", "Wasabi line pattern"))
+        .child(value_row("Wallpaper", "wasabi line pattern"))
         .child(text_size_picker)
         .child(toggle_row(
             "setting-enter-send",
@@ -491,7 +490,7 @@ fn notifications(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::A
         .child(toggle_row(
             "setting-notifications",
             "Desktop notifications",
-            "Allow Wasabi to notify you about new messages.",
+            "Allow wasabi to notify you about new messages.",
             this.settings.desktop_notifications,
             cx,
             |this| this.settings.desktop_notifications = !this.settings.desktop_notifications,
@@ -611,7 +610,7 @@ fn shortcuts() -> gpui::AnyElement {
 }
 
 fn help() -> gpui::AnyElement {
-    card("ABOUT WASABI")
+    card("ABOUT")
         .child(value_row("Version", env!("CARGO_PKG_VERSION")))
         .child(value_row("Build", "Linux / GPUI"))
         .child(value_row(

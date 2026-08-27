@@ -2006,7 +2006,7 @@ dependencies = [
 
 [[package]]
 name = "wasabi-core"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "chrono",
  "thiserror",
@@ -2024,7 +2024,7 @@ dependencies = [
 
 [[package]]
 name = "wasabi-domain"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "chrono",
  "serde",
@@ -2033,7 +2033,7 @@ dependencies = [
 
 [[package]]
 name = "wasabi-media"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "async-trait",
  "filetime",
@@ -2053,7 +2053,7 @@ dependencies = [
 
 [[package]]
 name = "wasabi-repository"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "chrono",
  "diesel",
@@ -2074,14 +2074,14 @@ dependencies = [
 
 [[package]]
 name = "wasabi-test-support"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "tempfile",
 ]
 
 [[package]]
 name = "wasabi-whatsapp"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "anyhow",
  "async-trait",

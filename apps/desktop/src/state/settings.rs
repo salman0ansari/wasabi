@@ -137,7 +137,7 @@ impl DeviceSettings {
         fs::create_dir_all(parent)?;
         let executable = std::env::current_exe()?;
         let entry = format!(
-            "[Desktop Entry]\nType=Application\nName=Wasabi\nExec=\"{}\"\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
+            "[Desktop Entry]\nType=Application\nName=wasabi\nExec=\"{}\"\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
             executable.to_string_lossy().replace('"', "\\\"")
         );
         let temporary = path.with_extension("desktop.tmp");

@@ -32,7 +32,7 @@ impl NotificationDispatcher {
             .spawn(move || {
                 let mut notification = Notification::new();
                 notification
-                    .appname("Wasabi")
+                    .appname("wasabi")
                     .summary(&title)
                     .body(&body)
                     .icon("wasabi")

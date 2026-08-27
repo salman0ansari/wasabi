@@ -1,6 +1,7 @@
-# Wasabi screenshot gallery
+# wasabi screenshot gallery
 
 These images are captures of the native GPUI application—not design mockups or rasterized UI.
+All identities and conversation content in committed captures are synthetic.
 
 | Surface | Theme | Viewport | File |
 | --- | --- | --- | --- |
@@ -21,7 +22,6 @@ These images are captures of the native GPUI application—not design mockups or
 | Operational Storage settings | Light | 1280×922 | [`settings-storage-light.png`](settings-storage-light.png) |
 | Operational Storage settings | Dark | 1280×922 | [`settings-storage-dark.png`](settings-storage-dark.png) |
 | Account logout confirmation | Light | 1280×922 | [`account-logout-confirm-light.png`](account-logout-confirm-light.png) |
-| Contact drawer overlay | Light | 980×700 | [`contact-drawer-compact.png`](contact-drawer-compact.png) |
 | Group information and real participant roles | Light | 1280×922 | [`group-info-light.png`](group-info-light.png) |
 | Synchronized chat lifecycle actions | Light | 1440×900 | [`chat-lifecycle-actions.png`](chat-lifecycle-actions.png) |
 | Exact-chat clear confirmation | Light | 1280×850 | [`clear-chat-confirmation.png`](clear-chat-confirmation.png) |

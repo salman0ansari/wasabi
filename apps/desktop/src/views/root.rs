@@ -569,7 +569,7 @@ impl MainWindow {
                 wasabi_domain::StagedAttachment {
                     transfer: wasabi_domain::TransferId::new("preview-transfer"),
                     kind: wasabi_domain::AttachmentKind::Document,
-                    display_name: "Wasabi product brief.pdf".to_string(),
+                    display_name: "wasabi product brief.pdf".to_string(),
                     mime_type: "application/pdf".to_string(),
                     bytes_total: 2_621_440,
                 },

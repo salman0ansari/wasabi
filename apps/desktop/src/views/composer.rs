@@ -210,7 +210,7 @@ pub fn composer_bar(
     if staging {
         bar = bar.child(attachment_preview(
             "Preparing attachment…".to_string(),
-            "Validating and copying into Wasabi".to_string(),
+            "Validating and copying into wasabi".to_string(),
             None,
             cx,
         ));
