@@ -12,6 +12,12 @@ All notable user-visible changes to wasabi are recorded here. The format follows
   request, partial server rejections are reported without inventing success,
   and acknowledged metadata refreshes the participant list before the picker
   closes.
+- Admins can now open real participant actions from group details, promote a
+  member, dismiss an admin, or remove a participant through exact-person,
+  exact-group cancel-first confirmations. The signed-in user and group creator
+  remain non-actionable, stale roles are rejected before dispatch, partial
+  protocol rejection is surfaced, and successful metadata refreshes the real
+  participant roles.
 - Group details now expose acknowledged, admin-gated controls for who may edit
   group information, who may send messages, and whether new members require
   approval. Mutations capture an immutable group identity, use typed protocol

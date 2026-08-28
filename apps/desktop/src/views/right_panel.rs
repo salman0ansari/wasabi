@@ -696,6 +696,7 @@ fn participants_section(this: &MainWindow, cx: &mut Context<MainWindow>) -> gpui
                         })
                         .when(!pending, |row| {
                             row.cursor_pointer()
+                                .aria_label("Add group members")
                                 .hover(|style| style.bg(theme::row_hover()))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.begin_add_group_members(window, cx)
@@ -714,8 +715,8 @@ fn participants_section(this: &MainWindow, cx: &mut Context<MainWindow>) -> gpui
                         .child(if pending { "Working…" } else { "Add members" }),
                 );
             }
-            for participant in &details.participants {
-                body = body.child(participant_row(participant));
+            for (index, participant) in details.participants.iter().enumerate() {
+                body = body.child(participant_row(participant, details, index, cx));
             }
         }
         _ if this.details_loading => {
@@ -757,7 +758,12 @@ fn participants_section(this: &MainWindow, cx: &mut Context<MainWindow>) -> gpui
     body
 }
 
-fn participant_row(participant: &Participant) -> gpui::Div {
+fn participant_row(
+    participant: &Participant,
+    details: &wasabi_domain::GroupDetails,
+    index: usize,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Stateful<gpui::Div> {
     let initial = participant
         .display_name
         .chars()
@@ -770,11 +776,30 @@ fn participant_row(participant: &Participant) -> gpui::Div {
         ParticipantRole::Admin => Some("admin"),
         ParticipantRole::SuperAdmin => Some("creator"),
     };
+    let actionable = details.permissions.can_manage_members()
+        && !participant.is_self
+        && participant.role != ParticipantRole::SuperAdmin;
+    let target = crate::views::root::GroupMemberTarget {
+        chat: details.chat.clone(),
+        group_name: details.subject.clone(),
+        participant: wasabi_domain::ChatId::new(participant.jid.clone()),
+        participant_name: participant.display_name.clone(),
+        participant_role: participant.role,
+    };
     gpui::div()
+        .id(("group-participant", index))
         .min_h(px(52.0))
         .flex()
         .items_center()
         .gap(px(10.0))
+        .when(actionable, |row| {
+            row.cursor_pointer()
+                .aria_label(format!("Manage {}", participant.display_name))
+                .hover(|style| style.bg(theme::row_hover()))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.open_group_member_actions(target.clone(), cx)
+                }))
+        })
         .child(
             gpui::div()
                 .size(px(34.0))
@@ -807,4 +832,11 @@ fn participant_row(participant: &Participant) -> gpui::Div {
                 .text_color(theme::accent_text())
                 .child(role)
         }))
+        .when(actionable, |row| {
+            row.child(
+                Icon::new(IconName::ChevronRight)
+                    .size(px(15.0))
+                    .text_color(theme::text_secondary()),
+            )
+        })
 }

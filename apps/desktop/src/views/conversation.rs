@@ -861,6 +861,12 @@ pub fn message_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> g
         crate::views::root::MessageOverlay::EditGroupText(field) => {
             group_text_edit_card(this, field, cx)
         }
+        crate::views::root::MessageOverlay::GroupMemberActions(target) => {
+            group_member_action_sheet(target, cx)
+        }
+        crate::views::root::MessageOverlay::ConfirmGroupMember(action) => {
+            group_member_confirmation(action, cx)
+        }
     };
     gpui::div()
         .absolute()
@@ -870,6 +876,138 @@ pub fn message_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> g
         .justify_center()
         .bg(theme::scrim())
         .child(card)
+}
+
+fn group_member_action_sheet(
+    target: crate::views::root::GroupMemberTarget,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Div {
+    let role_action = match target.participant_role {
+        wasabi_domain::ParticipantRole::Member => Some((
+            "promote-group-member",
+            "Make group admin…",
+            crate::views::root::GroupMemberActionKind::Promote,
+        )),
+        wasabi_domain::ParticipantRole::Admin => Some((
+            "demote-group-member",
+            "Dismiss as admin…",
+            crate::views::root::GroupMemberActionKind::Demote,
+        )),
+        wasabi_domain::ParticipantRole::SuperAdmin => None,
+    };
+    let role_target = target.clone();
+    let remove_target = target.clone();
+    action_card()
+        .child(
+            gpui::div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    gpui::div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(
+                            gpui::div()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(theme::text_primary())
+                                .child("Manage participant"),
+                        )
+                        .child(
+                            gpui::div()
+                                .text_size(px(theme::TEXT_SIZE_SM))
+                                .text_color(theme::text_secondary())
+                                .child(target.participant_name.clone()),
+                        ),
+                )
+                .child(
+                    sheet_button("close-group-member-actions", "Close", false)
+                        .on_click(cx.listener(|this, _, _, cx| this.close_message_overlay(cx))),
+                ),
+        )
+        .children(role_action.map(|(id, label, kind)| {
+            sheet_button(id, label, false).on_click(cx.listener(move |this, _, _, cx| {
+                this.confirm_group_member_action(role_target.clone(), kind, cx)
+            }))
+        }))
+        .child(
+            sheet_button("remove-group-member", "Remove from group…", true).on_click(
+                cx.listener(move |this, _, _, cx| {
+                    this.confirm_group_member_action(
+                        remove_target.clone(),
+                        crate::views::root::GroupMemberActionKind::Remove,
+                        cx,
+                    )
+                }),
+            ),
+        )
+}
+
+fn group_member_confirmation(
+    action: crate::views::root::GroupMemberAction,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Div {
+    let (title, detail, confirm, confirm_id, danger) = group_member_confirmation_copy(&action);
+    action_card()
+        .child(
+            gpui::div()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme::text_primary())
+                .child(title),
+        )
+        .child(
+            gpui::div()
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .text_color(theme::text_secondary())
+                .child(detail),
+        )
+        .child(
+            gpui::div()
+                .flex()
+                .justify_end()
+                .gap(px(8.0))
+                .child(
+                    sheet_button("cancel-group-member-action", "Cancel", false)
+                        .on_click(cx.listener(|this, _, _, cx| this.close_message_overlay(cx))),
+                )
+                .child(
+                    sheet_button(confirm_id, confirm, danger).on_click(cx.listener(
+                        |this, _, _, cx| this.run_confirmed_group_member_action(cx),
+                    )),
+                ),
+        )
+}
+
+fn group_member_confirmation_copy(
+    action: &crate::views::root::GroupMemberAction,
+) -> (String, &'static str, &'static str, &'static str, bool) {
+    match action.kind {
+        crate::views::root::GroupMemberActionKind::Promote => (
+            format!("Make “{}” a group admin?", action.target.participant_name),
+            "Group admins can add and remove participants and change group settings.",
+            "Make admin",
+            "confirm-promote-group-member",
+            false,
+        ),
+        crate::views::root::GroupMemberActionKind::Demote => (
+            format!("Dismiss “{}” as admin?", action.target.participant_name),
+            "They will remain in the group as a participant but lose admin controls.",
+            "Dismiss admin",
+            "confirm-demote-group-member",
+            false,
+        ),
+        crate::views::root::GroupMemberActionKind::Remove => (
+            format!(
+                "Remove “{}” from “{}”?",
+                action.target.participant_name, action.target.group_name
+            ),
+            "They will be removed only after the linked account accepts the request.",
+            "Remove",
+            "confirm-remove-group-member",
+            true,
+        ),
+    }
 }
 
 fn group_text_edit_card(
@@ -1266,7 +1404,9 @@ fn sheet_button(
 /// Width is ignored by the vertical list; only heights matter.
 #[cfg(test)]
 mod tests {
-    use super::{chat_confirmation_copy, format_bytes};
+    use super::{
+        chat_confirmation_copy, format_bytes, group_member_confirmation_copy,
+    };
 
     #[test]
     fn formats_media_sizes_for_desktop_cards() {
@@ -1295,5 +1435,27 @@ mod tests {
         assert!(delete_copy.0.contains("Avery Chen"));
         assert!(delete_copy.1.contains("other participants"));
         assert_eq!(delete_copy.2, "Delete chat");
+    }
+
+    #[test]
+    fn group_member_confirmations_name_the_exact_person_and_group() {
+        let target = crate::views::root::GroupMemberTarget {
+            chat: wasabi_domain::ChatId::new("preview-group@g.us"),
+            group_name: "Weekend hiking crew".to_string(),
+            participant: wasabi_domain::ChatId::new("preview-avery@s.whatsapp.net"),
+            participant_name: "Avery Chen".to_string(),
+            participant_role: wasabi_domain::ParticipantRole::Admin,
+        };
+        let removal = crate::views::root::GroupMemberAction {
+            target,
+            kind: crate::views::root::GroupMemberActionKind::Remove,
+        };
+
+        let copy = group_member_confirmation_copy(&removal);
+
+        assert!(copy.0.contains("Avery Chen"));
+        assert!(copy.0.contains("Weekend hiking crew"));
+        assert_eq!(copy.2, "Remove");
+        assert!(copy.4);
     }
 }

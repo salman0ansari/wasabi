@@ -25,6 +25,7 @@ All identities and conversation content in committed captures are synthetic.
 | Group information and real participant roles | Light | 1280×922 | [`group-info-light.png`](group-info-light.png) |
 | Acknowledged group description editor | Light | 1280×922 | [`group-description-edit.png`](group-description-edit.png) |
 | Add real group members from cached contacts | Dark | 1280×922 | [`group-add-members.png`](group-add-members.png) |
+| Exact-person group removal confirmation | Dark | 1280×922 | [`group-member-remove-confirmation.png`](group-member-remove-confirmation.png) |
 | Synchronized chat lifecycle actions | Light | 1440×900 | [`chat-lifecycle-actions.png`](chat-lifecycle-actions.png) |
 | Exact-chat clear confirmation | Light | 1280×850 | [`clear-chat-confirmation.png`](clear-chat-confirmation.png) |
 

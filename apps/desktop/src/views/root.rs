@@ -54,12 +54,36 @@ pub(crate) enum MessageOverlay {
     Confirm(wasabi_domain::MessageAction),
     ConfirmChat(wasabi_domain::ChatAction),
     EditGroupText(GroupTextField),
+    GroupMemberActions(GroupMemberTarget),
+    ConfirmGroupMember(GroupMemberAction),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GroupTextField {
     Subject,
     Description,
+}
+
+#[derive(Clone)]
+pub(crate) struct GroupMemberTarget {
+    pub(crate) chat: wasabi_domain::ChatId,
+    pub(crate) group_name: String,
+    pub(crate) participant: wasabi_domain::ChatId,
+    pub(crate) participant_name: String,
+    pub(crate) participant_role: wasabi_domain::ParticipantRole,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GroupMemberActionKind {
+    Promote,
+    Demote,
+    Remove,
+}
+
+#[derive(Clone)]
+pub(crate) struct GroupMemberAction {
+    pub(crate) target: GroupMemberTarget,
+    pub(crate) kind: GroupMemberActionKind,
 }
 
 #[derive(Clone, Copy)]
@@ -626,7 +650,11 @@ impl MainWindow {
         }
         if matches!(
             mode,
-            "group-info" | "group-description-edit" | "group-add-members"
+            "group-info"
+                | "group-description-edit"
+                | "group-add-members"
+                | "group-member-actions"
+                | "group-member-remove"
         ) {
             let group_chat = "preview-group@g.us";
             if let Some(summary) = self.chats.chats.first_mut() {
@@ -646,6 +674,29 @@ impl MainWindow {
                     window,
                     cx,
                 );
+            } else if matches!(mode, "group-member-actions" | "group-member-remove") {
+                let details = crate::state::preview::group_details_preview();
+                if let Some(participant) = details
+                    .participants
+                    .iter()
+                    .find(|participant| participant.display_name == "Avery Chen")
+                {
+                    let target = GroupMemberTarget {
+                        chat: details.chat.clone(),
+                        group_name: details.subject.clone(),
+                        participant: wasabi_domain::ChatId::new(participant.jid.clone()),
+                        participant_name: participant.display_name.clone(),
+                        participant_role: participant.role,
+                    };
+                    self.message_overlay = Some(if mode == "group-member-remove" {
+                        MessageOverlay::ConfirmGroupMember(GroupMemberAction {
+                            target,
+                            kind: GroupMemberActionKind::Remove,
+                        })
+                    } else {
+                        MessageOverlay::GroupMemberActions(target)
+                    });
+                }
             }
         }
         if matches!(mode, "chat-clear" | "chat-delete") {
@@ -2116,6 +2167,18 @@ impl MainWindow {
             return;
         }
         let target = patch.chat().as_str().to_string();
+        let success_feedback = match patch.change() {
+            wasabi_domain::GroupChange::PromoteParticipant(_) => {
+                Some("Participant is now a group admin.".to_string())
+            }
+            wasabi_domain::GroupChange::DemoteParticipant(_) => {
+                Some("Participant is no longer a group admin.".to_string())
+            }
+            wasabi_domain::GroupChange::RemoveParticipant(_) => {
+                Some("Participant was removed from the group.".to_string())
+            }
+            _ => None,
+        };
         let generation = self.group_mutation_gen.fetch_add(1, Ordering::AcqRel) + 1;
         self.group_mutation_in_progress = true;
         self.group_mutation_error = None;
@@ -2136,6 +2199,15 @@ impl MainWindow {
                 match result {
                     Ok(result) => {
                         this.group_mutation_error = None;
+                        this.group_mutation_feedback = if result.rejected_participants > 0 {
+                            this.group_mutation_error = Some(
+                                "The linked account did not apply this participant change. The group list was refreshed."
+                                    .to_string(),
+                            );
+                            None
+                        } else {
+                            success_feedback
+                        };
                         if let Some(details) = result.details {
                             this.conversation_details = Some(ConversationDetails::Group(details));
                         } else {
@@ -2358,6 +2430,91 @@ impl MainWindow {
         self.message_overlay = None;
         self.group_text_edit_error = None;
         self.apply_group_patch(patch, cx);
+    }
+
+    pub(crate) fn open_group_member_actions(
+        &mut self,
+        target: GroupMemberTarget,
+        cx: &mut Context<Self>,
+    ) {
+        if self.group_mutation_in_progress || !self.group_member_target_is_actionable(&target) {
+            return;
+        }
+        self.group_mutation_error = None;
+        self.group_mutation_feedback = None;
+        self.message_overlay = Some(MessageOverlay::GroupMemberActions(target));
+        cx.notify();
+    }
+
+    pub(crate) fn confirm_group_member_action(
+        &mut self,
+        target: GroupMemberTarget,
+        kind: GroupMemberActionKind,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.group_member_target_is_actionable(&target)
+            || !group_member_action_matches_role(kind, target.participant_role)
+        {
+            self.message_overlay = None;
+            self.group_mutation_error = Some(
+                "This participant can no longer be managed from the current group state."
+                    .to_string(),
+            );
+            cx.notify();
+            return;
+        }
+        self.message_overlay = Some(MessageOverlay::ConfirmGroupMember(GroupMemberAction {
+            target,
+            kind,
+        }));
+        cx.notify();
+    }
+
+    pub(crate) fn run_confirmed_group_member_action(&mut self, cx: &mut Context<Self>) {
+        let Some(MessageOverlay::ConfirmGroupMember(action)) = self.message_overlay.take() else {
+            return;
+        };
+        if !self.group_member_target_is_actionable(&action.target)
+            || !group_member_action_matches_role(action.kind, action.target.participant_role)
+        {
+            self.group_mutation_error = Some(
+                "This participant can no longer be managed from the current group state."
+                    .to_string(),
+            );
+            cx.notify();
+            return;
+        }
+        let patch = match action.kind {
+            GroupMemberActionKind::Promote => wasabi_domain::GroupPatch::promote_participant(
+                action.target.chat,
+                action.target.participant,
+            ),
+            GroupMemberActionKind::Demote => wasabi_domain::GroupPatch::demote_participant(
+                action.target.chat,
+                action.target.participant,
+            ),
+            GroupMemberActionKind::Remove => wasabi_domain::GroupPatch::remove_participant(
+                action.target.chat,
+                action.target.participant,
+            ),
+        };
+        self.apply_group_patch(patch, cx);
+    }
+
+    fn group_member_target_is_actionable(&self, target: &GroupMemberTarget) -> bool {
+        let Some(ConversationDetails::Group(details)) = self.conversation_details.as_ref() else {
+            return false;
+        };
+        details.chat == target.chat
+            && self.chats.selected.as_deref() == Some(target.chat.as_str())
+            && details.permissions.can_manage_members()
+            && details.participants.iter().any(|participant| {
+                participant.jid == target.participant.as_str()
+                    && participant.display_name == target.participant_name
+                    && participant.role == target.participant_role
+                    && !participant.is_self
+                    && participant.role != wasabi_domain::ParticipantRole::SuperAdmin
+            })
     }
 
     pub(crate) fn confirm_message_action(
@@ -4074,6 +4231,19 @@ fn group_member_add_failure(kind: wasabi_domain::ErrorKind) -> (String, bool) {
     }
 }
 
+fn group_member_action_matches_role(
+    kind: GroupMemberActionKind,
+    role: wasabi_domain::ParticipantRole,
+) -> bool {
+    matches!(
+        (kind, role),
+        (GroupMemberActionKind::Promote, wasabi_domain::ParticipantRole::Member)
+            | (GroupMemberActionKind::Demote, wasabi_domain::ParticipantRole::Admin)
+            | (GroupMemberActionKind::Remove, wasabi_domain::ParticipantRole::Member)
+            | (GroupMemberActionKind::Remove, wasabi_domain::ParticipantRole::Admin)
+    )
+}
+
 // ---- Watch appliers --------------------------------------------------------
 
 /// Apply one session-state update plus derived side effects.
@@ -4187,9 +4357,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        TYPING_REFRESH_AFTER, TypingDisplay, group_creation_failure, group_member_add_failure,
-        normalized_contact_query, optimistic_own_reaction, should_clear_visible_edit,
-        should_restore_composer, submitted_edit_matches, timeline_splice, typing_refresh_due,
+        GroupMemberActionKind, TYPING_REFRESH_AFTER, TypingDisplay, group_creation_failure,
+        group_member_action_matches_role, group_member_add_failure, normalized_contact_query,
+        optimistic_own_reaction, should_clear_visible_edit, should_restore_composer,
+        submitted_edit_matches, timeline_splice, typing_refresh_due,
     };
 
     #[test]
@@ -4224,6 +4395,28 @@ mod tests {
         assert!(timeout_uncertain);
         assert!(offline_uncertain);
         assert!(!rejected_uncertain);
+    }
+
+    #[test]
+    fn group_member_role_actions_never_target_creator_or_wrong_role() {
+        use wasabi_domain::ParticipantRole;
+
+        assert!(group_member_action_matches_role(
+            GroupMemberActionKind::Promote,
+            ParticipantRole::Member
+        ));
+        assert!(group_member_action_matches_role(
+            GroupMemberActionKind::Demote,
+            ParticipantRole::Admin
+        ));
+        assert!(!group_member_action_matches_role(
+            GroupMemberActionKind::Promote,
+            ParticipantRole::Admin
+        ));
+        assert!(!group_member_action_matches_role(
+            GroupMemberActionKind::Remove,
+            ParticipantRole::SuperAdmin
+        ));
     }
 
     #[test]
