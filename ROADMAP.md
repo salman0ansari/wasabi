@@ -34,8 +34,8 @@ wasabi is being built in public toward a dependable Linux-first replacement for 
 | Status | Work |
 | --- | --- |
 | Done | Cached New Chat address book, verified unknown-number lookup, real group creation, distinct direct details, real group participants/admin roles, and offline snapshots. |
-| In progress | Typed group mutations for subject, description, membership, admin roles, permissions, invite links, and leave. |
-| Planned | Profile photo/About refresh, groups in common, contact controls, block/report/delete, member/admin management, invite links, and role explanations. |
+| In progress | Typed group mutations for subject, description, add-member search, admin roles, removal, permissions, invite links, and leave. |
+| Planned | Profile photo/About refresh, groups in common, contact controls, block/report/delete, remaining member/admin management, invite links, and role explanations. |
 
 ## Composer and media
 
@@ -86,4 +86,3 @@ These rail destinations remain hidden until each module passes its functional an
 | Planned | Status | List/viewer, muted updates, text/image/video publishing, deletion, and privacy controls. |
 | Planned | Channels | Discovery/following, update feed, media, reactions, information, mute/unfollow/report. |
 | Planned | Communities | Announcements, subgroups, membership, joining, creation, group linking/unlinking, and management. |
-

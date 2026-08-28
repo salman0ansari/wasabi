@@ -11,7 +11,9 @@ use crate::views::root::{MainWindow, NewChatMode};
 
 pub fn overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
     let content = match this.new_chat_mode {
-        NewChatMode::GroupParticipants => participant_step(this, cx),
+        NewChatMode::GroupParticipants | NewChatMode::AddGroupMembers => {
+            participant_step(this, cx)
+        }
         NewChatMode::GroupSubject => subject_step(this, cx),
         NewChatMode::Direct => gpui::div(),
     };
@@ -59,6 +61,7 @@ pub fn overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div
 fn group_header(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
     let title = match this.new_chat_mode {
         NewChatMode::GroupParticipants => "Add group members",
+        NewChatMode::AddGroupMembers => "Add members",
         NewChatMode::GroupSubject => "New group",
         NewChatMode::Direct => "New chat",
     };
@@ -119,6 +122,22 @@ fn group_header(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Di
 }
 
 fn participant_step(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
+    let adding_to_existing_group = this.new_chat_mode == NewChatMode::AddGroupMembers;
+    let existing_members = this
+        .conversation_details
+        .as_ref()
+        .and_then(|details| match details {
+            wasabi_domain::ConversationDetails::Group(details) => Some(
+                details
+                    .participants
+                    .iter()
+                    .map(|participant| participant.jid.as_str())
+                    .collect::<std::collections::HashSet<_>>(),
+            ),
+            wasabi_domain::ConversationDetails::Direct(_) => None,
+        })
+        .unwrap_or_default();
+    let available_contacts = available_group_contacts(&this.contacts, &existing_members);
     let selected_count = this.group_participants.len();
     let selected_names = this
         .group_participants
@@ -148,13 +167,21 @@ fn participant_step(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui
             "Loading contacts…",
             "Reading the encrypted local account cache",
         ));
-    } else if this.contacts.is_empty() {
+    } else if available_contacts.is_empty() {
         list = list.child(state_message(
-            "No contacts found",
-            "Try another name or wait for contact synchronization.",
+            if adding_to_existing_group {
+                "No new contacts found"
+            } else {
+                "No contacts found"
+            },
+            if adding_to_existing_group {
+                "Everyone in these results is already in the group. Try another name."
+            } else {
+                "Try another name or wait for contact synchronization."
+            },
         ));
     } else {
-        for (index, contact) in this.contacts.clone().into_iter().enumerate() {
+        for (index, contact) in available_contacts.into_iter().enumerate() {
             let selected = this
                 .group_participants
                 .iter()
@@ -247,6 +274,28 @@ fn participant_step(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui
         }
     }
 
+    let footer = if adding_to_existing_group {
+        group_footer(
+            this.group_creation_error.clone(),
+            if this.group_creating { "Adding…" } else { "Add" },
+            selected_count > 0 && !this.group_creating && !this.group_creation_uncertain,
+            cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                this.submit_add_group_members(cx)
+            }),
+        )
+    } else {
+        group_footer(
+            this.group_creation_error.clone(),
+            "Next",
+            selected_count > 0,
+            cx.listener(|this, _, window, cx| {
+                cx.stop_propagation();
+                this.continue_new_group(window, cx)
+            }),
+        )
+    };
+
     gpui::div()
         .flex_1()
         .min_h(px(0.0))
@@ -292,15 +341,7 @@ fn participant_step(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui
                 ),
         )
         .child(list)
-        .child(group_footer(
-            this.group_creation_error.clone(),
-            "Next",
-            selected_count > 0,
-            cx.listener(|this, _, window, cx| {
-                cx.stop_propagation();
-                this.continue_new_group(window, cx)
-            }),
-        ))
+        .child(footer)
 }
 
 fn subject_step(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
@@ -480,6 +521,8 @@ fn group_footer(
             gpui::div()
                 .id(if label == "Next" {
                     "new-group-next"
+                } else if matches!(label, "Add" | "Adding…") {
+                    "add-group-members"
                 } else {
                     "new-group-create"
                 })
@@ -534,4 +577,42 @@ fn state_message(title: impl Into<String>, detail: impl Into<String>) -> gpui::D
                 .text_color(theme::text_secondary())
                 .child(detail.into()),
         )
+}
+
+fn available_group_contacts(
+    contacts: &[wasabi_domain::ContactSummary],
+    existing_members: &std::collections::HashSet<&str>,
+) -> Vec<wasabi_domain::ContactSummary> {
+    contacts
+        .iter()
+        .filter(|contact| !existing_members.contains(contact.jid.as_str()))
+        .cloned()
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn existing_group_members_are_not_offered_again() {
+        let contacts = [
+            ("Already here", "existing@s.whatsapp.net"),
+            ("Available", "available@s.whatsapp.net"),
+        ]
+        .into_iter()
+        .map(|(display_name, jid)| wasabi_domain::ContactSummary {
+            jid: wasabi_domain::ChatId::new(jid),
+            display_name: display_name.to_string(),
+            phone_number: None,
+            avatar: None,
+        })
+        .collect::<Vec<_>>();
+        let members = std::collections::HashSet::from(["existing@s.whatsapp.net"]);
+
+        let available = available_group_contacts(&contacts, &members);
+
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0].jid.as_str(), "available@s.whatsapp.net");
+    }
 }

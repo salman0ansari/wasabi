@@ -156,7 +156,10 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
         if let Some(error) = this.group_mutation_error.clone() {
             panel = panel.child(section("GROUP UPDATE FAILED", error));
         }
-        panel = panel.child(participants_section(this));
+        if let Some(feedback) = this.group_mutation_feedback.clone() {
+            panel = panel.child(section("GROUP UPDATED", feedback));
+        }
+        panel = panel.child(participants_section(this, cx));
     }
 
     panel = panel
@@ -649,7 +652,7 @@ fn destructive_chat_action(
         )
 }
 
-fn participants_section(this: &MainWindow) -> gpui::Div {
+fn participants_section(this: &MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
     let mut body = gpui::div()
         .mx(px(16.0))
         .py(px(14.0))
@@ -675,6 +678,42 @@ fn participants_section(this: &MainWindow) -> gpui::Div {
             );
         }
         Some(ConversationDetails::Group(details)) => {
+            if details.permissions.can_manage_members() {
+                let pending = this.group_mutation_in_progress;
+                body = body.child(
+                    gpui::div()
+                        .id("add-group-members-row")
+                        .min_h(px(48.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .text_size(px(theme::TEXT_SIZE))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(if pending {
+                            theme::text_secondary()
+                        } else {
+                            theme::accent_text()
+                        })
+                        .when(!pending, |row| {
+                            row.cursor_pointer()
+                                .hover(|style| style.bg(theme::row_hover()))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.begin_add_group_members(window, cx)
+                                }))
+                        })
+                        .child(
+                            gpui::div()
+                                .size(px(34.0))
+                                .rounded_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .bg(theme::row_selected())
+                                .child(Icon::new(IconName::Plus).size(px(17.0))),
+                        )
+                        .child(if pending { "Working…" } else { "Add members" }),
+                );
+            }
             for participant in &details.participants {
                 body = body.child(participant_row(participant));
             }

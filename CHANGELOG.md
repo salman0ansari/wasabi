@@ -6,6 +6,12 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ### Added
 
+- Group admins can now add real members from the information drawer through a
+  searchable, paginated cached-contact picker. Existing participants are
+  excluded, the exact group and selected identities are captured before the
+  request, partial server rejections are reported without inventing success,
+  and acknowledged metadata refreshes the participant list before the picker
+  closes.
 - Group details now expose acknowledged, admin-gated controls for who may edit
   group information, who may send messages, and whether new members require
   approval. Mutations capture an immutable group identity, use typed protocol

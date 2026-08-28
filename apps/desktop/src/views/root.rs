@@ -94,6 +94,7 @@ pub(crate) enum PhoneLookupUi {
 pub(crate) enum NewChatMode {
     Direct,
     GroupParticipants,
+    AddGroupMembers,
     GroupSubject,
 }
 
@@ -158,6 +159,7 @@ pub struct MainWindow {
     pub(crate) details_error: Option<String>,
     pub(crate) group_mutation_in_progress: bool,
     pub(crate) group_mutation_error: Option<String>,
+    pub(crate) group_mutation_feedback: Option<String>,
     pub(crate) group_text_edit_error: Option<String>,
     pub(crate) settings: DeviceSettings,
     pub(crate) settings_section: SettingsSection,
@@ -301,6 +303,7 @@ impl MainWindow {
             details_error: None,
             group_mutation_in_progress: false,
             group_mutation_error: None,
+            group_mutation_feedback: None,
             group_text_edit_error: None,
             settings: DeviceSettings::load(),
             settings_section: SettingsSection::Chats,
@@ -621,7 +624,10 @@ impl MainWindow {
         if mode == "chat-actions" {
             self.show_right_panel = true;
         }
-        if matches!(mode, "group-info" | "group-description-edit") {
+        if matches!(
+            mode,
+            "group-info" | "group-description-edit" | "group-add-members"
+        ) {
             let group_chat = "preview-group@g.us";
             if let Some(summary) = self.chats.chats.first_mut() {
                 summary.id = wasabi_domain::ChatId::new(group_chat);
@@ -664,6 +670,7 @@ impl MainWindow {
                 | "new-group-participants"
                 | "new-group-subject"
                 | "new-group-creating"
+                | "group-add-members"
         ) {
             self.new_chat_open = true;
             self.contacts = [
@@ -694,6 +701,24 @@ impl MainWindow {
                     input.set_value("+1 (555) 123-4567", window, cx)
                 });
                 self.contacts.clear();
+            } else if mode == "group-add-members" {
+                self.contacts = [
+                    ("Avery Chen", "preview-avery@s.whatsapp.net"),
+                    ("Amara Okafor", "preview-amara@s.whatsapp.net"),
+                    ("Fatima Zahra", "preview-fatima@s.whatsapp.net"),
+                    ("Priya Sharma", "preview-priya@s.whatsapp.net"),
+                    ("佐藤 美咲", "preview-misaki@s.whatsapp.net"),
+                ]
+                .into_iter()
+                .map(|(display_name, jid)| wasabi_domain::ContactSummary {
+                    jid: wasabi_domain::ChatId::new(jid),
+                    display_name: display_name.to_string(),
+                    phone_number: None,
+                    avatar: None,
+                })
+                .collect();
+                self.new_chat_mode = NewChatMode::AddGroupMembers;
+                self.group_participants = self.contacts.iter().skip(2).take(2).cloned().collect();
             } else if matches!(
                 mode,
                 "new-group-participants" | "new-group-subject" | "new-group-creating"
@@ -778,6 +803,36 @@ impl MainWindow {
         cx.notify();
     }
 
+    pub(crate) fn begin_add_group_members(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ConversationDetails::Group(details)) = self.conversation_details.as_ref() else {
+            return;
+        };
+        if !details.permissions.can_manage_members() || self.group_mutation_in_progress {
+            return;
+        }
+        self.new_chat_open = true;
+        self.new_chat_mode = NewChatMode::AddGroupMembers;
+        self.group_participants.clear();
+        self.group_creation_error = None;
+        self.group_creating = false;
+        self.group_creation_uncertain = false;
+        self.group_creation_gen.fetch_add(1, Ordering::AcqRel);
+        self.contacts.clear();
+        self.contacts_next = None;
+        self.contacts_error = None;
+        self.group_mutation_feedback = None;
+        self.contact_search_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.load_contact_query(false, cx);
+        self.contact_search_input
+            .update(cx, |input, cx| input.focus(window, cx));
+        cx.notify();
+    }
+
     pub(crate) fn toggle_group_participant(
         &mut self,
         contact: wasabi_domain::ContactSummary,
@@ -816,6 +871,104 @@ impl MainWindow {
         cx.notify();
     }
 
+    pub(crate) fn submit_add_group_members(&mut self, cx: &mut Context<Self>) {
+        if self.group_creating || self.new_chat_mode != NewChatMode::AddGroupMembers {
+            return;
+        }
+        if self.group_creation_uncertain {
+            self.group_creation_error = Some(
+                "Refresh the group before retrying so the same people are not added twice."
+                    .to_string(),
+            );
+            cx.notify();
+            return;
+        }
+        let Some(ConversationDetails::Group(details)) = self.conversation_details.as_ref() else {
+            self.group_creation_error =
+                Some("Group information is no longer available.".to_string());
+            cx.notify();
+            return;
+        };
+        if !details.permissions.can_manage_members() {
+            self.group_creation_error = Some("Only group admins can add members.".to_string());
+            cx.notify();
+            return;
+        }
+        if !self.session.state.is_connected() {
+            self.group_creation_error = Some("Reconnect before adding group members.".to_string());
+            cx.notify();
+            return;
+        }
+        let patch = match wasabi_domain::GroupPatch::add_participants(
+            details.chat.clone(),
+            self.group_participants
+                .iter()
+                .map(|contact| contact.jid.clone())
+                .collect(),
+        ) {
+            Ok(patch) => patch,
+            Err(error) => {
+                self.group_creation_error = Some(format!("{error}."));
+                cx.notify();
+                return;
+            }
+        };
+        let target = patch.chat().as_str().to_string();
+        let generation = self.group_creation_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        self.group_creating = true;
+        self.group_creation_error = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.update_group(patch).await;
+            this.update(cx, |this, cx| {
+                if !this.new_chat_open
+                    || this.new_chat_mode != NewChatMode::AddGroupMembers
+                    || this.group_creation_gen.load(Ordering::Acquire) != generation
+                {
+                    return;
+                }
+                this.group_creating = false;
+                if this.chats.selected.as_deref() != Some(target.as_str())
+                    || !this.show_right_panel
+                {
+                    this.close_new_chat(cx);
+                    return;
+                }
+                match result {
+                    Ok(result) => {
+                        let applied = result.applied_participants;
+                        let rejected = result.rejected_participants;
+                        if let Some(details) = result.details {
+                            this.conversation_details = Some(ConversationDetails::Group(details));
+                        }
+                        this.group_mutation_feedback = Some(if applied == 0 {
+                            "No members were added. The group list was refreshed.".to_string()
+                        } else if rejected == 0 {
+                            format!(
+                                "Added {applied} {}.",
+                                if applied == 1 { "member" } else { "members" }
+                            )
+                        } else {
+                            format!(
+                                "Added {applied}; {rejected} could not be added. The group list was refreshed."
+                            )
+                        });
+                        this.close_new_chat(cx);
+                    }
+                    Err(error) => {
+                        tracing::warn!(kind = %error.kind, "adding group members failed");
+                        let (message, uncertain) = group_member_add_failure(error.kind);
+                        this.group_creation_error = Some(message);
+                        this.group_creation_uncertain = uncertain;
+                        cx.notify();
+                    }
+                }
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
     pub(crate) fn back_new_group(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.group_creating {
             return;
@@ -832,6 +985,7 @@ impl MainWindow {
                 self.new_chat_mode = NewChatMode::Direct;
                 self.group_participants.clear();
             }
+            NewChatMode::AddGroupMembers => self.close_new_chat(cx),
             NewChatMode::Direct => {}
         }
         cx.notify();
@@ -925,7 +1079,10 @@ impl MainWindow {
     fn queue_contact_search(&mut self, cx: &mut Context<Self>) {
         self.phone_lookup_gen.fetch_add(1, Ordering::AcqRel);
         self.phone_lookup = PhoneLookupUi::Idle;
-        if self.new_chat_mode == NewChatMode::GroupParticipants {
+        if matches!(
+            self.new_chat_mode,
+            NewChatMode::GroupParticipants | NewChatMode::AddGroupMembers
+        ) {
             self.group_creation_error = None;
         }
         self.load_contact_query(true, cx);
@@ -1195,6 +1352,7 @@ impl MainWindow {
         self.details_error = None;
         self.group_mutation_in_progress = false;
         self.group_mutation_error = None;
+        self.group_mutation_feedback = None;
         self.refresh_chats(cx);
     }
 
@@ -1265,6 +1423,7 @@ impl MainWindow {
         self.details_error = None;
         self.group_mutation_in_progress = false;
         self.group_mutation_error = None;
+        self.group_mutation_feedback = None;
         self.first_visible = 0;
         self.pending_new_messages = 0;
         // An anchored search result starts in the middle of its context; do
@@ -1888,6 +2047,7 @@ impl MainWindow {
         self.details_loading = false;
         self.group_mutation_in_progress = false;
         self.group_mutation_error = None;
+        self.group_mutation_feedback = None;
         cx.notify();
     }
 
@@ -1913,6 +2073,7 @@ impl MainWindow {
         self.details_loading = true;
         self.details_error = None;
         self.group_mutation_error = None;
+        self.group_mutation_feedback = None;
         let bridge = Arc::clone(&self.bridge);
         spawn_main(cx, async move |this, cx| {
             let result = match kind {
@@ -1958,6 +2119,7 @@ impl MainWindow {
         let generation = self.group_mutation_gen.fetch_add(1, Ordering::AcqRel) + 1;
         self.group_mutation_in_progress = true;
         self.group_mutation_error = None;
+        self.group_mutation_feedback = None;
         let bridge = Arc::clone(&self.bridge);
         spawn_main(cx, async move |this, cx| {
             let result = bridge.update_group(patch).await;
@@ -3891,6 +4053,27 @@ fn group_creation_failure(kind: wasabi_domain::ErrorKind) -> (String, bool) {
     }
 }
 
+fn group_member_add_failure(kind: wasabi_domain::ErrorKind) -> (String, bool) {
+    match kind {
+        wasabi_domain::ErrorKind::RateLimited => (
+            "Too many group requests. Wait a little, then try again.".to_string(),
+            false,
+        ),
+        wasabi_domain::ErrorKind::Timeout => (
+            "Adding members timed out. Refresh the group before retrying.".to_string(),
+            true,
+        ),
+        wasabi_domain::ErrorKind::NotConnected => (
+            "Connection lost. Reconnect, refresh the group, then try again.".to_string(),
+            true,
+        ),
+        _ => (
+            "Couldn’t add these members. Review the selection and try again.".to_string(),
+            false,
+        ),
+    }
+}
+
 // ---- Watch appliers --------------------------------------------------------
 
 /// Apply one session-state update plus derived side effects.
@@ -3922,8 +4105,13 @@ fn apply_state(
                 this.group_creating = false;
                 this.group_creation_uncertain = true;
                 this.group_creation_error = Some(
-                    "Connection lost while creating the group. Check Chats after reconnecting."
-                        .to_string(),
+                    if this.new_chat_mode == NewChatMode::AddGroupMembers {
+                        "Connection lost while adding members. Refresh the group after reconnecting before retrying."
+                            .to_string()
+                    } else {
+                        "Connection lost while creating the group. Check Chats after reconnecting."
+                            .to_string()
+                    },
                 );
             }
         }
@@ -3999,9 +4187,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        TYPING_REFRESH_AFTER, TypingDisplay, group_creation_failure, normalized_contact_query,
-        optimistic_own_reaction, should_clear_visible_edit, should_restore_composer,
-        submitted_edit_matches, timeline_splice, typing_refresh_due,
+        TYPING_REFRESH_AFTER, TypingDisplay, group_creation_failure, group_member_add_failure,
+        normalized_contact_query, optimistic_own_reaction, should_clear_visible_edit,
+        should_restore_composer, submitted_edit_matches, timeline_splice, typing_refresh_due,
     };
 
     #[test]
@@ -4022,6 +4210,19 @@ mod tests {
             group_creation_failure(wasabi_domain::ErrorKind::Protocol);
         assert!(timeout_uncertain);
         assert!(!offline_uncertain);
+        assert!(!rejected_uncertain);
+    }
+
+    #[test]
+    fn ambiguous_member_add_failure_requires_metadata_refresh() {
+        let (_, timeout_uncertain) =
+            group_member_add_failure(wasabi_domain::ErrorKind::Timeout);
+        let (_, offline_uncertain) =
+            group_member_add_failure(wasabi_domain::ErrorKind::NotConnected);
+        let (_, rejected_uncertain) =
+            group_member_add_failure(wasabi_domain::ErrorKind::Protocol);
+        assert!(timeout_uncertain);
+        assert!(offline_uncertain);
         assert!(!rejected_uncertain);
     }
 
