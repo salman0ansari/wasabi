@@ -1,7 +1,7 @@
 //! Deterministic, keyset-paginated contact queries over the shared account DB.
 
 use diesel::prelude::*;
-use diesel::sql_types::{Integer, Nullable, Text};
+use diesel::sql_types::{BigInt, Integer, Nullable, Text};
 use wacore::store::error::StoreError;
 use wasabi_domain::{
     AvatarRef, ChatId, ContactPage, ContactPageCursor, ContactSummary, ErrorKind, ServiceError,
@@ -73,6 +73,73 @@ struct ContactRow {
     sort_name: String,
     #[diesel(sql_type = Nullable<Text>)]
     avatar_ref: Option<String>,
+}
+
+#[derive(QueryableByName)]
+pub(crate) struct CachedContactMetadata {
+    #[diesel(sql_type = Nullable<Text>)]
+    pub display_name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    pub about: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    pub avatar_ref: Option<String>,
+}
+
+pub(crate) async fn load_metadata(
+    shared: SharedSqlite,
+    device_id: i32,
+    jid: String,
+) -> Result<Option<CachedContactMetadata>, ServiceError> {
+    shared
+        .read(move |connection| {
+            diesel::sql_query(
+                "SELECT display_name, about, avatar_ref
+                 FROM wasabi_contact_cache
+                 WHERE device_id = ? AND jid = ?",
+            )
+            .bind::<Integer, _>(device_id)
+            .bind::<Text, _>(jid)
+            .get_result::<CachedContactMetadata>(connection)
+            .optional()
+            .map_err(|error| StoreError::Database(Box::new(error)))
+        })
+        .await
+        .map_err(database_error)
+}
+
+pub(crate) async fn save_metadata(
+    shared: SharedSqlite,
+    device_id: i32,
+    jid: String,
+    display_name: Option<String>,
+    about: Option<String>,
+    avatar_ref: Option<String>,
+) -> Result<(), ServiceError> {
+    let fetched_at_ms = chrono::Utc::now().timestamp_millis();
+    shared
+        .run(move |connection| {
+            diesel::sql_query(
+                "INSERT INTO wasabi_contact_cache
+                    (device_id, jid, display_name, about, avatar_ref, fetched_at_ms)
+                 VALUES (?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(device_id, jid) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    about = excluded.about,
+                    avatar_ref = excluded.avatar_ref,
+                    fetched_at_ms = excluded.fetched_at_ms",
+            )
+            .bind::<Integer, _>(device_id)
+            .bind::<Text, _>(jid)
+            .bind::<Nullable<Text>, _>(display_name)
+            .bind::<Nullable<Text>, _>(about)
+            .bind::<Nullable<Text>, _>(avatar_ref)
+            .bind::<BigInt, _>(fetched_at_ms)
+            .execute(connection)
+            .map(|_| ())
+            .map_err(|error| StoreError::Database(Box::new(error)))
+        })
+        .await
+        .map_err(database_error)
 }
 
 pub async fn page(
@@ -154,10 +221,60 @@ fn database_error(error: StoreError) -> ServiceError {
 
 #[cfg(test)]
 mod tests {
-    use super::escape_like;
+    use super::{escape_like, load_metadata, save_metadata};
+    use tempfile::TempDir;
+    use whatsapp_rust_sqlite_storage::{SqliteStore, SqliteStoreConfig};
 
     #[test]
     fn search_literals_do_not_become_sql_wildcards() {
         assert_eq!(escape_like(r"a_b%c\d"), r"a\_b\%c\\d");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn contact_metadata_cache_persists_and_clears_authoritative_fields() {
+        let directory = TempDir::new().expect("tempdir");
+        let url = format!("sqlite://{}", directory.path().join("account.db").display());
+        let sqlite = SqliteStore::with_config(&url, SqliteStoreConfig::default())
+            .await
+            .expect("open sqlite store");
+        crate::wasabi_schema::migrate(sqlite.shared())
+            .await
+            .expect("migrate");
+
+        save_metadata(
+            sqlite.shared(),
+            7,
+            "15550000001@s.whatsapp.net".to_string(),
+            Some("Alice".to_string()),
+            Some("Available".to_string()),
+            Some("picture-1".to_string()),
+        )
+        .await
+        .expect("save metadata");
+        let cached = load_metadata(sqlite.shared(), 7, "15550000001@s.whatsapp.net".to_string())
+            .await
+            .expect("load metadata")
+            .expect("cached row");
+        assert_eq!(cached.display_name.as_deref(), Some("Alice"));
+        assert_eq!(cached.about.as_deref(), Some("Available"));
+        assert_eq!(cached.avatar_ref.as_deref(), Some("picture-1"));
+
+        save_metadata(
+            sqlite.shared(),
+            7,
+            "15550000001@s.whatsapp.net".to_string(),
+            Some("Alice Updated".to_string()),
+            None,
+            None,
+        )
+        .await
+        .expect("overwrite metadata");
+        let cached = load_metadata(sqlite.shared(), 7, "15550000001@s.whatsapp.net".to_string())
+            .await
+            .expect("load updated metadata")
+            .expect("cached row");
+        assert_eq!(cached.display_name.as_deref(), Some("Alice Updated"));
+        assert_eq!(cached.about, None);
+        assert_eq!(cached.avatar_ref, None);
     }
 }

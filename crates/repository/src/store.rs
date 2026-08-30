@@ -538,13 +538,39 @@ impl AccountStore {
             .map(str::to_string)
             .unwrap_or_else(|| jid.user.to_string());
         let phone_number = jid.is_pn().then(|| jid.user.to_string());
+        let cached =
+            crate::contacts::load_metadata(self.shared_db(), self.device_id(), jid.to_string())
+                .await?;
+        let cached_name = cached
+            .as_ref()
+            .and_then(|cached| cached.display_name.as_deref())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string);
         Ok(domain::DirectContactDetails {
             jid: jid.to_string(),
-            display_name,
+            display_name: cached_name.unwrap_or(display_name),
             phone_number,
-            about: None,
-            avatar: None,
+            about: cached.as_ref().and_then(|cached| cached.about.clone()),
+            avatar: cached
+                .and_then(|cached| cached.avatar_ref)
+                .map(domain::AvatarRef),
         })
+    }
+
+    pub async fn save_direct_contact_metadata(
+        &self,
+        details: &domain::DirectContactDetails,
+    ) -> Result<(), domain::ServiceError> {
+        crate::contacts::save_metadata(
+            self.shared_db(),
+            self.device_id(),
+            details.jid.clone(),
+            Some(details.display_name.clone()),
+            details.about.clone(),
+            details.avatar.as_ref().map(|avatar| avatar.0.clone()),
+        )
+        .await
     }
 
     pub async fn contact_page(

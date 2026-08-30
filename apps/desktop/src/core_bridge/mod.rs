@@ -549,12 +549,62 @@ impl CoreBridge {
         &self,
         jid: String,
     ) -> Result<DirectContactDetails, String> {
-        let store = self.store_snapshot()?;
+        let session = self.session_snapshot()?;
+        let store = Arc::clone(&session.store);
         self.run_on_core(async move {
-            store
+            let cached = store
                 .direct_contact_details(&jid)
                 .await
-                .map_err(service_message)
+                .map_err(service_message)?;
+            if !session.state().is_connected() {
+                return Ok(cached);
+            }
+            let contact: whatsapp_rust::Jid = jid
+                .parse()
+                .map_err(|error| format!("Invalid contact identity: {error}"))?;
+            if !contact.is_pn() && !contact.is_lid() {
+                return Err("This conversation is not a direct contact".to_string());
+            }
+            let Some(client) = session.client().await else {
+                return Ok(cached);
+            };
+            let info = match client
+                .contacts()
+                .get_user_info(std::slice::from_ref(&contact))
+                .await
+            {
+                Ok(info) => info,
+                Err(error) => {
+                    let error = contact_lookup_error(error);
+                    tracing::warn!(kind = %error.kind, "live contact metadata refresh failed; using cache");
+                    return Ok(cached);
+                }
+            };
+            let Some(info) = info.get(&contact) else {
+                tracing::warn!("live contact metadata response omitted requested contact; using cache");
+                return Ok(cached);
+            };
+            let about = info
+                .status
+                .as_deref()
+                .map(str::trim)
+                .filter(|status| !status.is_empty())
+                .map(str::to_string);
+            let avatar = info
+                .picture_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|picture| !picture.is_empty())
+                .map(|picture| wasabi_domain::AvatarRef(picture.to_string()));
+            let details = DirectContactDetails {
+                about,
+                avatar,
+                ..cached
+            };
+            if let Err(error) = store.save_direct_contact_metadata(&details).await {
+                tracing::warn!(kind = %error.kind, "failed to persist refreshed contact metadata");
+            }
+            Ok(details)
         })
         .await
     }
