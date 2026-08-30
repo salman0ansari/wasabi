@@ -190,7 +190,7 @@ for ((run = 1; run <= runs; run++)); do
   echo "run $run/$runs: Wasabi" >&2
   benchmark_one \
     wasabi \
-    Wasabi \
+    wasabi \
     env \
       XDG_DATA_HOME="$run_root/wasabi-data" \
       XDG_CONFIG_HOME="$run_root/wasabi-config" \
