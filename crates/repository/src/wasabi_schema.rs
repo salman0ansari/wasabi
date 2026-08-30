@@ -78,6 +78,7 @@ pub async fn migrate(shared: SharedSqlite) -> Result<(), StoreError> {
         .run(|connection| {
             connection
                 .transaction::<_, MigrationError, _>(|connection| {
+                    validate_existing_schema_version(connection)?;
                     for statement in CREATE_STATEMENTS {
                         diesel::sql_query(*statement).execute(connection)?;
                     }
@@ -104,6 +105,58 @@ struct ColumnRow {
     name: String,
 }
 
+#[derive(QueryableByName)]
+struct SchemaVersionRow {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    version: i32,
+}
+
+fn validate_existing_schema_version(
+    connection: &mut diesel::SqliteConnection,
+) -> Result<(), MigrationError> {
+    if !table_exists(connection, "wasabi_schema_version")? {
+        return Ok(());
+    }
+
+    let rows = diesel::sql_query("SELECT version FROM wasabi_schema_version ORDER BY rowid")
+        .load::<SchemaVersionRow>(connection)?;
+    match rows.as_slice() {
+        [] => Ok(()),
+        [row] if row.version < 0 => Err(MigrationError::InvalidSchemaVersion(format!(
+            "negative version {}",
+            row.version
+        ))),
+        [row] if row.version > SCHEMA_VERSION => Err(MigrationError::SchemaTooNew {
+            found: row.version,
+            supported: SCHEMA_VERSION,
+        }),
+        [_] => Ok(()),
+        rows => Err(MigrationError::InvalidSchemaVersion(format!(
+            "expected at most one version row, found {}",
+            rows.len()
+        ))),
+    }
+}
+
+fn table_exists(
+    connection: &mut diesel::SqliteConnection,
+    table: &str,
+) -> Result<bool, diesel::result::Error> {
+    #[derive(QueryableByName)]
+    struct TableRow {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        name: String,
+    }
+
+    let row = diesel::sql_query(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+    )
+    .bind::<diesel::sql_types::Text, _>(table)
+    .get_result::<TableRow>(connection)
+    .optional()?;
+    Ok(row.is_some_and(|row| row.name == table))
+}
+
 fn table_has_column(
     connection: &mut diesel::SqliteConnection,
     table: &str,
@@ -116,18 +169,19 @@ fn table_has_column(
     Ok(rows.into_iter().any(|row| row.name == column))
 }
 
-#[derive(Debug)]
-struct MigrationError(diesel::result::Error);
-
-impl From<diesel::result::Error> for MigrationError {
-    fn from(error: diesel::result::Error) -> Self {
-        Self(error)
-    }
+#[derive(Debug, thiserror::Error)]
+enum MigrationError {
+    #[error(transparent)]
+    Database(#[from] diesel::result::Error),
+    #[error("database schema version {found} is newer than supported version {supported}")]
+    SchemaTooNew { found: i32, supported: i32 },
+    #[error("invalid Wasabi schema version table: {0}")]
+    InvalidSchemaVersion(String),
 }
 
 impl MigrationError {
     fn into_store_error(self) -> StoreError {
-        StoreError::Database(Box::new(self.0))
+        StoreError::Migration(Box::new(self))
     }
 }
 
@@ -267,5 +321,118 @@ mod tests {
             .unwrap();
         assert!(has_payload);
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn newer_schema_version_is_rejected_before_any_mutation() {
+        let directory = TempDir::new().unwrap();
+        let url = format!("sqlite://{}", directory.path().join("future.db").display());
+        let sqlite = SqliteStore::with_config(&url, SqliteStoreConfig::default())
+            .await
+            .unwrap();
+        sqlite
+            .shared()
+            .run(|connection| {
+                diesel::sql_query("CREATE TABLE wasabi_schema_version (version INTEGER NOT NULL)")
+                    .execute(connection)
+                    .map_err(|error| StoreError::Database(Box::new(error)))?;
+                diesel::sql_query("INSERT INTO wasabi_schema_version (version) VALUES (999)")
+                    .execute(connection)
+                    .map_err(|error| StoreError::Database(Box::new(error)))?;
+                diesel::sql_query(
+                    "CREATE TABLE wasabi_transfer_jobs (
+                        device_id INTEGER NOT NULL,
+                        transfer_id TEXT NOT NULL,
+                        chat_jid TEXT NOT NULL,
+                        message_id TEXT,
+                        direction INTEGER NOT NULL,
+                        state INTEGER NOT NULL,
+                        source_path TEXT,
+                        destination_path TEXT,
+                        media_hash TEXT,
+                        bytes_done INTEGER NOT NULL DEFAULT 0,
+                        bytes_total INTEGER,
+                        error_kind TEXT,
+                        updated_at_ms INTEGER NOT NULL,
+                        PRIMARY KEY (device_id, transfer_id)
+                    )",
+                )
+                .execute(connection)
+                .map_err(|error| StoreError::Database(Box::new(error)))?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let error = migrate(sqlite.shared()).await.unwrap_err();
+        let source = std::error::Error::source(&error).expect("migration source preserved");
+        assert!(source.to_string().contains("newer than supported version"));
+
+        let (version, has_payload, created_preferences): (i32, bool, bool) = sqlite
+            .shared()
+            .read(|connection| {
+                let version = diesel::sql_query("SELECT version FROM wasabi_schema_version")
+                    .get_result::<VersionRow>(connection)
+                    .map_err(|error| StoreError::Database(Box::new(error)))?
+                    .version;
+                Ok((
+                    version,
+                    table_has_column(connection, "wasabi_transfer_jobs", "payload_json")
+                        .map_err(|error| StoreError::Database(Box::new(error)))?,
+                    table_exists(connection, "wasabi_chat_preferences")
+                        .map_err(|error| StoreError::Database(Box::new(error)))?,
+                ))
+            })
+            .await
+            .unwrap();
+        assert_eq!(version, 999);
+        assert!(!has_payload);
+        assert!(!created_preferences);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn malformed_schema_version_rows_are_rejected() {
+        for versions in [vec![-1], vec![1, 2]] {
+            let expected_versions = versions.clone();
+            let directory = TempDir::new().unwrap();
+            let url = format!(
+                "sqlite://{}",
+                directory.path().join("malformed.db").display()
+            );
+            let sqlite = SqliteStore::with_config(&url, SqliteStoreConfig::default())
+                .await
+                .unwrap();
+            sqlite
+                .shared()
+                .run(move |connection| {
+                    diesel::sql_query(
+                        "CREATE TABLE wasabi_schema_version (version INTEGER NOT NULL)",
+                    )
+                    .execute(connection)
+                    .map_err(|error| StoreError::Database(Box::new(error)))?;
+                    for version in versions {
+                        diesel::sql_query("INSERT INTO wasabi_schema_version (version) VALUES (?)")
+                            .bind::<diesel::sql_types::Integer, _>(version)
+                            .execute(connection)
+                            .map_err(|error| StoreError::Database(Box::new(error)))?;
+                    }
+                    Ok(())
+                })
+                .await
+                .unwrap();
+
+            assert!(migrate(sqlite.shared()).await.is_err());
+            let stored_versions = sqlite
+                .shared()
+                .read(|connection| {
+                    diesel::sql_query("SELECT version FROM wasabi_schema_version ORDER BY rowid")
+                        .load::<VersionRow>(connection)
+                        .map(|rows| rows.into_iter().map(|row| row.version).collect::<Vec<_>>())
+                        .map_err(|error| StoreError::Database(Box::new(error)))
+                })
+                .await
+                .unwrap();
+            assert_eq!(stored_versions, expected_versions);
+        }
     }
 }
