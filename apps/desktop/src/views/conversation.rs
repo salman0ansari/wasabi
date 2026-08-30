@@ -2,7 +2,7 @@
 //! bubbles, and the scroll/anchor plumbing for history paging.
 
 use gpui::prelude::*;
-use gpui::{Context, ListSizingBehavior, list, px};
+use gpui::{Context, ListSizingBehavior, ObjectFit, StyledImage, list, px};
 use gpui_component::input::Input;
 use gpui_component::{Icon, IconName};
 
@@ -303,6 +303,11 @@ fn timeline_row(
                         .get(&(row.chat.clone(), media.id.clone()))
                         .cloned()
                 });
+                let thumb_state = media_descriptor(&row.kind).and_then(|media| {
+                    this.media_thumbs
+                        .get(&(row.chat.clone(), media.id.clone()))
+                        .cloned()
+                });
                 let retrying = this
                     .retrying_messages
                     .contains(&(row.chat.as_str().to_string(), row.id.as_str().to_string()));
@@ -312,6 +317,7 @@ fn timeline_row(
                     this.settings.text_scale,
                     highlighted,
                     media_state,
+                    thumb_state,
                     retrying,
                     cx,
                 )
@@ -329,6 +335,7 @@ fn bubble(
     text_scale: u16,
     highlighted: bool,
     media_state: Option<crate::views::root::MediaDownloadUi>,
+    thumb_state: Option<crate::views::root::MediaThumbUi>,
     retrying: bool,
     cx: &mut Context<MainWindow>,
 ) -> gpui::Div {
@@ -416,7 +423,7 @@ fn bubble(
                         .child(messages::body_text(&row)),
                 ),
         );
-    } else if let Some(media) = media_content(&row, text_scale, media_state, cx) {
+    } else if let Some(media) = media_content(&row, text_scale, media_state, thumb_state, cx) {
         content = content.child(media);
     } else {
         content = content.child(
@@ -591,6 +598,7 @@ fn media_content(
     row: &wasabi_domain::MessageRow,
     text_scale: u16,
     download_state: Option<crate::views::root::MediaDownloadUi>,
+    thumb_state: Option<crate::views::root::MediaThumbUi>,
     cx: &mut Context<MainWindow>,
 ) -> Option<gpui::AnyElement> {
     use wasabi_domain::{MediaAvailability, MessageKind};
@@ -662,11 +670,7 @@ fn media_content(
     } else {
         match download_state.as_ref() {
             Some(crate::views::root::MediaDownloadUi::Downloading) => ("Downloading…", false),
-            Some(crate::views::root::MediaDownloadUi::Ready(path)) => {
-                // Reading the verified path here deliberately proves the state
-                // still points at a committed cache entry without displaying
-                // private filesystem details in the conversation.
-                let _exists = path.is_file();
+            Some(crate::views::root::MediaDownloadUi::Ready(_)) => {
                 ("Downloaded to secure cache", false)
             }
             Some(crate::views::root::MediaDownloadUi::Failed) => {
@@ -675,40 +679,52 @@ fn media_content(
             None => ("Click to download", true),
         }
     };
-    let body = if visual {
+    let thumb_path = match (
+        paints_downloaded_image_thumbnail(&row.kind),
+        download_state.as_ref(),
+        thumb_state.as_ref(),
+    ) {
+        (
+            true,
+            Some(crate::views::root::MediaDownloadUi::Ready(_)),
+            Some(crate::views::root::MediaThumbUi::Ready(path)),
+        ) => Some(path.clone()),
+        _ => None,
+    };
+    let body = if let Some(path) = thumb_path {
+        let fallback_title = title.clone();
+        let fallback_label = transfer_label.to_string();
         gpui::div()
             .h(px(150.0))
             .w_full()
             .min_w(px(240.0))
             .rounded(px(theme::RADIUS_SM))
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap(px(7.0))
+            .overflow_hidden()
             .bg(theme::canvas())
-            .text_color(if unavailable {
-                theme::text_secondary()
-            } else {
-                theme::accent_text()
-            })
-            .child(Icon::new(if unavailable { IconName::CircleX } else { icon }).size(px(28.0)))
             .child(
-                gpui::div()
-                    .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .child(if unavailable {
-                        transfer_label.to_string()
-                    } else {
-                        title.clone()
+                gpui::img(path)
+                    .h(px(150.0))
+                    .w_full()
+                    .object_fit(ObjectFit::Contain)
+                    .with_fallback(move || {
+                        visual_media_placeholder(
+                            fallback_title.clone(),
+                            fallback_label.clone(),
+                            unavailable,
+                            icon.clone(),
+                            text_scale,
+                        )
+                        .into_any_element()
                     }),
             )
-            .child(
-                gpui::div()
-                    .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
-                    .text_color(theme::text_secondary())
-                    .child(transfer_label),
-            )
+    } else if visual {
+        visual_media_placeholder(
+            title.clone(),
+            transfer_label.to_string(),
+            unavailable,
+            icon,
+            text_scale,
+        )
     } else {
         gpui::div()
             .min_h(px(54.0))
@@ -794,6 +810,7 @@ fn media_content(
         });
     let chat = row.chat.clone();
     let media = descriptor.id.clone();
+    let paint_thumb = paints_downloaded_image_thumbnail(&row.kind);
     let mut interactive = gpui::div()
         .id(("media-card", row.seq.0 as usize))
         .rounded(px(theme::RADIUS_SM))
@@ -803,10 +820,56 @@ fn media_content(
             .cursor_pointer()
             .hover(|style| style.bg(theme::row_hover()))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.download_media(chat.clone(), media.clone(), cx)
+                this.download_media(chat.clone(), media.clone(), paint_thumb, cx)
             }));
     }
     Some(interactive.into_any_element())
+}
+
+fn paints_downloaded_image_thumbnail(kind: &wasabi_domain::MessageKind) -> bool {
+    matches!(kind, wasabi_domain::MessageKind::Image { .. })
+}
+
+fn visual_media_placeholder(
+    title: String,
+    transfer_label: String,
+    unavailable: bool,
+    icon: IconName,
+    text_scale: u16,
+) -> gpui::Div {
+    gpui::div()
+        .h(px(150.0))
+        .w_full()
+        .min_w(px(240.0))
+        .rounded(px(theme::RADIUS_SM))
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(7.0))
+        .bg(theme::canvas())
+        .text_color(if unavailable {
+            theme::text_secondary()
+        } else {
+            theme::accent_text()
+        })
+        .child(Icon::new(if unavailable { IconName::CircleX } else { icon }).size(px(28.0)))
+        .child(
+            gpui::div()
+                .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .child(if unavailable {
+                    transfer_label.clone()
+                } else {
+                    title
+                }),
+        )
+        .child(
+            gpui::div()
+                .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+                .text_color(theme::text_secondary())
+                .child(transfer_label),
+        )
 }
 
 fn media_descriptor(kind: &wasabi_domain::MessageKind) -> Option<&wasabi_domain::MediaDescriptor> {
@@ -1465,8 +1528,47 @@ fn sheet_button(id: &'static str, label: &'static str, danger: bool) -> gpui::St
 mod tests {
     use super::{
         chat_confirmation_copy, format_bytes, group_member_confirmation_copy,
-        leave_group_confirmation_copy,
+        leave_group_confirmation_copy, paints_downloaded_image_thumbnail,
     };
+
+    fn test_media() -> wasabi_domain::MediaDescriptor {
+        wasabi_domain::MediaDescriptor {
+            id: wasabi_domain::MediaId::new("media-a"),
+            mime_type: None,
+            file_name: None,
+            file_size: None,
+            duration_seconds: None,
+            width: None,
+            height: None,
+            availability: wasabi_domain::MediaAvailability::Remote,
+        }
+    }
+
+    #[test]
+    fn only_image_kind_paints_a_downloaded_thumbnail() {
+        use wasabi_domain::MessageKind;
+        let media = test_media();
+        assert!(paints_downloaded_image_thumbnail(&MessageKind::Image {
+            caption: None,
+            media: media.clone(),
+        }));
+        assert!(!paints_downloaded_image_thumbnail(&MessageKind::Video {
+            caption: None,
+            video_note: false,
+            media: media.clone(),
+        }));
+        assert!(!paints_downloaded_image_thumbnail(&MessageKind::Audio {
+            voice_note: false,
+            media: media.clone(),
+        }));
+        assert!(!paints_downloaded_image_thumbnail(&MessageKind::Document {
+            media: media.clone(),
+        }));
+        assert!(!paints_downloaded_image_thumbnail(&MessageKind::Sticker {
+            animated: false,
+            media,
+        }));
+    }
 
     #[test]
     fn formats_media_sizes_for_desktop_cards() {

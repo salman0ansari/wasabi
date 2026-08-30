@@ -110,6 +110,12 @@ pub(crate) enum SettingsFeedback {
 #[derive(Clone)]
 pub(crate) enum MediaDownloadUi {
     Downloading,
+    Ready(#[allow(dead_code)] std::path::PathBuf),
+    Failed,
+}
+
+#[derive(Clone)]
+pub(crate) enum MediaThumbUi {
     Ready(std::path::PathBuf),
     Failed,
 }
@@ -217,6 +223,7 @@ pub struct MainWindow {
     pub(crate) message_overlay: Option<MessageOverlay>,
     pub(crate) media_downloads:
         HashMap<(wasabi_domain::ChatId, wasabi_domain::MediaId), MediaDownloadUi>,
+    pub(crate) media_thumbs: HashMap<(wasabi_domain::ChatId, wasabi_domain::MediaId), MediaThumbUi>,
     pub(crate) avatars: HashMap<String, AvatarUi>,
     avatar_gens: HashMap<String, u64>,
     pub(crate) staged_attachments: HashMap<String, wasabi_domain::StagedAttachment>,
@@ -366,6 +373,7 @@ impl MainWindow {
             active_draft: wasabi_domain::Draft::default(),
             message_overlay: None,
             media_downloads: HashMap::new(),
+            media_thumbs: HashMap::new(),
             avatars: HashMap::new(),
             avatar_gens: HashMap::new(),
             staged_attachments: HashMap::new(),
@@ -1955,6 +1963,7 @@ impl MainWindow {
         &mut self,
         chat: wasabi_domain::ChatId,
         media: wasabi_domain::MediaId,
+        paint_thumb: bool,
         cx: &mut Context<Self>,
     ) {
         let key = (chat.clone(), media.clone());
@@ -1974,8 +1983,12 @@ impl MainWindow {
                 match result {
                     Ok(cached) => {
                         debug_assert_eq!(cached.media, key.1);
+                        let path = cached.path;
                         this.media_downloads
-                            .insert(key, MediaDownloadUi::Ready(cached.path));
+                            .insert(key.clone(), MediaDownloadUi::Ready(path.clone()));
+                        if paint_thumb {
+                            this.request_image_thumb(key, path, cx);
+                        }
                     }
                     Err(error) => {
                         // Do not log `detail`: transport failures may contain a
@@ -1989,6 +2002,35 @@ impl MainWindow {
             .ok();
         });
         cx.notify();
+    }
+
+    fn request_image_thumb(
+        &mut self,
+        key: (wasabi_domain::ChatId, wasabi_domain::MediaId),
+        source: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(self.media_thumbs.get(&key), Some(MediaThumbUi::Ready(_))) {
+            return;
+        }
+        let bridge = Arc::clone(&self.bridge);
+        let cache_key = wasabi_media::thumb_cache_key(key.1.as_str());
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.cache_thumb_bytes(cache_key, source).await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(path) => {
+                        this.media_thumbs.insert(key, MediaThumbUi::Ready(path));
+                    }
+                    Err(error) => {
+                        tracing::warn!(kind = %error.kind, "image thumbnail failed");
+                        this.media_thumbs.insert(key, MediaThumbUi::Failed);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
     }
 
     pub(crate) fn avatar_path(&self, jid: &str) -> Option<&std::path::Path> {

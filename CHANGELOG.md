@@ -6,6 +6,9 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ### Added
 
+- Downloaded photos in the conversation timeline now show a still-image
+  thumbnail instead of a generic downloaded placeholder. Video, audio, and
+  documents keep their existing cards.
 - Conversation headers and contact/group information now render the real
   profile photo when the linked account provides one. Photos are fetched as
   previews, stored in the existing media cache, and fall back to initials when
