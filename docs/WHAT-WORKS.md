@@ -1,6 +1,6 @@
 # What works today
 
-This page describes the shipped behavior in wasabi `0.2.0-alpha.4`. It is a capability inventory, not a promise about unfinished controls. Features without a complete data source, failure state, and usable workflow stay hidden.
+This page describes the shipped behavior in wasabi `0.2.0-alpha.5`. It is a capability inventory, not a promise about unfinished controls. Features without a complete data source, failure state, and usable workflow stay hidden.
 
 ## Account and startup
 
@@ -18,6 +18,7 @@ This page describes the shipped behavior in wasabi `0.2.0-alpha.4`. It is a capa
 | Status | Capability |
 | --- | --- |
 | Done | Browse cursor-paginated active chats with All, Unread, device-local Favorites, and Groups filters plus Archived. |
+| Done | Show a disk-cached contact or group photo on chat list rows and search hits when one is already stored; otherwise keep initials. |
 | Done | Preserve protocol ordering: pinned chats first, followed by recent activity. |
 | Done | Search loaded chats and the complete local message FTS index, then open the exact message in context. |
 | Done | Search the cached address book, page through deterministic name ordering, and open existing contacts offline. |
@@ -59,6 +60,7 @@ This page describes the shipped behavior in wasabi `0.2.0-alpha.4`. It is a capa
 | --- | --- |
 | Done | Open direct-contact information on demand; direct conversations never display Participants. |
 | Done | Refresh a direct contact's real About metadata when connected and retain the last authoritative value for honest offline viewing. |
+| Done | Render a contact or group profile photo in the conversation header and information drawer when the linked account provides one, keeping initials when the photo is unavailable or restricted. |
 | Done | Load real group subject, description, participant count, identities, and admin roles. |
 | Done | Retain the last server-backed group snapshot for honest disconnected viewing. |
 | Done | Edit group identity and permissions; add, promote, demote, or remove real participants; and leave through acknowledged, exact-target workflows. |
