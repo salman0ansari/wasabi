@@ -3,6 +3,12 @@
 use std::fmt;
 use std::time::Duration;
 
+/// User-facing copy when WhatsApp throttles this companion. Pairing and
+/// connect recovery both render this sentence; it must not include protocol
+/// `Debug`, IQ text, or the phone number that was entered.
+pub const RATE_LIMITED_DEVICE: &str =
+    "WhatsApp is rate-limiting this device. Wait, then try again.";
+
 /// Validated E.164-like phone digits used to request a companion link code.
 ///
 /// The value deliberately redacts its `Debug` representation so future

@@ -2174,6 +2174,42 @@ impl MainWindow {
         self.start_pairing_request(cx, false);
     }
 
+    pub(crate) fn retry_session(&mut self, cx: &mut Context<Self>) {
+        if self.session.pairing_requesting || !self.bridge.commands_accepted() {
+            return;
+        }
+
+        let request_generation = self.pairing_request_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        self.session.pairing_requesting = true;
+        self.session.pairing_error = None;
+        cx.notify();
+
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = match bridge.stop_session().await {
+                Ok(()) => bridge.connect_session().await,
+                Err(err) => Err(err),
+            };
+            this.update(cx, |this, cx| {
+                if this.pairing_request_gen.load(Ordering::Acquire) != request_generation {
+                    return;
+                }
+                this.session.pairing_requesting = false;
+                if result.is_err()
+                    && !matches!(
+                        this.session.state,
+                        wasabi_core::state::SessionState::Connecting
+                            | wasabi_core::state::SessionState::Connected
+                    )
+                {
+                    tracing::warn!("session retry failed");
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+    }
+
     pub(crate) fn show_phone_pairing(&mut self, cx: &mut Context<Self>) {
         self.session.use_phone_pairing = true;
         self.session.phone_pair_error = None;

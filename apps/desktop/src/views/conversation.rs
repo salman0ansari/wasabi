@@ -33,26 +33,32 @@ pub fn conversation(
 
     pane = pane.child(header(this, cx));
     if !this.session.state.is_connected() {
-        pane = pane.child(connection_banner(this));
+        pane = pane.child(connection_banner(this, cx));
     }
     pane = pane.child(timeline(this, window, cx));
     pane = pane.child(crate::views::composer::composer_bar(this, window, cx));
     pane
 }
 
-fn connection_banner(this: &MainWindow) -> gpui::Div {
+fn connection_banner(this: &MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
     let failed = matches!(
         this.session.state,
         wasabi_core::state::SessionState::Disconnected { .. }
             | wasabi_core::state::SessionState::Failed { .. }
     );
+    let copy = this.session.recovery_copy();
+    let action = copy.action;
+    let action_label = copy.action_label;
     gpui::div()
         .min_h(px(34.0))
         .flex_shrink_0()
         .px(px(14.0))
+        .py(px(8.0))
         .flex()
         .items_center()
         .justify_center()
+        .gap(px(12.0))
+        .flex_wrap()
         .bg(if failed {
             theme::danger()
         } else {
@@ -60,10 +66,30 @@ fn connection_banner(this: &MainWindow) -> gpui::Div {
         })
         .text_color(theme::text_on_accent())
         .text_size(px(theme::TEXT_SIZE_SM))
-        .child(format!(
-            "{} — cached messages remain available",
-            this.session.status_label()
-        ))
+        .child(copy.banner_text())
+        .when_some(action_label, |el, label| {
+            el.child(
+                gpui::div()
+                    .id("session-recovery-action")
+                    .cursor_pointer()
+                    .rounded(px(theme::RADIUS_SM))
+                    .px(px(8.0))
+                    .py(px(3.0))
+                    .bg(theme::surface())
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(if failed {
+                        theme::danger()
+                    } else {
+                        theme::accent_text()
+                    })
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, _, cx| match action {
+                        crate::state::RecoveryAction::LinkDevice => this.request_pairing(cx),
+                        crate::state::RecoveryAction::Retry => this.retry_session(cx),
+                        crate::state::RecoveryAction::None => {}
+                    })),
+            )
+        })
 }
 
 fn empty_conversation() -> gpui::Div {

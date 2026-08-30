@@ -22,9 +22,9 @@ use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
 use wasabi_core::events::Invalidation;
-use wasabi_core::state::SessionState;
+use wasabi_core::state::{SessionState, failure_reason};
 use whatsapp_rust::Jid;
-use whatsapp_rust::types::events::Event;
+use whatsapp_rust::types::events::{ConnectFailureReason, Event, LoggedOut, TemporaryBan};
 
 /// What the UI should do about one protocol event.
 #[derive(Clone, PartialEq, Eq)]
@@ -66,6 +66,83 @@ impl fmt::Debug for UiSignal {
     }
 }
 
+/// Stable [`SessionState::Failed`] label for a server-driven logout.
+/// `is_logged_out()` is a normal unlink; anything else is a forced removal.
+#[must_use]
+pub(crate) fn logged_out_reason(logout: &LoggedOut) -> &'static str {
+    if logout.reason.is_logged_out() {
+        failure_reason::LOGGED_OUT
+    } else {
+        failure_reason::FORCED_LOGOUT
+    }
+}
+
+#[must_use]
+pub(crate) fn logged_out_state(logout: &LoggedOut) -> SessionState {
+    SessionState::Failed {
+        reason: logged_out_reason(logout).to_string(),
+    }
+}
+
+#[must_use]
+pub(crate) fn client_outdated_state() -> SessionState {
+    SessionState::Failed {
+        reason: failure_reason::CLIENT_OUTDATED.to_string(),
+    }
+}
+
+#[must_use]
+pub(crate) fn stream_replaced_state() -> SessionState {
+    SessionState::Failed {
+        reason: failure_reason::STREAM_REPLACED.to_string(),
+    }
+}
+
+/// Map a connect-failure reason onto a session state without `Debug`.
+///
+/// Reconnectable codes stay with the library retry loop. A 429 (or
+/// `Unknown(429)`) is a stable `"rate limited"` label. A temp-ban without an
+/// expiry arrives here instead of [`Event::TemporaryBan`] — do not invent a
+/// wait window.
+#[must_use]
+pub(crate) fn connect_failure_state(reason: ConnectFailureReason) -> SessionState {
+    if reason.should_reconnect() {
+        SessionState::Reconnecting
+    } else if is_rate_limited_connect(reason) {
+        SessionState::Failed {
+            reason: failure_reason::RATE_LIMITED.to_string(),
+        }
+    } else if matches!(reason, ConnectFailureReason::TempBanned) {
+        SessionState::Failed {
+            reason: failure_reason::TEMPORARILY_BANNED.to_string(),
+        }
+    } else if matches!(reason, ConnectFailureReason::ClientOutdated) {
+        client_outdated_state()
+    } else if reason.is_logged_out() {
+        SessionState::Failed {
+            reason: failure_reason::LOGGED_OUT.to_string(),
+        }
+    } else {
+        SessionState::Failed {
+            reason: failure_reason::CONNECT_FAILURE.to_string(),
+        }
+    }
+}
+
+fn is_rate_limited_connect(reason: ConnectFailureReason) -> bool {
+    reason.code() == 429
+}
+
+/// Encode a temporary ban as a stable label plus the server's wait, in
+/// seconds. A missing expiry never reaches this event (the library emits
+/// [`Event::ConnectFailure`] instead).
+#[must_use]
+pub(crate) fn temporary_ban_state(ban: &TemporaryBan) -> SessionState {
+    SessionState::Failed {
+        reason: failure_reason::temporarily_banned(ban.expire.num_seconds()),
+    }
+}
+
 /// Classify one protocol event into UI signals. Exhaustive over `Event`;
 /// the catch-all keeps unknown future variants a silent no-op rather than a
 /// compile break in callers.
@@ -86,35 +163,13 @@ pub fn classify(event: &Event) -> Vec<UiSignal> {
             }
         }
         Event::StreamError(_) => vec![UiSignal::State(SessionState::Reconnecting)],
-        Event::StreamReplaced(_) => vec![UiSignal::State(SessionState::Failed {
-            reason: "stream replaced by another session".to_string(),
-        })],
-        Event::LoggedOut(logout) => {
-            // Terminal either way; the label tells the user why.
-            let reason = if logout.reason.is_logged_out() {
-                "logged out"
-            } else {
-                "forced logout"
-            };
-            vec![UiSignal::State(SessionState::Failed {
-                reason: reason.to_string(),
-            })]
-        }
+        Event::StreamReplaced(_) => vec![UiSignal::State(stream_replaced_state())],
+        Event::LoggedOut(logout) => vec![UiSignal::State(logged_out_state(logout))],
         Event::ConnectFailure(failure) => {
-            if failure.reason.should_reconnect() {
-                vec![UiSignal::State(SessionState::Reconnecting)]
-            } else {
-                vec![UiSignal::State(SessionState::Failed {
-                    reason: format!("connect failure: {:?}", failure.reason),
-                })]
-            }
+            vec![UiSignal::State(connect_failure_state(failure.reason))]
         }
-        Event::TemporaryBan(ban) => vec![UiSignal::State(SessionState::Failed {
-            reason: format!("temporarily banned: {}", ban.code),
-        })],
-        Event::ClientOutdated(_) => vec![UiSignal::State(SessionState::Failed {
-            reason: "client outdated".to_string(),
-        })],
+        Event::TemporaryBan(ban) => vec![UiSignal::State(temporary_ban_state(ban))],
+        Event::ClientOutdated(_) => vec![UiSignal::State(client_outdated_state())],
         Event::PairSuccess(_) => {
             // Pairing succeeded and the stack goes straight at its first
             // connect; the QR screen has nothing left to show.
@@ -334,8 +389,9 @@ mod tests {
 
     use whatsapp_rust::chrono::Utc;
     use whatsapp_rust::types::events::{
-        BatchOrigin, ConnectFailureReason, ContactUpdated, InboundMessage, LoggedOut, MessageBatch,
-        PairError, PairPasskeyRequest, PairingQrCode, Receipt, ServerAck, StarUpdate,
+        BatchOrigin, ClientOutdated, ConnectFailure, ConnectFailureReason, ContactUpdated,
+        InboundMessage, LoggedOut, MessageBatch, PairError, PairPasskeyRequest, PairingQrCode,
+        Receipt, ServerAck, StarUpdate, TempBanReason, TemporaryBan,
     };
     use whatsapp_rust::types::message::{MessageInfo, MessageSource};
     use whatsapp_rust::types::presence::ReceiptType;
@@ -510,9 +566,122 @@ mod tests {
         assert_eq!(
             classify(&Event::LoggedOut(logged_out)),
             vec![UiSignal::State(SessionState::Failed {
-                reason: "logged out".to_string()
+                reason: failure_reason::LOGGED_OUT.to_string()
             })]
         );
+    }
+
+    #[test]
+    fn forced_logout_is_distinct_from_logged_out() {
+        let forced = LoggedOut::builder()
+            .on_connect(false)
+            .reason(ConnectFailureReason::Generic)
+            .maybe_logout_message(None)
+            .maybe_raw(None)
+            .build();
+        assert!(!forced.reason.is_logged_out());
+        assert_eq!(
+            classify(&Event::LoggedOut(forced)),
+            vec![UiSignal::State(SessionState::Failed {
+                reason: failure_reason::FORCED_LOGOUT.to_string()
+            })]
+        );
+    }
+
+    #[test]
+    fn client_outdated_proposes_failed_state() {
+        let outdated = ClientOutdated::builder().maybe_raw(None).build();
+        assert_eq!(
+            classify(&Event::ClientOutdated(outdated)),
+            vec![UiSignal::State(SessionState::Failed {
+                reason: failure_reason::CLIENT_OUTDATED.to_string()
+            })]
+        );
+    }
+
+    fn connect_failure(reason: ConnectFailureReason) -> Event {
+        Event::ConnectFailure(
+            ConnectFailure::builder()
+                .reason(reason)
+                .maybe_message(None)
+                .maybe_raw(None)
+                .build(),
+        )
+    }
+
+    fn failed_reason(event: &Event) -> String {
+        match classify(event).as_slice() {
+            [UiSignal::State(SessionState::Failed { reason })] => reason.clone(),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconnectable_connect_failure_proposes_reconnecting() {
+        assert_eq!(
+            classify(&connect_failure(ConnectFailureReason::ServiceUnavailable)),
+            vec![UiSignal::State(SessionState::Reconnecting)]
+        );
+    }
+
+    #[test]
+    fn rate_limited_connect_failure_uses_stable_label() {
+        let reason = failed_reason(&connect_failure(ConnectFailureReason::Unknown(429)));
+        assert_eq!(reason, failure_reason::RATE_LIMITED);
+        assert!(!reason.contains("429"));
+        assert!(!reason.contains("Unknown"));
+    }
+
+    #[test]
+    fn connect_failure_reason_is_not_debug_dumped() {
+        let reason = failed_reason(&connect_failure(ConnectFailureReason::Generic));
+        assert_eq!(reason, failure_reason::CONNECT_FAILURE);
+        assert!(!reason.contains("Generic"));
+        assert!(!reason.contains("ConnectFailureReason"));
+        let dumped = format!(
+            "{:?}",
+            classify(&connect_failure(ConnectFailureReason::NotFound))
+        );
+        assert!(!dumped.contains("NotFound"));
+        assert!(!dumped.contains("ConnectFailureReason"));
+    }
+
+    #[test]
+    fn temp_banned_connect_failure_has_no_invented_wait() {
+        let reason = failed_reason(&connect_failure(ConnectFailureReason::TempBanned));
+        assert_eq!(reason, failure_reason::TEMPORARILY_BANNED);
+        assert_eq!(failure_reason::temporary_ban_wait_secs(&reason), None);
+    }
+
+    #[test]
+    fn temporary_ban_encodes_wait_without_dumping_internal_reason() {
+        let ban = TemporaryBan::builder()
+            .code(TempBanReason::SentToTooManyPeople)
+            .expire(whatsapp_rust::chrono::Duration::seconds(3600))
+            .maybe_message(None)
+            .maybe_url(None)
+            .maybe_raw(None)
+            .build();
+        let reason = failed_reason(&Event::TemporaryBan(ban));
+        assert_eq!(reason, "temporarily banned: 3600");
+        assert_eq!(failure_reason::temporary_ban_wait_secs(&reason), Some(3600));
+        assert!(!reason.contains("address books"));
+        assert!(!reason.contains(PEER_A));
+        assert!(!reason.contains('@'));
+    }
+
+    #[test]
+    fn temporary_ban_zero_expire_does_not_invent_a_wait_window() {
+        let ban = TemporaryBan::builder()
+            .code(TempBanReason::BlockedByUsers)
+            .expire(whatsapp_rust::chrono::Duration::seconds(0))
+            .maybe_message(None)
+            .maybe_url(None)
+            .maybe_raw(None)
+            .build();
+        let reason = failed_reason(&Event::TemporaryBan(ban));
+        assert_eq!(reason, failure_reason::TEMPORARILY_BANNED);
+        assert_eq!(failure_reason::temporary_ban_wait_secs(&reason), None);
     }
 
     #[test]

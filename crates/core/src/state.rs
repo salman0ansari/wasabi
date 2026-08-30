@@ -4,6 +4,42 @@
 
 use std::fmt;
 
+/// Stable [`SessionState::Failed`] labels. The UI matches these strings
+/// (or the `temporarily banned` prefix); do not put `Debug` dumps here.
+pub mod failure_reason {
+    pub const LOGGED_OUT: &str = "logged out";
+    pub const FORCED_LOGOUT: &str = "forced logout";
+    pub const CLIENT_OUTDATED: &str = "client outdated";
+    pub const RATE_LIMITED: &str = "rate limited";
+    pub const TEMPORARILY_BANNED: &str = "temporarily banned";
+    pub const CONNECT_FAILURE: &str = "connect failure";
+    pub const STREAM_REPLACED: &str = "stream replaced by another session";
+
+    pub fn temporarily_banned(wait_secs: i64) -> String {
+        if wait_secs > 0 {
+            format!("{TEMPORARILY_BANNED}: {wait_secs}")
+        } else {
+            TEMPORARILY_BANNED.to_string()
+        }
+    }
+
+    pub fn is_temporarily_banned(reason: &str) -> bool {
+        reason == TEMPORARILY_BANNED
+            || reason
+                .strip_prefix(TEMPORARILY_BANNED)
+                .is_some_and(|rest| rest.starts_with(':'))
+    }
+
+    pub fn temporary_ban_wait_secs(reason: &str) -> Option<i64> {
+        reason
+            .strip_prefix(TEMPORARILY_BANNED)?
+            .strip_prefix(": ")?
+            .parse()
+            .ok()
+            .filter(|secs| *secs > 0)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionState {
     /// No session; nothing running for the account.
@@ -129,5 +165,36 @@ mod tests {
     fn idempotent() {
         let c = SessionState::Connected;
         assert_eq!(c.clone().transition(c).unwrap(), SessionState::Connected);
+    }
+
+    #[test]
+    fn failed_can_start_pairing() {
+        let failed = SessionState::Failed {
+            reason: failure_reason::FORCED_LOGOUT.to_string(),
+        };
+        assert_eq!(
+            failed.transition(SessionState::Pairing).unwrap(),
+            SessionState::Pairing
+        );
+    }
+
+    #[test]
+    fn temporary_ban_label_omits_zero_wait() {
+        assert_eq!(
+            failure_reason::temporarily_banned(0),
+            failure_reason::TEMPORARILY_BANNED
+        );
+        assert_eq!(
+            failure_reason::temporarily_banned(90),
+            "temporarily banned: 90"
+        );
+        assert_eq!(
+            failure_reason::temporary_ban_wait_secs("temporarily banned: 90"),
+            Some(90)
+        );
+        assert_eq!(
+            failure_reason::temporary_ban_wait_secs(failure_reason::TEMPORARILY_BANNED),
+            None
+        );
     }
 }

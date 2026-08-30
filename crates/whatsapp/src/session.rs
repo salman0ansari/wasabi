@@ -18,8 +18,8 @@ use whatsapp_rust::types::events::Event;
 use whatsapp_rust_chat_store::ChatStore;
 
 use crate::durability::RepositoryDurabilityHook;
-use wasabi_domain::{PairingPhoneNumber, PhonePairCode};
-use whatsapp_rust::pair_code::PairCodeOptions;
+use wasabi_domain::{PairingPhoneNumber, PhonePairCode, RATE_LIMITED_DEVICE};
+use whatsapp_rust::pair_code::{PairCodeOptions, PairCodeRejection, PairError};
 
 /// Assembly-time configuration for one account session.
 #[derive(Clone, Debug)]
@@ -206,7 +206,15 @@ impl AccountSession {
                 ..PairCodeOptions::default()
             })
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| {
+                let copy =
+                    pairing_request_error_copy(error.rejection(), pair_error_iq_code(&error));
+                warn!(
+                    rate_limited = copy == RATE_LIMITED_DEVICE,
+                    "phone pairing request failed"
+                );
+                copy
+            })?;
         Ok(PhonePairCode {
             code,
             expires_in: wacore::pair_code::PairCodeUtils::code_validity(),
@@ -368,6 +376,28 @@ impl AccountSession {
     }
 }
 
+fn pair_rejection_is_rate_limited(rejection: PairCodeRejection) -> bool {
+    matches!(rejection, PairCodeRejection::RateOverlimit) || rejection.code() == 429
+}
+
+fn pair_error_iq_code(error: &PairError) -> Option<u16> {
+    match error {
+        PairError::RequestFailed(whatsapp_rust::IqError::ServerError { code, .. }) => Some(*code),
+        _ => None,
+    }
+}
+
+fn pairing_request_error_copy(
+    rejection: Option<PairCodeRejection>,
+    iq_code: Option<u16>,
+) -> String {
+    if rejection.is_some_and(pair_rejection_is_rate_limited) || iq_code == Some(429) {
+        RATE_LIMITED_DEVICE.to_string()
+    } else {
+        "Couldn’t request a pairing code. Try again.".to_string()
+    }
+}
+
 async fn wait_for_first_connected(
     mut state_rx: watch::Receiver<SessionState>,
     token: CancellationToken,
@@ -457,5 +487,41 @@ mod tests {
         token.cancel();
         wait.await.unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[cfg(test)]
+mod pairing_error_tests {
+    use super::{pair_rejection_is_rate_limited, pairing_request_error_copy};
+    use wasabi_domain::RATE_LIMITED_DEVICE;
+    use whatsapp_rust::pair_code::PairCodeRejection;
+
+    #[test]
+    fn pair_code_429_uses_device_rate_limit_copy() {
+        assert!(pair_rejection_is_rate_limited(
+            PairCodeRejection::RateOverlimit
+        ));
+        assert_eq!(PairCodeRejection::RateOverlimit.code(), 429);
+        assert_eq!(
+            pairing_request_error_copy(Some(PairCodeRejection::RateOverlimit), None),
+            RATE_LIMITED_DEVICE
+        );
+        assert_eq!(
+            pairing_request_error_copy(None, Some(429)),
+            RATE_LIMITED_DEVICE
+        );
+        assert!(!RATE_LIMITED_DEVICE.contains("429"));
+        assert!(!RATE_LIMITED_DEVICE.contains("Unknown"));
+        assert!(!RATE_LIMITED_DEVICE.contains('@'));
+    }
+
+    #[test]
+    fn other_pair_failures_do_not_dump_protocol_text() {
+        let copy = pairing_request_error_copy(Some(PairCodeRejection::Forbidden), None);
+        assert_ne!(copy, RATE_LIMITED_DEVICE);
+        assert!(!copy.contains("Forbidden"));
+        assert!(!copy.contains("403"));
+        assert!(!copy.contains("phone"));
+        assert!(!copy.contains("1555"));
     }
 }

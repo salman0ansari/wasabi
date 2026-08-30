@@ -7,6 +7,7 @@ use gpui::prelude::*;
 use gpui::{Context, px};
 use gpui_component::input::Input;
 
+use crate::state::{RecoveryAction, SessionMirror};
 use crate::theme;
 use crate::views::root::MainWindow;
 use wasabi_core::state::SessionState;
@@ -24,20 +25,9 @@ pub fn pairing_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpu
         .qr_deadline
         .map(|deadline| deadline.saturating_duration_since(Instant::now()).as_secs() + 1);
 
-    let status_line = if session.pairing_requesting {
-        "Starting secure pairing…".to_string()
-    } else {
-        match countdown {
-            Some(secs) => format!("Code refreshes in {secs}s"),
-            None => match session.state {
-                SessionState::Connecting => "Connecting to WhatsApp…".to_string(),
-                SessionState::Failed { .. } | SessionState::Disconnected { .. } => {
-                    "Connection needs attention. Try again.".to_string()
-                }
-                _ => "Waiting for QR…".to_string(),
-            },
-        }
-    };
+    let recovery = session.recovery_copy();
+    let status_line = pairing_status_line(&session, countdown);
+    let action_label = pairing_action_label(&session, &recovery);
 
     let start_button = if session.pairing_requesting {
         gpui::div()
@@ -57,8 +47,8 @@ pub fn pairing_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpu
             .bg(theme::row_selected())
             .text_color(theme::text_secondary())
             .child("Connecting…")
-    } else {
-        let mut button = gpui::div()
+    } else if let Some(label) = action_label {
+        gpui::div()
             .id("start-pairing")
             .cursor_pointer()
             .rounded(px(theme::RADIUS_MD))
@@ -66,15 +56,12 @@ pub fn pairing_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpu
             .py(px(10.0))
             .bg(theme::accent())
             .text_color(theme::text_on_accent())
-            .child(if session.pairing_error.is_some() {
-                "Try again"
-            } else {
-                "Link this device"
-            });
-        button = button.on_click(cx.listener(move |this, _, _, cx| {
-            this.request_pairing(cx);
-        }));
-        button
+            .child(label)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.request_pairing(cx);
+            }))
+    } else {
+        gpui::div().id("pairing-no-action")
     };
 
     let error_view = session.pairing_error.as_deref().map(|error| {
@@ -122,29 +109,38 @@ pub fn pairing_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpu
         .child(qr_view)
         .child(
             gpui::div()
+                .max_w(px(360.0))
                 .text_size(px(theme::TEXT_SIZE))
                 .text_color(theme::text_secondary())
+                .text_center()
                 .child(status_line),
         )
         .when(
-            countdown.is_none() && !matches!(session.state, SessionState::Connecting),
+            countdown.is_none()
+                && !matches!(session.state, SessionState::Connecting)
+                && (action_label.is_some() || session.pairing_requesting),
             |el| el.child(start_button),
         )
         .when_some(error_view, |el, error| el.child(error))
-        .child(
-            gpui::div()
-                .max_w(px(360.0))
-                .text_size(px(theme::TEXT_SIZE_SM))
-                .text_color(theme::text_secondary())
-                .flex()
-                .flex_col()
-                .items_center()
-                .child("Open WhatsApp on your phone")
-                .child("Settings → Linked devices → Link a device"),
-        )
-        .child(
-            link_button("Link with phone number instead")
-                .on_click(cx.listener(|this, _, _, cx| this.show_phone_pairing(cx))),
+        .when(
+            !pairing_hides_link_instructions(&session, recovery.action),
+            |el| {
+                el.child(
+                    gpui::div()
+                        .max_w(px(360.0))
+                        .text_size(px(theme::TEXT_SIZE_SM))
+                        .text_color(theme::text_secondary())
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .child("Open WhatsApp on your phone")
+                        .child("Settings → Linked devices → Link a device"),
+                )
+                .child(
+                    link_button("Link with phone number instead")
+                        .on_click(cx.listener(|this, _, _, cx| this.show_phone_pairing(cx))),
+                )
+            },
         )
 }
 
@@ -157,14 +153,20 @@ fn phone_pairing_panel(
         .phone_pair_deadline
         .map(|deadline| deadline.saturating_duration_since(Instant::now()).as_secs() + 1);
     let code = session.phone_pair_code.as_deref().map(display_pair_code);
+    let recovery = session.recovery_copy();
+    let terminal_failure = matches!(session.state, SessionState::Failed { .. })
+        && recovery.action == RecoveryAction::None;
     let can_request = !session.phone_pair_requesting
         && !matches!(session.state, SessionState::Connecting)
-        && code.is_none();
+        && code.is_none()
+        && !terminal_failure;
 
     let action = if session.phone_pair_requesting {
         action_status("Requesting code…").into_any_element()
     } else if matches!(session.state, SessionState::Connecting) {
         action_status("Connecting…").into_any_element()
+    } else if terminal_failure {
+        gpui::div().into_any_element()
     } else if can_request {
         gpui::div()
             .id("request-phone-pair-code")
@@ -185,7 +187,10 @@ fn phone_pairing_panel(
         action_status("Code ready").into_any_element()
     };
 
-    let error = session.phone_pair_error.as_deref().map(|message| {
+    let error_message = session.phone_pair_error.clone().or_else(|| {
+        matches!(session.state, SessionState::Failed { .. }).then(|| recovery.banner_text())
+    });
+    let error = error_message.map(|message| {
         gpui::div()
             .w_full()
             .rounded(px(theme::RADIUS_MD))
@@ -196,7 +201,7 @@ fn phone_pairing_panel(
             .py(px(10.0))
             .text_size(px(theme::TEXT_SIZE_SM))
             .text_color(theme::danger())
-            .child(message.to_string())
+            .child(message)
     });
 
     gpui::div()
@@ -289,6 +294,43 @@ fn phone_pairing_panel(
         )
 }
 
+fn pairing_status_line(session: &SessionMirror, countdown: Option<u64>) -> String {
+    if session.pairing_requesting {
+        return "Starting secure pairing…".to_string();
+    }
+    if let Some(secs) = countdown {
+        return format!("Code refreshes in {secs}s");
+    }
+    match &session.state {
+        SessionState::Connecting => "Connecting to WhatsApp…".to_string(),
+        SessionState::Failed { .. } | SessionState::Disconnected { .. } => {
+            session.recovery_copy().banner_text()
+        }
+        _ => "Waiting for QR…".to_string(),
+    }
+}
+
+fn pairing_action_label(
+    session: &SessionMirror,
+    recovery: &crate::state::RecoveryCopy,
+) -> Option<&'static str> {
+    if session.pairing_requesting || matches!(session.state, SessionState::Connecting) {
+        return None;
+    }
+    match &session.state {
+        SessionState::Failed { .. } | SessionState::Disconnected { .. } => recovery.action_label,
+        _ => Some(if session.pairing_error.is_some() {
+            "Try again"
+        } else {
+            "Link this device"
+        }),
+    }
+}
+
+fn pairing_hides_link_instructions(session: &SessionMirror, action: RecoveryAction) -> bool {
+    matches!(session.state, SessionState::Failed { .. }) && action == RecoveryAction::None
+}
+
 fn display_pair_code(code: &str) -> String {
     let compact = code
         .chars()
@@ -323,12 +365,82 @@ fn link_button(text: &'static str) -> gpui::Stateful<gpui::Div> {
 
 #[cfg(test)]
 mod tests {
-    use super::display_pair_code;
+    use super::{
+        display_pair_code, pairing_action_label, pairing_hides_link_instructions,
+        pairing_status_line,
+    };
+    use crate::state::{RecoveryAction, SessionMirror};
+    use wasabi_core::state::{SessionState, failure_reason};
+    use wasabi_domain::RATE_LIMITED_DEVICE;
+
+    fn failed_session(reason: &str) -> SessionMirror {
+        let mut session = SessionMirror::new();
+        session.state = SessionState::Failed {
+            reason: reason.to_string(),
+        };
+        session
+    }
 
     #[test]
     fn companion_code_is_grouped_for_readability() {
         assert_eq!(display_pair_code("ABCD1234"), "ABCD  1234");
         assert_eq!(display_pair_code("ABCD 1234"), "ABCD  1234");
+    }
+
+    #[test]
+    fn pairing_failed_copy_is_specific_per_reason() {
+        let forced = failed_session(failure_reason::FORCED_LOGOUT);
+        let logged = failed_session(failure_reason::LOGGED_OUT);
+        let outdated = failed_session(failure_reason::CLIENT_OUTDATED);
+        let limited = failed_session(failure_reason::RATE_LIMITED);
+        let banned = failed_session("temporarily banned: 120");
+
+        let forced_line = pairing_status_line(&forced, None);
+        let logged_line = pairing_status_line(&logged, None);
+        assert!(forced_line.contains("unlinked from the phone"));
+        assert!(!logged_line.to_lowercase().contains("forced"));
+        assert_ne!(forced_line, logged_line);
+        assert_eq!(
+            pairing_action_label(&forced, &forced.recovery_copy()),
+            Some("Link this device")
+        );
+        assert_eq!(
+            pairing_action_label(&logged, &logged.recovery_copy()),
+            Some("Link this device")
+        );
+
+        let outdated_line = pairing_status_line(&outdated, None);
+        assert!(outdated_line.contains("too old"));
+        assert!(outdated_line.contains("updated wasabi"));
+        assert_eq!(
+            pairing_action_label(&outdated, &outdated.recovery_copy()),
+            None
+        );
+        assert!(pairing_hides_link_instructions(
+            &outdated,
+            outdated.recovery_copy().action
+        ));
+
+        let limited_line = pairing_status_line(&limited, None);
+        assert!(limited_line.contains("rate-limiting this device."));
+        assert!(RATE_LIMITED_DEVICE.contains("Wait, then try again"));
+        assert_eq!(
+            pairing_action_label(&limited, &limited.recovery_copy()),
+            Some("Try again")
+        );
+
+        let banned_line = pairing_status_line(&banned, None);
+        assert!(banned_line.contains("temporarily restricted"));
+        assert!(banned_line.contains("2 minutes"));
+        assert_eq!(pairing_action_label(&banned, &banned.recovery_copy()), None);
+        assert_eq!(banned.recovery_copy().action, RecoveryAction::None);
+
+        for session in [&forced, &logged, &outdated, &limited, &banned] {
+            let line = pairing_status_line(session, None);
+            assert!(!line.contains("Unknown"));
+            assert!(!line.contains("Connection needs attention. Try again."));
+            assert!(!line.contains('@'));
+        }
     }
 }
 

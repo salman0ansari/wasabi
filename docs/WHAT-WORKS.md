@@ -9,6 +9,7 @@ This page describes the shipped behavior in wasabi `0.3.0`. It is a capability i
 | Done | Link an account using a rotating QR code or a short-lived phone-number code. |
 | Done | Reopen cached chats immediately while reconnecting in the background. |
 | Done | Show pairing expiry, reconnect, and storage failures as specific in-product states. |
+| Done | Surface forced logout, unlink, outdated-client, rate-limit, and temporary-ban states with specific recovery copy while keeping cached chats. |
 | Done | Log out through a confirmation that distinguishes unlinking from local-data removal. |
 | Done | Persist device settings independently from the linked account. |
 | Done | Enable standards-based XDG autostart. |

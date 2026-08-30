@@ -18,6 +18,11 @@ use wasabi_repository::AccountStore;
 use whatsapp_rust::types::events::Event;
 use whatsapp_rust_sqlite_storage::SqliteStore;
 
+use crate::normalize::{
+    client_outdated_state, connect_failure_state, logged_out_state, stream_replaced_state,
+    temporary_ban_state,
+};
+
 /// Latest pairing QR issued by the server. The payload embeds device identity
 /// material, so it is carried opaquely and never logged anywhere downstream.
 #[derive(Clone)]
@@ -159,17 +164,7 @@ fn apply_event(
         }
         Event::LoggedOut(logout) => {
             let _ = qr_tx.send(None);
-            let reason = if logout.reason.is_logged_out() {
-                "logged out"
-            } else {
-                "forced logout"
-            };
-            transition_to(
-                state_tx,
-                SessionState::Failed {
-                    reason: reason.to_string(),
-                },
-            );
+            transition_to(state_tx, logged_out_state(logout));
         }
         // A rejected pair attempt leaves rotation running; the next
         // PairingQrCode refreshes the watch.
@@ -201,28 +196,22 @@ fn apply_event(
             );
         }
         Event::ConnectFailure(failure) => {
-            transition_to(
-                state_tx,
-                SessionState::Failed {
-                    reason: format!("connect failure: {:?}", failure.reason),
-                },
-            );
+            let next = connect_failure_state(failure.reason);
+            if matches!(next, SessionState::Reconnecting) {
+                transition_to_any(state_tx, &[SessionState::Reconnecting], "connect failure");
+            } else {
+                transition_to(state_tx, next);
+            }
+        }
+        Event::TemporaryBan(ban) => {
+            let _ = qr_tx.send(None);
+            transition_to(state_tx, temporary_ban_state(ban));
         }
         Event::ClientOutdated(_) => {
-            transition_to(
-                state_tx,
-                SessionState::Failed {
-                    reason: "client outdated".to_string(),
-                },
-            );
+            transition_to(state_tx, client_outdated_state());
         }
         Event::StreamReplaced(_) => {
-            transition_to(
-                state_tx,
-                SessionState::Failed {
-                    reason: "stream replaced by another session".to_string(),
-                },
-            );
+            transition_to(state_tx, stream_replaced_state());
         }
         Event::ChatPresence(update) => {
             let _ = typing_tx.send(project_typing(update));
@@ -255,10 +244,23 @@ fn project_typing(
 
 #[cfg(test)]
 mod tests {
-    use super::project_typing;
-    use whatsapp_rust::types::events::ChatPresenceUpdate;
+    use super::{apply_event, project_typing};
+    use tokio::sync::watch;
+    use wasabi_core::state::{SessionState, failure_reason};
+    use whatsapp_rust::types::events::{
+        ChatPresenceUpdate, ClientOutdated, ConnectFailure, ConnectFailureReason, Event, LoggedOut,
+        TempBanReason, TemporaryBan,
+    };
     use whatsapp_rust::types::message::MessageSource;
     use whatsapp_rust::types::presence::{ChatPresence, ChatPresenceMedia};
+
+    fn apply_from(current: SessionState, event: &Event) -> SessionState {
+        let (state_tx, state_rx) = watch::channel(current);
+        let (qr_tx, _) = watch::channel(None);
+        let (typing_tx, _) = tokio::sync::broadcast::channel(8);
+        apply_event(event, &state_tx, &qr_tx, &typing_tx);
+        state_rx.borrow().clone()
+    }
 
     #[test]
     fn group_audio_presence_projects_without_becoming_durable_state() {
@@ -276,5 +278,108 @@ mod tests {
         assert_eq!(projected.chat.as_str(), "123@g.us");
         assert_eq!(projected.participant.as_deref(), Some("456@s.whatsapp.net"));
         assert_eq!(projected.state, wasabi_domain::TypingState::RecordingAudio);
+    }
+
+    fn connect_failure(reason: ConnectFailureReason) -> Event {
+        Event::ConnectFailure(
+            ConnectFailure::builder()
+                .reason(reason)
+                .maybe_message(None)
+                .maybe_raw(None)
+                .build(),
+        )
+    }
+
+    #[test]
+    fn temporary_ban_transitions_connected_session_to_failed() {
+        let ban = TemporaryBan::builder()
+            .code(TempBanReason::CreatedTooManyGroups)
+            .expire(whatsapp_rust::chrono::Duration::seconds(120))
+            .maybe_message(None)
+            .maybe_url(None)
+            .maybe_raw(None)
+            .build();
+        match apply_from(SessionState::Connected, &Event::TemporaryBan(ban)) {
+            SessionState::Failed { reason } => {
+                assert_eq!(reason, "temporarily banned: 120");
+                assert!(!reason.contains("address books"));
+            }
+            other => panic!("TemporaryBan was dropped; session stayed {other}"),
+        }
+    }
+
+    #[test]
+    fn client_outdated_and_logged_out_still_fail_the_session() {
+        let outdated = Event::ClientOutdated(ClientOutdated::builder().maybe_raw(None).build());
+        assert_eq!(
+            apply_from(SessionState::Connected, &outdated),
+            SessionState::Failed {
+                reason: failure_reason::CLIENT_OUTDATED.to_string()
+            }
+        );
+
+        let logged_out = Event::LoggedOut(
+            LoggedOut::builder()
+                .on_connect(false)
+                .reason(ConnectFailureReason::LoggedOut)
+                .maybe_logout_message(None)
+                .maybe_raw(None)
+                .build(),
+        );
+        assert_eq!(
+            apply_from(SessionState::Connected, &logged_out),
+            SessionState::Failed {
+                reason: failure_reason::LOGGED_OUT.to_string()
+            }
+        );
+
+        let forced = Event::LoggedOut(
+            LoggedOut::builder()
+                .on_connect(true)
+                .reason(ConnectFailureReason::Generic)
+                .maybe_logout_message(None)
+                .maybe_raw(None)
+                .build(),
+        );
+        assert_eq!(
+            apply_from(SessionState::Connected, &forced),
+            SessionState::Failed {
+                reason: failure_reason::FORCED_LOGOUT.to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn connect_failure_maps_without_debug_and_rate_limit_is_stable() {
+        match apply_from(
+            SessionState::Connected,
+            &connect_failure(ConnectFailureReason::Unknown(429)),
+        ) {
+            SessionState::Failed { reason } => {
+                assert_eq!(reason, failure_reason::RATE_LIMITED);
+                assert!(!reason.contains("Unknown"));
+                assert!(!reason.contains("429"));
+            }
+            other => panic!("expected rate-limited Failed, got {other}"),
+        }
+
+        match apply_from(
+            SessionState::Connected,
+            &connect_failure(ConnectFailureReason::BadUserAgent),
+        ) {
+            SessionState::Failed { reason } => {
+                assert_eq!(reason, failure_reason::CONNECT_FAILURE);
+                assert!(!reason.contains("BadUserAgent"));
+            }
+            other => panic!("expected generic Failed, got {other}"),
+        }
+
+        assert_eq!(
+            apply_from(
+                SessionState::Connected,
+                &connect_failure(ConnectFailureReason::ServiceUnavailable),
+            ),
+            SessionState::Reconnecting
+        );
     }
 }

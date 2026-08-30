@@ -45,7 +45,7 @@ pub use message::{
 };
 pub use notification::NotificationCandidate;
 pub use page::{ChatPage, ChatPageCursor, ChatScope};
-pub use pairing::{PairingPhoneNumber, PhonePairCode};
+pub use pairing::{PairingPhoneNumber, PhonePairCode, RATE_LIMITED_DEVICE};
 pub use preferences::Draft;
 pub use presence::{TypingState, TypingUpdate};
 pub use search::{MessageSearchHit, SearchPage};

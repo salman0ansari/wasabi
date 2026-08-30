@@ -11,5 +11,5 @@ pub mod supervisor;
 
 pub use events::{ConnectionStateWatch, InvalidationFeed};
 pub use runtime::{CoreRuntime, RuntimeConfig};
-pub use state::SessionState;
+pub use state::{SessionState, failure_reason};
 pub use supervisor::{CoreSupervisor, SupervisorConfig, SupervisorError};

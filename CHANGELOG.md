@@ -4,7 +4,18 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
-_No changes yet._
+### Added
+
+- Session recovery now names forced logout, a normal unlink, a client WhatsApp
+  no longer accepts, a temporary restriction (with its wait window), and device
+  rate-limiting. Cached chats stay on disk. Pairing 429 responses tell the user
+  to wait rather than dumping protocol errors.
+
+### Fixed
+
+- Temporary-ban protocol events now fail the session instead of being dropped
+  by the event pump, so the restriction is visible.
+- Connect-failure reasons no longer reach the UI as Debug dumps.
 
 ## [0.3.0] - 2026-08-30
 

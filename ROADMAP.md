@@ -17,8 +17,8 @@ wasabi is being built in public toward a dependable Linux-first replacement for 
 | Status | Work |
 | --- | --- |
 | Done | QR pairing, phone-number codes, expiry/cancel/retry behavior, cached startup, reconnect state, and explicit logout. |
-| In progress | Specific forced-logout, client-outdated, rate-limit, temporary-ban, and history-sync recovery surfaces. |
-| Planned | Linked-device management, relink diagnostics, corrupt-settings recovery UX, and resumable initial history progress. |
+| Done | Specific forced-logout, client-outdated, rate-limit, and temporary-ban recovery surfaces. |
+| Planned | History-sync recovery surfaces, linked-device management, relink diagnostics, corrupt-settings recovery UX, and resumable initial history progress. |
 
 ## Chats, search, and timeline
 
