@@ -4,6 +4,10 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
+_No changes yet._
+
+## [0.3.3] - 2026-08-31
+
 ### Added
 
 - Received location and contact messages now render as dedicated cards instead
