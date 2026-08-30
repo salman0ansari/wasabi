@@ -213,7 +213,14 @@ async fn contact_pages_are_stable_searchable_and_direct_only() {
     store
         .shared_db()
         .run(move |connection| {
-            let contacts: [(&str, Option<&str>, Option<&str>, Option<&str>, Option<&str>); 6] = [
+            type ContactFixture<'a> = (
+                &'a str,
+                Option<&'a str>,
+                Option<&'a str>,
+                Option<&'a str>,
+                Option<&'a str>,
+            );
+            let contacts: [ContactFixture<'_>; 6] = [
                 ("3@s.whatsapp.net", Some("Charlie"), None, None, None),
                 ("1@s.whatsapp.net", None, None, Some("alice"), None),
                 ("2@s.whatsapp.net", Some("Bob"), None, None, None),
@@ -482,7 +489,7 @@ async fn media_projection_keeps_display_metadata_and_hides_transport_secrets() {
     assert_eq!(media.file_size, Some(12_345));
     assert_eq!((media.width, media.height), (Some(1600), Some(900)));
     assert_eq!(media.availability, domain::MediaAvailability::Remote);
-    assert_eq!(format!("{media:?}").contains("private/path"), false);
+    assert!(!format!("{media:?}").contains("private/path"));
     assert_eq!(format!("{:?}", media.id), "MediaId(<opaque>)");
 
     let context = store

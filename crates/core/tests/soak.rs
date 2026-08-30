@@ -171,7 +171,7 @@ fn open_close_account_store_x100_no_fd_growth() {
             chats
                 .record_outgoing(
                     &peer,
-                    &format!("FD{i}"),
+                    format!("FD{i}"),
                     &wa::Message::text("soak"),
                     chrono::Utc::now(),
                 )

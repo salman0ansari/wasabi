@@ -1197,10 +1197,10 @@ fn media_descriptor(
     file_name: Option<String>,
     file_size: Option<u64>,
     duration_seconds: Option<u32>,
-    width: Option<u32>,
-    height: Option<u32>,
+    dimensions: (Option<u32>, Option<u32>),
     availability: domain::MediaAvailability,
 ) -> domain::MediaDescriptor {
+    let (width, height) = dimensions;
     domain::MediaDescriptor {
         id: domain::MediaId::new(message_id),
         mime_type,
@@ -1231,8 +1231,10 @@ fn image_descriptor(
         None,
         media.and_then(|media| media.file_length),
         None,
-        media.and_then(|media| media.width),
-        media.and_then(|media| media.height),
+        (
+            media.and_then(|media| media.width),
+            media.and_then(|media| media.height),
+        ),
         availability,
     )
 }
@@ -1255,8 +1257,10 @@ fn video_descriptor(
         None,
         media.and_then(|media| media.file_length),
         media.and_then(|media| media.seconds),
-        media.and_then(|media| media.width),
-        media.and_then(|media| media.height),
+        (
+            media.and_then(|media| media.width),
+            media.and_then(|media| media.height),
+        ),
         availability,
     )
 }
@@ -1279,8 +1283,7 @@ fn audio_descriptor(
         None,
         media.and_then(|media| media.file_length),
         media.and_then(|media| media.seconds),
-        None,
-        None,
+        (None, None),
         availability,
     )
 }
@@ -1306,8 +1309,7 @@ fn document_descriptor(
             .or(fallback_name),
         media.and_then(|media| media.file_length),
         None,
-        None,
-        None,
+        (None, None),
         availability,
     )
 }
@@ -1330,8 +1332,10 @@ fn sticker_descriptor(
         None,
         media.and_then(|media| media.file_length),
         None,
-        media.and_then(|media| media.width),
-        media.and_then(|media| media.height),
+        (
+            media.and_then(|media| media.width),
+            media.and_then(|media| media.height),
+        ),
         availability,
     )
 }
