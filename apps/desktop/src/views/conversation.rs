@@ -867,6 +867,9 @@ pub fn message_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> g
         crate::views::root::MessageOverlay::ConfirmGroupMember(action) => {
             group_member_confirmation(action, cx)
         }
+        crate::views::root::MessageOverlay::ConfirmLeaveGroup(target) => {
+            leave_group_confirmation(target, cx)
+        }
     };
     gpui::div()
         .absolute()
@@ -876,6 +879,50 @@ pub fn message_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> g
         .justify_center()
         .bg(theme::scrim())
         .child(card)
+}
+
+fn leave_group_confirmation(
+    target: crate::views::root::GroupLeaveTarget,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Div {
+    let (title, detail) = leave_group_confirmation_copy(&target);
+    action_card()
+        .child(
+            gpui::div()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme::text_primary())
+                .child(title),
+        )
+        .child(
+            gpui::div()
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .text_color(theme::text_secondary())
+                .child(detail),
+        )
+        .child(
+            gpui::div()
+                .flex()
+                .justify_end()
+                .gap(px(8.0))
+                .child(
+                    sheet_button("cancel-leave-group", "Cancel", false)
+                        .on_click(cx.listener(|this, _, _, cx| this.close_message_overlay(cx))),
+                )
+                .child(
+                    sheet_button("confirm-leave-group", "Leave group", true).on_click(
+                        cx.listener(|this, _, _, cx| this.run_confirmed_leave_group(cx)),
+                    ),
+                ),
+        )
+}
+
+fn leave_group_confirmation_copy(
+    target: &crate::views::root::GroupLeaveTarget,
+) -> (String, &'static str) {
+    (
+        format!("Leave “{}”?", target.group_name),
+        "You will stop receiving new messages after the linked account accepts the request. Existing history stays on this device until you delete the chat.",
+    )
 }
 
 fn group_member_action_sheet(
@@ -1406,6 +1453,7 @@ fn sheet_button(
 mod tests {
     use super::{
         chat_confirmation_copy, format_bytes, group_member_confirmation_copy,
+        leave_group_confirmation_copy,
     };
 
     #[test]
@@ -1457,5 +1505,19 @@ mod tests {
         assert!(copy.0.contains("Weekend hiking crew"));
         assert_eq!(copy.2, "Remove");
         assert!(copy.4);
+    }
+
+    #[test]
+    fn leave_group_confirmation_names_history_behavior() {
+        let target = crate::views::root::GroupLeaveTarget {
+            chat: wasabi_domain::ChatId::new("preview-group@g.us"),
+            group_name: "Weekend hiking crew".to_string(),
+        };
+
+        let copy = leave_group_confirmation_copy(&target);
+
+        assert!(copy.0.contains("Weekend hiking crew"));
+        assert!(copy.1.contains("Existing history"));
+        assert!(copy.1.contains("linked account accepts"));
     }
 }

@@ -18,6 +18,11 @@ All notable user-visible changes to wasabi are recorded here. The format follows
   remain non-actionable, stale roles are rejected before dispatch, partial
   protocol rejection is surfaced, and successful metadata refreshes the real
   participant roles.
+- Group members can now leave through an exact-group, cancel-first
+  confirmation that explains local history retention. Wasabi waits for remote
+  acknowledgement, closes stale detail state, atomically deletes the cached
+  group/participant snapshot, suppresses any failed-cleanup snapshot for the
+  rest of the process, and allows a genuine later re-add to refresh metadata.
 - Group details now expose acknowledged, admin-gated controls for who may edit
   group information, who may send messages, and whether new members require
   approval. Mutations capture an immutable group identity, use typed protocol

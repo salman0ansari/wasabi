@@ -160,6 +160,12 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
             panel = panel.child(section("GROUP UPDATED", feedback));
         }
         panel = panel.child(participants_section(this, cx));
+        if let Some(ConversationDetails::Group(details)) = this.conversation_details.clone()
+            && details.permissions.current_user_role.is_some()
+            && details.participants.iter().any(|participant| participant.is_self)
+        {
+            panel = panel.child(leave_group_action(this, cx, details));
+        }
     }
 
     panel = panel
@@ -167,6 +173,53 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
         .child(destructive_chat_action(this, cx, DestructiveChatAction::Delete));
 
     panel
+}
+
+fn leave_group_action(
+    this: &MainWindow,
+    cx: &mut Context<MainWindow>,
+    details: wasabi_domain::GroupDetails,
+) -> gpui::Stateful<gpui::Div> {
+    let pending = this.group_mutation_in_progress;
+    let blocked = pending || this.group_leave_uncertain;
+    let target = crate::views::root::GroupLeaveTarget {
+        chat: details.chat,
+        group_name: details.subject,
+    };
+    gpui::div()
+        .id("leave-group")
+        .mx(px(16.0))
+        .min_h(px(52.0))
+        .py(px(10.0))
+        .flex()
+        .items_center()
+        .border_t_1()
+        .border_color(theme::border())
+        .when(!blocked, |row| {
+            row.cursor_pointer()
+                .aria_label("Leave group")
+                .hover(|style| style.bg(theme::row_hover()))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.confirm_leave_group(target.clone(), cx)
+                }))
+        })
+        .child(
+            gpui::div()
+                .flex_1()
+                .text_size(px(theme::TEXT_SIZE))
+                .text_color(if blocked {
+                    theme::text_secondary()
+                } else {
+                    theme::danger()
+                })
+                .child(if pending {
+                    "Working…"
+                } else if this.group_leave_uncertain {
+                    "Reopen group info to confirm leave status"
+                } else {
+                    "Leave group"
+                }),
+        )
 }
 
 fn group_text_actions(
@@ -209,6 +262,7 @@ fn group_text_action(
 ) -> gpui::Stateful<gpui::Div> {
     let allowed = details.permissions.can_manage_members();
     let pending = this.group_mutation_in_progress;
+    let blocked = pending || this.group_leave_uncertain;
     let edit_value = match field {
         crate::views::root::GroupTextField::Subject => details.subject.clone(),
         crate::views::root::GroupTextField::Description => {
@@ -225,7 +279,7 @@ fn group_text_action(
         .gap(px(12.0))
         .border_t_1()
         .border_color(theme::border())
-        .when(allowed && !pending, |row| {
+        .when(allowed && !blocked, |row| {
             row.cursor_pointer()
                 .hover(|style| style.bg(theme::row_hover()))
                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -236,7 +290,7 @@ fn group_text_action(
             gpui::div()
                 .flex_1()
                 .text_size(px(theme::TEXT_SIZE))
-                .text_color(if allowed {
+                .text_color(if allowed && !blocked {
                     theme::text_primary()
                 } else {
                     theme::text_secondary()
@@ -249,7 +303,9 @@ fn group_text_action(
                 .truncate()
                 .text_size(px(theme::TEXT_SIZE_SM))
                 .text_color(theme::text_secondary())
-                .child(if allowed {
+                .child(if this.group_leave_uncertain {
+                    "Refresh required".to_string()
+                } else if allowed {
                     value
                 } else {
                     format!("{value} · Admin required")
@@ -298,6 +354,7 @@ fn group_permission_row(
 ) -> gpui::Stateful<gpui::Div> {
     let allowed = details.permissions.can_manage_members();
     let pending = this.group_mutation_in_progress;
+    let blocked = pending || this.group_leave_uncertain;
     let chat = details.chat.clone();
     let (id, label, enabled, patch) = match action {
         GroupPermissionAction::EditInfo => (
@@ -336,7 +393,9 @@ fn group_permission_row(
             if enabled { "On" } else { "Off" }
         }
     };
-    let detail = if pending {
+    let detail = if this.group_leave_uncertain {
+        "Refresh required".to_string()
+    } else if pending {
         "Saving…".to_string()
     } else if allowed {
         value.to_string()
@@ -354,7 +413,7 @@ fn group_permission_row(
         .gap(px(12.0))
         .border_t_1()
         .border_color(theme::border())
-        .when(allowed && !pending, |row| {
+        .when(allowed && !blocked, |row| {
             row.cursor_pointer()
                 .hover(|style| style.bg(theme::row_hover()))
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -680,6 +739,7 @@ fn participants_section(this: &MainWindow, cx: &mut Context<MainWindow>) -> gpui
         Some(ConversationDetails::Group(details)) => {
             if details.permissions.can_manage_members() {
                 let pending = this.group_mutation_in_progress;
+                let blocked = pending || this.group_leave_uncertain;
                 body = body.child(
                     gpui::div()
                         .id("add-group-members-row")
@@ -689,12 +749,12 @@ fn participants_section(this: &MainWindow, cx: &mut Context<MainWindow>) -> gpui
                         .gap(px(10.0))
                         .text_size(px(theme::TEXT_SIZE))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(if pending {
+                        .text_color(if blocked {
                             theme::text_secondary()
                         } else {
                             theme::accent_text()
                         })
-                        .when(!pending, |row| {
+                        .when(!blocked, |row| {
                             row.cursor_pointer()
                                 .aria_label("Add group members")
                                 .hover(|style| style.bg(theme::row_hover()))
@@ -712,11 +772,23 @@ fn participants_section(this: &MainWindow, cx: &mut Context<MainWindow>) -> gpui
                                 .bg(theme::row_selected())
                                 .child(Icon::new(IconName::Plus).size(px(17.0))),
                         )
-                        .child(if pending { "Working…" } else { "Add members" }),
+                        .child(if pending {
+                            "Working…"
+                        } else if this.group_leave_uncertain {
+                            "Refresh group info"
+                        } else {
+                            "Add members"
+                        }),
                 );
             }
             for (index, participant) in details.participants.iter().enumerate() {
-                body = body.child(participant_row(participant, details, index, cx));
+                body = body.child(participant_row(
+                    participant,
+                    details,
+                    index,
+                    this.group_leave_uncertain,
+                    cx,
+                ));
             }
         }
         _ if this.details_loading => {
@@ -762,6 +834,7 @@ fn participant_row(
     participant: &Participant,
     details: &wasabi_domain::GroupDetails,
     index: usize,
+    actions_blocked: bool,
     cx: &mut Context<MainWindow>,
 ) -> gpui::Stateful<gpui::Div> {
     let initial = participant
@@ -777,6 +850,7 @@ fn participant_row(
         ParticipantRole::SuperAdmin => Some("creator"),
     };
     let actionable = details.permissions.can_manage_members()
+        && !actions_blocked
         && !participant.is_self
         && participant.role != ParticipantRole::SuperAdmin;
     let target = crate::views::root::GroupMemberTarget {

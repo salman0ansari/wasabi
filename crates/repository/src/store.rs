@@ -205,6 +205,15 @@ impl AccountStore {
         crate::group_cache::load(self.sqlite.shared(), self.device_id(), chat.to_string()).await
     }
 
+    /// Forget cached group identity and participant data after an acknowledged
+    /// leave operation. Repeating this operation is safe.
+    pub async fn remove_cached_group_details(
+        &self,
+        chat: &str,
+    ) -> Result<(), domain::ServiceError> {
+        crate::group_cache::remove(self.sqlite.shared(), self.device_id(), chat.to_string()).await
+    }
+
     // ---- Query facade -------------------------------------------------
 
     /// One keyset page of the chat list.

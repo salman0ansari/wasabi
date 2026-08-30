@@ -11,6 +11,7 @@
 //! the core [`InvalidationPublisher`] here as well, so the UI listens to one
 //! bounded channel regardless of how many producers exist underneath.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
@@ -143,6 +144,7 @@ pub struct CoreBridge {
     outbox: Arc<RwLock<Option<Outbox>>>,
     media_cache: wasabi_media::DiskCache,
     media: Arc<RwLock<Option<wasabi_media::MediaManager>>>,
+    left_groups: Arc<RwLock<HashSet<String>>>,
 }
 
 struct InstalledSessionClientProvider {
@@ -174,6 +176,7 @@ impl CoreBridge {
             outbox: Arc::new(RwLock::new(None)),
             media_cache,
             media: Arc::new(RwLock::new(None)),
+            left_groups: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -562,6 +565,8 @@ impl CoreBridge {
     pub async fn group_details(&self, chat: String) -> Result<GroupDetails, String> {
         let session = self.session_snapshot()?;
         let store = Arc::clone(&session.store);
+        let left_groups = Arc::clone(&self.left_groups);
+        let left_locally = left_groups.read().expect("left group lock").contains(&chat);
         self.run_on_core(async move {
             let jid: whatsapp_rust::Jid = chat
                 .parse()
@@ -571,6 +576,9 @@ impl CoreBridge {
             }
             let cached = store.cached_group_details(&chat).await;
             if !session.state().is_connected() {
+                if left_locally {
+                    return Err("You left this group".to_string());
+                }
                 return cached
                     .map_err(service_message)?
                     .ok_or_else(|| "Connect to load group information".to_string());
@@ -578,7 +586,7 @@ impl CoreBridge {
             let client = match session.client().await {
                 Some(client) => client,
                 None => {
-                    if let Ok(Some(cached)) = &cached {
+                    if !left_locally && let Ok(Some(cached)) = &cached {
                         return Ok(cached.clone());
                     }
                     return Err("Connect to load group information".to_string());
@@ -588,13 +596,14 @@ impl CoreBridge {
                 Ok(metadata) => metadata,
                 Err(error) => {
                     let error = group_service_error(error);
-                    if let Ok(Some(cached)) = cached {
+                    if !left_locally && let Ok(Some(cached)) = cached {
                         tracing::warn!(kind = %error.kind, "live group refresh failed; using cache");
                         return Ok(cached);
                     }
                     return Err(service_message(error));
                 }
             };
+            left_groups.write().expect("left group lock").remove(&chat);
             let details = project_group_metadata(&session, metadata, false).await;
             if let Err(error) = store
                 .save_group_details(
@@ -710,6 +719,7 @@ impl CoreBridge {
             ));
         }
         let store = Arc::clone(&session.store);
+        let left_groups = Arc::clone(&self.left_groups);
         let result = self
             .run_on_core_service(async move {
                 let chat = patch
@@ -790,11 +800,33 @@ impl CoreBridge {
                         participant_result_counts(&responses)
                     }
                     GroupChange::Leave => {
-                        groups.leave(chat.clone()).await.map_err(group_service_error)?;
+                        if let Err(error) = groups.leave(chat.clone()).await {
+                            let error = group_service_error(error);
+                            if leave_outcome_uncertain(error.kind) {
+                                left_groups
+                                    .write()
+                                    .expect("left group lock")
+                                    .insert(patch.chat().as_str().to_string());
+                            }
+                            return Err(error);
+                        }
                         (0, 0, true)
                     }
                 };
                 if left {
+                    let group = patch.chat().as_str().to_string();
+                    left_groups
+                        .write()
+                        .expect("left group lock")
+                        .insert(group.clone());
+                    if let Err(error) = store.remove_cached_group_details(&group).await
+                    {
+                        // The remote mutation is already accepted; do not
+                        // present a retryable leave action that could run
+                        // twice. The UI closes the drawer and the next live
+                        // group query remains authoritative.
+                        tracing::error!(kind = %error.kind, "left group cache cleanup failed");
+                    }
                     return Ok(GroupPatchResult {
                         details: None,
                         applied_participants,
@@ -1937,6 +1969,10 @@ fn group_service_error(error: whatsapp_rust::GroupError) -> ServiceError {
     ServiceError::new(kind, "group operation failed")
 }
 
+pub(crate) fn leave_outcome_uncertain(kind: ErrorKind) -> bool {
+    matches!(kind, ErrorKind::Timeout | ErrorKind::NotConnected)
+}
+
 async fn project_group_metadata(
     session: &AccountSession,
     metadata: whatsapp_rust::GroupMetadata,
@@ -2337,6 +2373,9 @@ mod tests {
             .kind,
             ErrorKind::InvalidRequest
         );
+        assert!(leave_outcome_uncertain(ErrorKind::Timeout));
+        assert!(leave_outcome_uncertain(ErrorKind::NotConnected));
+        assert!(!leave_outcome_uncertain(ErrorKind::Protocol));
     }
 
     #[test]

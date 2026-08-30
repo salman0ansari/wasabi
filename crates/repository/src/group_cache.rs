@@ -196,6 +196,41 @@ pub async fn load(
     }))
 }
 
+/// Remove a group snapshot after the server acknowledges that this account
+/// left. Header and participant rows disappear in one transaction so an
+/// offline reopen can never expose a half-deleted or stale membership view.
+pub async fn remove(
+    shared: SharedSqlite,
+    device_id: i32,
+    chat: String,
+) -> Result<(), ServiceError> {
+    validate_group_identity(&chat)?;
+    shared
+        .run(move |connection| {
+            connection
+                .transaction::<_, diesel::result::Error, _>(|connection| {
+                    diesel::sql_query(
+                        "DELETE FROM wasabi_group_participants
+                         WHERE device_id = ? AND chat_jid = ?",
+                    )
+                    .bind::<Integer, _>(device_id)
+                    .bind::<Text, _>(&chat)
+                    .execute(connection)?;
+                    diesel::sql_query(
+                        "DELETE FROM wasabi_group_cache
+                         WHERE device_id = ? AND chat_jid = ?",
+                    )
+                    .bind::<Integer, _>(device_id)
+                    .bind::<Text, _>(&chat)
+                    .execute(connection)?;
+                    Ok(())
+                })
+                .map_err(database_store_error)
+        })
+        .await
+        .map_err(store_error)
+}
+
 fn validate_group_identity(value: &str) -> Result<(), ServiceError> {
     let jid = value
         .parse::<whatsapp_rust::Jid>()

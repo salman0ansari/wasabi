@@ -56,6 +56,7 @@ pub(crate) enum MessageOverlay {
     EditGroupText(GroupTextField),
     GroupMemberActions(GroupMemberTarget),
     ConfirmGroupMember(GroupMemberAction),
+    ConfirmLeaveGroup(GroupLeaveTarget),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -84,6 +85,12 @@ pub(crate) enum GroupMemberActionKind {
 pub(crate) struct GroupMemberAction {
     pub(crate) target: GroupMemberTarget,
     pub(crate) kind: GroupMemberActionKind,
+}
+
+#[derive(Clone)]
+pub(crate) struct GroupLeaveTarget {
+    pub(crate) chat: wasabi_domain::ChatId,
+    pub(crate) group_name: String,
 }
 
 #[derive(Clone, Copy)]
@@ -184,6 +191,7 @@ pub struct MainWindow {
     pub(crate) group_mutation_in_progress: bool,
     pub(crate) group_mutation_error: Option<String>,
     pub(crate) group_mutation_feedback: Option<String>,
+    pub(crate) group_leave_uncertain: bool,
     pub(crate) group_text_edit_error: Option<String>,
     pub(crate) settings: DeviceSettings,
     pub(crate) settings_section: SettingsSection,
@@ -328,6 +336,7 @@ impl MainWindow {
             group_mutation_in_progress: false,
             group_mutation_error: None,
             group_mutation_feedback: None,
+            group_leave_uncertain: false,
             group_text_edit_error: None,
             settings: DeviceSettings::load(),
             settings_section: SettingsSection::Chats,
@@ -655,6 +664,7 @@ impl MainWindow {
                 | "group-add-members"
                 | "group-member-actions"
                 | "group-member-remove"
+                | "group-leave"
         ) {
             let group_chat = "preview-group@g.us";
             if let Some(summary) = self.chats.chats.first_mut() {
@@ -674,6 +684,14 @@ impl MainWindow {
                     window,
                     cx,
                 );
+            } else if mode == "group-leave" {
+                let details = crate::state::preview::group_details_preview();
+                self.message_overlay = Some(MessageOverlay::ConfirmLeaveGroup(
+                    GroupLeaveTarget {
+                        chat: details.chat,
+                        group_name: details.subject,
+                    },
+                ));
             } else if matches!(mode, "group-member-actions" | "group-member-remove") {
                 let details = crate::state::preview::group_details_preview();
                 if let Some(participant) = details
@@ -862,7 +880,10 @@ impl MainWindow {
         let Some(ConversationDetails::Group(details)) = self.conversation_details.as_ref() else {
             return;
         };
-        if !details.permissions.can_manage_members() || self.group_mutation_in_progress {
+        if !details.permissions.can_manage_members()
+            || self.group_mutation_in_progress
+            || self.group_leave_uncertain
+        {
             return;
         }
         self.new_chat_open = true;
@@ -1404,6 +1425,7 @@ impl MainWindow {
         self.group_mutation_in_progress = false;
         self.group_mutation_error = None;
         self.group_mutation_feedback = None;
+        self.group_leave_uncertain = false;
         self.refresh_chats(cx);
     }
 
@@ -1475,6 +1497,7 @@ impl MainWindow {
         self.group_mutation_in_progress = false;
         self.group_mutation_error = None;
         self.group_mutation_feedback = None;
+        self.group_leave_uncertain = false;
         self.first_visible = 0;
         self.pending_new_messages = 0;
         // An anchored search result starts in the middle of its context; do
@@ -2099,6 +2122,7 @@ impl MainWindow {
         self.group_mutation_in_progress = false;
         self.group_mutation_error = None;
         self.group_mutation_feedback = None;
+        self.group_leave_uncertain = false;
         cx.notify();
     }
 
@@ -2125,6 +2149,7 @@ impl MainWindow {
         self.details_error = None;
         self.group_mutation_error = None;
         self.group_mutation_feedback = None;
+        self.group_leave_uncertain = false;
         let bridge = Arc::clone(&self.bridge);
         spawn_main(cx, async move |this, cx| {
             let result = match kind {
@@ -2163,7 +2188,7 @@ impl MainWindow {
         patch: wasabi_domain::GroupPatch,
         cx: &mut Context<Self>,
     ) {
-        if self.group_mutation_in_progress {
+        if self.group_mutation_in_progress || self.group_leave_uncertain {
             return;
         }
         let target = patch.chat().as_str().to_string();
@@ -2179,6 +2204,7 @@ impl MainWindow {
             }
             _ => None,
         };
+        let leaving = matches!(patch.change(), wasabi_domain::GroupChange::Leave);
         let generation = self.group_mutation_gen.fetch_add(1, Ordering::AcqRel) + 1;
         self.group_mutation_in_progress = true;
         self.group_mutation_error = None;
@@ -2217,7 +2243,16 @@ impl MainWindow {
                     }
                     Err(error) => {
                         tracing::warn!(kind = %error.kind, "group mutation failed");
-                        this.group_mutation_error = Some(error.ui_message().to_string());
+                        if leaving && crate::core_bridge::leave_outcome_uncertain(error.kind)
+                        {
+                            this.group_leave_uncertain = true;
+                            this.group_mutation_error = Some(
+                                "The leave result could not be confirmed. Reconnect and reopen group info before trying again."
+                                    .to_string(),
+                            );
+                        } else {
+                            this.group_mutation_error = Some(error.ui_message().to_string());
+                        }
                     }
                 }
                 cx.notify();
@@ -2382,6 +2417,9 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.group_mutation_in_progress || self.group_leave_uncertain {
+            return;
+        }
         let input = match field {
             GroupTextField::Subject => &self.group_info_subject_input,
             GroupTextField::Description => &self.group_info_description_input,
@@ -2507,6 +2545,7 @@ impl MainWindow {
         };
         details.chat == target.chat
             && self.chats.selected.as_deref() == Some(target.chat.as_str())
+            && !self.group_leave_uncertain
             && details.permissions.can_manage_members()
             && details.participants.iter().any(|participant| {
                 participant.jid == target.participant.as_str()
@@ -2515,6 +2554,49 @@ impl MainWindow {
                     && !participant.is_self
                     && participant.role != wasabi_domain::ParticipantRole::SuperAdmin
             })
+    }
+
+    pub(crate) fn confirm_leave_group(
+        &mut self,
+        target: GroupLeaveTarget,
+        cx: &mut Context<Self>,
+    ) {
+        if self.group_mutation_in_progress
+            || self.group_leave_uncertain
+            || !self.group_leave_target_is_current(&target)
+        {
+            return;
+        }
+        self.group_mutation_error = None;
+        self.group_mutation_feedback = None;
+        self.message_overlay = Some(MessageOverlay::ConfirmLeaveGroup(target));
+        cx.notify();
+    }
+
+    pub(crate) fn run_confirmed_leave_group(&mut self, cx: &mut Context<Self>) {
+        let Some(MessageOverlay::ConfirmLeaveGroup(target)) = self.message_overlay.take() else {
+            return;
+        };
+        if !self.group_leave_target_is_current(&target) {
+            self.group_mutation_error = Some(
+                "This group can no longer be left from the current conversation state."
+                    .to_string(),
+            );
+            cx.notify();
+            return;
+        }
+        self.apply_group_patch(wasabi_domain::GroupPatch::leave(target.chat), cx);
+    }
+
+    fn group_leave_target_is_current(&self, target: &GroupLeaveTarget) -> bool {
+        let Some(ConversationDetails::Group(details)) = self.conversation_details.as_ref() else {
+            return false;
+        };
+        details.chat == target.chat
+            && details.subject == target.group_name
+            && self.chats.selected.as_deref() == Some(target.chat.as_str())
+            && details.permissions.current_user_role.is_some()
+            && details.participants.iter().any(|participant| participant.is_self)
     }
 
     pub(crate) fn confirm_message_action(
@@ -3570,6 +3652,14 @@ impl MainWindow {
                             this.refresh_chats(cx);
                             if this.new_chat_open {
                                 this.load_contact_query(false, cx);
+                            }
+                            if this.show_right_panel
+                                && matches!(
+                                    this.conversation_details.as_ref(),
+                                    Some(ConversationDetails::Direct(_))
+                                )
+                            {
+                                this.load_conversation_details(cx);
                             }
                         }
                         Invalidation::Messages { chat } => {

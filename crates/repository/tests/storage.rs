@@ -179,6 +179,29 @@ async fn group_details_cache_reopens_and_replaces_participants_atomically() {
     assert_eq!(updated.subject, "Updated plans");
     assert_eq!(updated.participants.len(), 1);
     assert!(updated.participants[0].is_self);
+
+    store
+        .remove_cached_group_details(group.as_str())
+        .await
+        .unwrap();
+    assert!(
+        store
+            .cached_group_details(group.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    drop(store);
+
+    let reopened = open(&dir).await;
+    assert!(
+        reopened
+            .cached_group_details(group.as_str())
+            .await
+            .unwrap()
+            .is_none(),
+        "acknowledged leave cleanup survives reopen"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
