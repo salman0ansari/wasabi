@@ -340,6 +340,7 @@ async fn chat_page_hydrates_contact_and_group_avatar_refs() {
             phone_number: None,
             about: None,
             avatar: Some(domain::AvatarRef("contact-pic".to_string())),
+            is_blocked: None,
         })
         .await
         .unwrap();
@@ -391,6 +392,75 @@ async fn chat_page_hydrates_contact_and_group_avatar_refs() {
     assert_eq!(
         group_chat.avatar,
         Some(domain::AvatarRef("group-pic".to_string()))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleted_contact_is_no_longer_listed() {
+    let dir = TestDir::new("contact-local-delete");
+    let store = open(&dir).await;
+    store.sqlite().create_new_device().await.unwrap();
+    let device_id = store.device_id();
+    store
+        .shared_db()
+        .run(move |connection| {
+            diesel::sql_query(
+                "INSERT INTO contacts
+                 (device_id, jid, push_name, full_name, first_name, business_name)
+                 VALUES (?, '15550000001@s.whatsapp.net', 'Pat', NULL, NULL, NULL)",
+            )
+            .bind::<diesel::sql_types::Integer, _>(device_id)
+            .execute(connection)
+            .map_err(|error| wacore::store::error::StoreError::Database(Box::new(error)))?;
+            diesel::sql_query(
+                "INSERT INTO contacts
+                 (device_id, jid, push_name, full_name, first_name, business_name)
+                 VALUES (?, '222@lid', 'Pat', NULL, NULL, NULL)",
+            )
+            .bind::<diesel::sql_types::Integer, _>(device_id)
+            .execute(connection)
+            .map_err(|error| wacore::store::error::StoreError::Database(Box::new(error)))?;
+            diesel::sql_query(
+                "INSERT INTO lid_pn_mapping
+                 (lid, phone_number, created_at, learning_source, updated_at, device_id)
+                 VALUES ('222', '15550000001', 1, 'test', 1, ?)",
+            )
+            .bind::<diesel::sql_types::Integer, _>(device_id)
+            .execute(connection)
+            .map_err(|error| wacore::store::error::StoreError::Database(Box::new(error)))?;
+            diesel::sql_query(
+                "INSERT INTO wasabi_contact_cache
+                 (device_id, jid, display_name, about, avatar_ref, fetched_at_ms)
+                 VALUES (?, '15550000001@s.whatsapp.net', 'Pat Cached', NULL, NULL, 1)",
+            )
+            .bind::<diesel::sql_types::Integer, _>(device_id)
+            .execute(connection)
+            .map_err(|error| wacore::store::error::StoreError::Database(Box::new(error)))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let listed = store.contact_page(String::new(), None, 20).await.unwrap();
+    assert!(
+        listed
+            .rows
+            .iter()
+            .any(|row| row.jid.as_str() == "15550000001@s.whatsapp.net"),
+        "PN contact must be listed before local delete"
+    );
+
+    store
+        .delete_local_contact("15550000001@s.whatsapp.net")
+        .await
+        .unwrap();
+
+    let listed = store.contact_page(String::new(), None, 20).await.unwrap();
+    assert!(
+        listed.rows.iter().all(|row| {
+            row.jid.as_str() != "15550000001@s.whatsapp.net" && row.jid.as_str() != "222@lid"
+        }),
+        "PN contact must disappear from the address book after local delete"
     );
 }
 

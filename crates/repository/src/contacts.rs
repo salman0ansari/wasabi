@@ -236,6 +236,69 @@ pub async fn page(
     Ok(ContactPage { rows, next_after })
 }
 
+pub(crate) async fn delete_local(
+    shared: SharedSqlite,
+    device_id: i32,
+    jid: String,
+) -> Result<(), ServiceError> {
+    shared
+        .run(move |connection| {
+            diesel::sql_query(
+                "DELETE FROM wasabi_contact_cache
+                 WHERE device_id = ?
+                   AND (
+                     jid = ?
+                     OR jid IN (
+                       SELECT phone_number || '@s.whatsapp.net'
+                       FROM lid_pn_mapping
+                       WHERE device_id = ? AND lid || '@lid' = ?
+                     )
+                     OR jid IN (
+                       SELECT lid || '@lid'
+                       FROM lid_pn_mapping
+                       WHERE device_id = ? AND phone_number || '@s.whatsapp.net' = ?
+                     )
+                   )",
+            )
+            .bind::<Integer, _>(device_id)
+            .bind::<Text, _>(&jid)
+            .bind::<Integer, _>(device_id)
+            .bind::<Text, _>(&jid)
+            .bind::<Integer, _>(device_id)
+            .bind::<Text, _>(&jid)
+            .execute(connection)
+            .map_err(|error| StoreError::Database(Box::new(error)))?;
+            diesel::sql_query(
+                "DELETE FROM contacts
+                 WHERE device_id = ?
+                   AND (
+                     jid = ?
+                     OR jid IN (
+                       SELECT phone_number || '@s.whatsapp.net'
+                       FROM lid_pn_mapping
+                       WHERE device_id = ? AND lid || '@lid' = ?
+                     )
+                     OR jid IN (
+                       SELECT lid || '@lid'
+                       FROM lid_pn_mapping
+                       WHERE device_id = ? AND phone_number || '@s.whatsapp.net' = ?
+                     )
+                   )",
+            )
+            .bind::<Integer, _>(device_id)
+            .bind::<Text, _>(&jid)
+            .bind::<Integer, _>(device_id)
+            .bind::<Text, _>(&jid)
+            .bind::<Integer, _>(device_id)
+            .bind::<Text, _>(&jid)
+            .execute(connection)
+            .map(|_| ())
+            .map_err(|error| StoreError::Database(Box::new(error)))
+        })
+        .await
+        .map_err(database_error)
+}
+
 fn project_contact(row: ContactRow) -> Result<ContactSummary, ServiceError> {
     let jid = row
         .jid

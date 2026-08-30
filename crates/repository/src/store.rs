@@ -532,6 +532,7 @@ impl AccountStore {
             avatar: cached
                 .and_then(|cached| cached.avatar_ref)
                 .map(domain::AvatarRef),
+            is_blocked: None,
         })
     }
 
@@ -557,6 +558,10 @@ impl AccountStore {
         limit: usize,
     ) -> Result<domain::ContactPage, domain::ServiceError> {
         crate::contacts::page(self.shared_db(), self.device_id(), query, after, limit).await
+    }
+
+    pub async fn delete_local_contact(&self, jid: &str) -> Result<(), domain::ServiceError> {
+        crate::contacts::delete_local(self.shared_db(), self.device_id(), jid.to_string()).await
     }
 
     pub async fn chat_preference(

@@ -20,7 +20,7 @@ pub mod presence;
 pub mod search;
 pub mod send;
 
-pub use actions::{ChatAction, MessageAction, MessageActionTarget};
+pub use actions::{ChatAction, ContactAction, MessageAction, MessageActionTarget};
 pub use contact::{
     ContactLookupResult, ContactPage, ContactPageCursor, ContactPhoneNumber, ContactSummary,
 };

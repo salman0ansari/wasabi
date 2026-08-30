@@ -4,7 +4,13 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
-_No changes yet._
+### Added
+
+- Direct contact details can now block, unblock, or delete a saved contact
+  name. Block and unblock appear only when the live block state is known;
+  delete contact requires a bare phone-number identity, removes the address-book
+  name, and leaves the chat in place. Report is not offered because it needs a
+  message id.
 
 ## [0.2.0-alpha.7] - 2026-08-30
 

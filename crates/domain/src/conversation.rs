@@ -23,6 +23,7 @@ pub struct DirectContactDetails {
     pub phone_number: Option<String>,
     pub about: Option<String>,
     pub avatar: Option<AvatarRef>,
+    pub is_blocked: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -959,6 +959,9 @@ pub fn message_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> g
         crate::views::root::MessageOverlay::ConfirmJoinRequest(action) => {
             join_request_confirmation(action, cx)
         }
+        crate::views::root::MessageOverlay::ConfirmContact(action) => {
+            contact_action_confirmation(this, action, cx)
+        }
     };
     gpui::div()
         .absolute()
@@ -1529,6 +1532,85 @@ fn chat_action_confirmation(
         )
 }
 
+fn contact_action_confirmation(
+    this: &MainWindow,
+    action: wasabi_domain::ContactAction,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Div {
+    let name = this
+        .conversation_details
+        .as_ref()
+        .and_then(|details| match details {
+            wasabi_domain::ConversationDetails::Direct(details) => {
+                Some(details.display_name.clone())
+            }
+            wasabi_domain::ConversationDetails::Group(_) => None,
+        })
+        .or_else(|| {
+            this.chats
+                .chats
+                .iter()
+                .find(|chat| chat.id.as_str() == action.jid().as_str())
+                .map(chats::fallback_name)
+        })
+        .unwrap_or_else(|| "this contact".to_string());
+    let (title, detail, confirm, confirm_id) = contact_confirmation_copy(&action, &name);
+    action_card()
+        .child(
+            gpui::div()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme::text_primary())
+                .child(title),
+        )
+        .child(
+            gpui::div()
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .text_color(theme::text_secondary())
+                .child(detail),
+        )
+        .child(
+            gpui::div()
+                .flex()
+                .justify_end()
+                .gap(px(8.0))
+                .child(
+                    sheet_button("cancel-contact-action", "Cancel", false)
+                        .on_click(cx.listener(|this, _, _, cx| this.close_message_overlay(cx))),
+                )
+                .child(
+                    sheet_button(confirm_id, confirm, true).on_click(
+                        cx.listener(|this, _, _, cx| this.run_confirmed_contact_action(cx)),
+                    ),
+                ),
+        )
+}
+
+fn contact_confirmation_copy(
+    action: &wasabi_domain::ContactAction,
+    name: &str,
+) -> (String, &'static str, &'static str, &'static str) {
+    match action {
+        wasabi_domain::ContactAction::Block { .. } => (
+            format!("Block “{name}”?"),
+            "They will no longer be able to message you. The conversation stays in your chat list, and the saved name is not removed.",
+            "Block",
+            "confirm-block-contact",
+        ),
+        wasabi_domain::ContactAction::Unblock { .. } => (
+            format!("Unblock “{name}”?"),
+            "They will be able to message you again.",
+            "Unblock",
+            "confirm-unblock-contact",
+        ),
+        wasabi_domain::ContactAction::Remove { .. } => (
+            format!("Delete contact “{name}”?"),
+            "This removes the saved name from your address book. The conversation stays in your chat list, and this person is not blocked.",
+            "Delete contact",
+            "confirm-delete-contact",
+        ),
+    }
+}
+
 fn chat_confirmation_copy(
     action: &wasabi_domain::ChatAction,
     name: &str,
@@ -1592,9 +1674,9 @@ fn sheet_button(id: &'static str, label: &'static str, danger: bool) -> gpui::St
 #[cfg(test)]
 mod tests {
     use super::{
-        chat_confirmation_copy, format_bytes, group_member_confirmation_copy,
-        join_request_confirmation_copy, leave_group_confirmation_copy,
-        paints_downloaded_image_thumbnail,
+        chat_confirmation_copy, contact_confirmation_copy, format_bytes,
+        group_member_confirmation_copy, join_request_confirmation_copy,
+        leave_group_confirmation_copy, paints_downloaded_image_thumbnail,
     };
 
     fn test_media() -> wasabi_domain::MediaDescriptor {
@@ -1663,6 +1745,28 @@ mod tests {
         assert!(delete_copy.0.contains("Avery Chen"));
         assert!(delete_copy.1.contains("other participants"));
         assert_eq!(delete_copy.2, "Delete chat");
+    }
+
+    #[test]
+    fn contact_confirmations_name_the_person_and_delete_keeps_the_chat() {
+        let jid = wasabi_domain::ChatId::new("a@s.whatsapp.net");
+        let block = wasabi_domain::ContactAction::Block { jid: jid.clone() };
+        let remove = wasabi_domain::ContactAction::Remove { jid };
+
+        let block_copy = contact_confirmation_copy(&block, "Avery Chen");
+        let remove_copy = contact_confirmation_copy(&remove, "Avery Chen");
+
+        assert!(block_copy.0.contains("Avery Chen"));
+        assert_eq!(block_copy.2, "Block");
+        assert_eq!(block_copy.3, "confirm-block-contact");
+        assert!(remove_copy.0.contains("Avery Chen"));
+        assert!(remove_copy.1.contains("saved name"));
+        assert!(!remove_copy.1.to_lowercase().contains("deletes the chat"));
+        assert!(!remove_copy.1.to_lowercase().contains("delete the chat"));
+        assert!(!remove_copy.1.contains("Delete chat"));
+        assert_eq!(remove_copy.2, "Delete contact");
+        assert_eq!(remove_copy.3, "confirm-delete-contact");
+        assert_ne!(remove_copy.3, "confirm-delete-chat");
     }
 
     #[test]
