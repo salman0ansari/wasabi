@@ -25,8 +25,8 @@ use wasabi_domain::{
     CreateGroupRequest, DirectContactDetails, ErrorKind, GroupChange, GroupDetails, GroupPatch,
     GroupPatchResult, GroupPermissions, MediaDownloadRequest, MessageAction, MessageContext,
     MessageId, MessagePage, NotificationCandidate, PageCursor, PairingPhoneNumber, Participant,
-    ParticipantRole, PhonePairCode, ProfilePictureRequest, SearchPage, SendContent, SendReceipt,
-    SendRequest, ServiceError, StagedAttachment, TransferId, TransferJob,
+    ParticipantRole, PendingMembershipRequest, PhonePairCode, ProfilePictureRequest, SearchPage,
+    SendContent, SendReceipt, SendRequest, ServiceError, StagedAttachment, TransferId, TransferJob,
 };
 use wasabi_repository::AccountStore;
 use wasabi_whatsapp::lifecycle::QrState;
@@ -104,6 +104,10 @@ pub trait DesktopBackend: Send + Sync {
     async fn create_group(&self, request: CreateGroupRequest)
     -> Result<GroupDetails, ServiceError>;
     async fn update_group(&self, patch: GroupPatch) -> Result<GroupPatchResult, ServiceError>;
+    async fn membership_requests(
+        &self,
+        chat: ChatId,
+    ) -> Result<Vec<PendingMembershipRequest>, ServiceError>;
     async fn set_favorite(&self, chat: ChatId, favorite: bool) -> Result<(), String>;
     async fn save_draft(
         &self,
@@ -878,6 +882,22 @@ impl CoreBridge {
                             .map_err(group_service_error)?;
                         participant_result_counts(&responses)
                     }
+                    GroupChange::ApproveMembershipRequest(participant) => {
+                        let participants = participant_jids(std::slice::from_ref(participant))?;
+                        let responses = groups
+                            .approve_membership_requests(chat.clone(), &participants)
+                            .await
+                            .map_err(group_service_error)?;
+                        participant_result_counts(&responses)
+                    }
+                    GroupChange::RejectMembershipRequest(participant) => {
+                        let participants = participant_jids(std::slice::from_ref(participant))?;
+                        let responses = groups
+                            .reject_membership_requests(chat.clone(), &participants)
+                            .await
+                            .map_err(group_service_error)?;
+                        participant_result_counts(&responses)
+                    }
                     GroupChange::Leave => {
                         if let Err(error) = groups.leave(chat.clone()).await {
                             let error = group_service_error(error);
@@ -939,6 +959,60 @@ impl CoreBridge {
             .await?;
         self.invalidations.publish(Invalidation::Chats);
         Ok(result)
+    }
+
+    pub async fn membership_requests(
+        &self,
+        chat: ChatId,
+    ) -> Result<Vec<PendingMembershipRequest>, ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let session = self
+            .session_snapshot()
+            .map_err(|_| ServiceError::new(ErrorKind::NotPaired, "session unavailable"))?;
+        if !session.state().is_connected() {
+            return Err(ServiceError::new(
+                ErrorKind::NotConnected,
+                "membership requests require a connected session",
+            ));
+        }
+        self.run_on_core_service(async move {
+            let jid = chat.as_str().parse::<whatsapp_rust::Jid>().map_err(|_| {
+                ServiceError::new(ErrorKind::InvalidRequest, "invalid group identity")
+            })?;
+            if !jid.is_group() {
+                return Err(ServiceError::new(
+                    ErrorKind::InvalidRequest,
+                    "conversation is not a group",
+                ));
+            }
+            let client = session.client().await.ok_or_else(|| {
+                ServiceError::new(ErrorKind::NotConnected, "protocol client unavailable")
+            })?;
+            let requests = client
+                .groups()
+                .get_membership_requests(jid)
+                .await
+                .map_err(group_service_error)?;
+            let mut pending = Vec::with_capacity(requests.len());
+            for request in requests {
+                let contact = session.chats.contact(&request.jid).await.ok().flatten();
+                let display_name = contact
+                    .as_ref()
+                    .and_then(|contact| contact.display_name())
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| request.jid.user.to_string());
+                pending.push(PendingMembershipRequest {
+                    jid: ChatId::new(request.jid.to_string()),
+                    display_name,
+                });
+            }
+            Ok(pending)
+        })
+        .await
     }
 
     pub async fn set_favorite(&self, chat: ChatId, favorite: bool) -> Result<(), String> {
@@ -2526,6 +2600,13 @@ impl DesktopBackend for CoreBridge {
 
     async fn update_group(&self, patch: GroupPatch) -> Result<GroupPatchResult, ServiceError> {
         CoreBridge::update_group(self, patch).await
+    }
+
+    async fn membership_requests(
+        &self,
+        chat: ChatId,
+    ) -> Result<Vec<PendingMembershipRequest>, ServiceError> {
+        CoreBridge::membership_requests(self, chat).await
     }
 
     async fn set_favorite(&self, chat: ChatId, favorite: bool) -> Result<(), String> {

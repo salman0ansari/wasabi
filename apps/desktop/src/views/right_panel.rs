@@ -154,6 +154,9 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
         if let Some(ConversationDetails::Group(details)) = this.conversation_details.clone() {
             panel = panel.child(group_text_actions(this, cx, &details));
             panel = panel.child(group_permissions(this, cx, &details));
+            if details.permissions.can_manage_members() {
+                panel = panel.child(join_requests_section(this, cx, &details));
+            }
         }
         if let Some(error) = this.group_mutation_error.clone() {
             panel = panel.child(section("GROUP UPDATE FAILED", error));
@@ -463,6 +466,155 @@ fn group_permission_row(
                 })
                 .child(detail),
         )
+}
+
+fn join_requests_section(
+    this: &MainWindow,
+    cx: &mut Context<MainWindow>,
+    details: &wasabi_domain::GroupDetails,
+) -> gpui::Div {
+    let mut body = gpui::div()
+        .mx(px(16.0))
+        .py(px(14.0))
+        .border_t_1()
+        .border_color(theme::border())
+        .child(
+            gpui::div()
+                .mb(px(8.0))
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme::accent_text())
+                .child("JOIN REQUESTS"),
+        );
+    if !this.session.state.is_connected() {
+        return body.child(
+            gpui::div()
+                .py(px(8.0))
+                .text_size(px(theme::TEXT_SIZE))
+                .text_color(theme::text_secondary())
+                .child("Connect to review join requests"),
+        );
+    }
+    if this.membership_requests_loading {
+        return body.child(
+            gpui::div()
+                .py(px(8.0))
+                .text_size(px(theme::TEXT_SIZE))
+                .text_color(theme::text_secondary())
+                .child("Loading join requests…"),
+        );
+    }
+    if let Some(error) = this.membership_requests_error.clone() {
+        return body.child(
+            gpui::div()
+                .py(px(8.0))
+                .text_size(px(theme::TEXT_SIZE))
+                .text_color(theme::text_secondary())
+                .child(error),
+        );
+    }
+    if this.membership_requests.is_empty() {
+        return body.child(
+            gpui::div()
+                .py(px(8.0))
+                .text_size(px(theme::TEXT_SIZE))
+                .text_color(theme::text_secondary())
+                .child("No pending join requests"),
+        );
+    }
+    let blocked = this.group_mutation_in_progress || this.group_leave_uncertain;
+    for (index, request) in this.membership_requests.iter().enumerate() {
+        body = body.child(join_request_row(request, details, index, blocked, cx));
+    }
+    body
+}
+
+fn join_request_row(
+    request: &wasabi_domain::PendingMembershipRequest,
+    details: &wasabi_domain::GroupDetails,
+    index: usize,
+    blocked: bool,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Stateful<gpui::Div> {
+    let approve = crate::views::root::JoinRequestAction {
+        target: crate::views::root::JoinRequestTarget {
+            chat: details.chat.clone(),
+            group_name: details.subject.clone(),
+            participant: request.jid.clone(),
+            participant_name: request.display_name.clone(),
+        },
+        kind: crate::views::root::JoinRequestActionKind::Approve,
+    };
+    let decline = crate::views::root::JoinRequestAction {
+        target: approve.target.clone(),
+        kind: crate::views::root::JoinRequestActionKind::Decline,
+    };
+    gpui::div()
+        .id(("join-request", index))
+        .min_h(px(52.0))
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .child(
+            gpui::div()
+                .flex_1()
+                .min_w(px(0.0))
+                .truncate()
+                .text_size(px(theme::TEXT_SIZE))
+                .text_color(theme::text_primary())
+                .child(request.display_name.clone()),
+        )
+        .child(join_request_action_button(
+            ("approve-join-request", index),
+            "Approve",
+            false,
+            blocked,
+            approve,
+            cx,
+        ))
+        .child(join_request_action_button(
+            ("decline-join-request", index),
+            "Decline",
+            true,
+            blocked,
+            decline,
+            cx,
+        ))
+}
+
+fn join_request_action_button(
+    id: (&'static str, usize),
+    label: &'static str,
+    danger: bool,
+    blocked: bool,
+    action: crate::views::root::JoinRequestAction,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Stateful<gpui::Div> {
+    gpui::div()
+        .id(id)
+        .px(px(8.0))
+        .py(px(4.0))
+        .rounded(px(4.0))
+        .text_size(px(theme::TEXT_SIZE_SM))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(if blocked {
+            theme::text_secondary()
+        } else if danger {
+            theme::danger()
+        } else {
+            theme::accent_text()
+        })
+        .when(!blocked, |button| {
+            button
+                .cursor_pointer()
+                .hover(|style| style.bg(theme::row_hover()))
+                .on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        this.confirm_join_request(action.clone(), cx)
+                    }),
+                )
+        })
+        .child(label)
 }
 
 fn section(label: &'static str, body: impl Into<String>) -> gpui::Div {

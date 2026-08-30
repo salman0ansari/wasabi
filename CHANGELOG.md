@@ -6,6 +6,10 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ### Added
 
+- Group admins can now review pending join requests from group details.
+  Requests are queried live while connected, approved or declined one at a
+  time through cancel-first confirmations that name the exact person and
+  group, and dropped from the pending list after a successful change.
 - Conversation headers and contact/group information now render the real
   profile photo when the linked account provides one. Photos are fetched as
   previews, stored in the existing media cache, and fall back to initials when

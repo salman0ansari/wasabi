@@ -89,6 +89,8 @@ pub enum GroupChange {
     RemoveParticipant(ChatId),
     PromoteParticipant(ChatId),
     DemoteParticipant(ChatId),
+    ApproveMembershipRequest(ChatId),
+    RejectMembershipRequest(ChatId),
     Leave,
 }
 
@@ -188,6 +190,20 @@ impl GroupPatch {
         }
     }
 
+    pub fn approve_membership_request(chat: ChatId, participant: ChatId) -> Self {
+        Self {
+            chat,
+            change: GroupChange::ApproveMembershipRequest(participant),
+        }
+    }
+
+    pub fn reject_membership_request(chat: ChatId, participant: ChatId) -> Self {
+        Self {
+            chat,
+            change: GroupChange::RejectMembershipRequest(participant),
+        }
+    }
+
     pub fn leave(chat: ChatId) -> Self {
         Self {
             chat,
@@ -218,6 +234,8 @@ impl fmt::Debug for GroupPatch {
             GroupChange::RemoveParticipant(_) => ("remove_participant", Some(1)),
             GroupChange::PromoteParticipant(_) => ("promote_participant", Some(1)),
             GroupChange::DemoteParticipant(_) => ("demote_participant", Some(1)),
+            GroupChange::ApproveMembershipRequest(_) => ("approve_membership_request", Some(1)),
+            GroupChange::RejectMembershipRequest(_) => ("reject_membership_request", Some(1)),
             GroupChange::Leave => ("leave", None),
         };
         formatter
@@ -311,5 +329,27 @@ mod tests {
         assert!(!debug.contains("15550000001"));
         assert!(!debug.contains("120363"));
         assert!(GroupPatch::add_participants(ChatId::new("group@g.us"), Vec::new()).is_err());
+    }
+
+    #[test]
+    fn membership_request_patches_hide_identities() {
+        let chat = ChatId::new("120363000000000001@g.us");
+        let person = ChatId::new("15550000001@s.whatsapp.net");
+        let approve = GroupPatch::approve_membership_request(chat.clone(), person.clone());
+        let reject = GroupPatch::reject_membership_request(chat, person);
+        assert!(matches!(
+            approve.change(),
+            GroupChange::ApproveMembershipRequest(_)
+        ));
+        assert!(matches!(
+            reject.change(),
+            GroupChange::RejectMembershipRequest(_)
+        ));
+        for patch in [approve, reject] {
+            let debug = format!("{patch:?}");
+            assert!(debug.contains("participant_count"));
+            assert!(!debug.contains("15550000001"));
+            assert!(!debug.contains("120363"));
+        }
     }
 }
