@@ -29,7 +29,7 @@ The root `VERSION` file is authoritative. The root workspace and isolated deskto
 ## Release checklist
 
 1. Choose the next version and update `VERSION`, both Cargo manifests, and the top changelog heading.
-2. Run `./scripts/check-release-metadata.sh`.
+2. Run `./scripts/check-release-metadata.sh` and `./scripts/check-linux-packaging.sh`.
 3. Run the root and desktop test suites and checks documented in the main README.
 4. Run `benchmarks/desktop/measure-linux.sh` on the reference Linux machine and review regressions.
 5. Verify light, dark, and system themes at the supported window sizes and text scales.

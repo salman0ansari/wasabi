@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=wasabi
+Comment=Native Linux messenger for WhatsApp accounts
+Exec=wasabi-desktop
+TryExec=wasabi-desktop
+Terminal=false
+Categories=Network;InstantMessaging;
+Keywords=WhatsApp;messaging;chat;

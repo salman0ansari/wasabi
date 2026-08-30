@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  formatting:
+    name: Formatting
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        run: |
+          toolchain=$(awk -F'"' '/^channel = / { print $2; exit }' rust-toolchain.toml)
+          test -n "$toolchain"
+          rustup toolchain install "$toolchain" --profile minimal --component rustfmt
+
+      - name: Check root formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check desktop formatting
+        working-directory: apps/desktop
+        run: cargo fmt --all -- --check
+
+  root-workspace:
+    name: Root workspace
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        run: |
+          toolchain=$(awk -F'"' '/^channel = / { print $2; exit }' rust-toolchain.toml)
+          test -n "$toolchain"
+          rustup toolchain install "$toolchain" --profile minimal --component clippy
+
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --locked --workspace --all-targets
+
+  release-metadata:
+    name: Release metadata and packaging
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install desktop-entry validator
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends desktop-file-utils
+
+      - name: Validate release metadata
+        run: ./scripts/check-release-metadata.sh
+
+      - name: Validate Linux packaging metadata
+        run: ./scripts/check-linux-packaging.sh
+
+  desktop:
+    name: Desktop workspace
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        run: |
+          toolchain=$(awk -F'"' '/^channel = / { print $2; exit }' rust-toolchain.toml)
+          test -n "$toolchain"
+          rustup toolchain install "$toolchain" --profile minimal
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libasound2-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libgtk-3-dev \
+            libvulkan-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcb1-dev \
+            libxkbcommon-dev \
+            pkg-config
+
+      # Compile and run the deterministic unit tests only; CI does not launch
+      # the GPUI application, so no display server, GPU, or user session is needed.
+      - name: Check all desktop targets
+        working-directory: apps/desktop
+        run: cargo check --locked --all-targets
+
+      - name: Test all desktop targets
+        working-directory: apps/desktop
+        run: cargo test --locked --all-targets
