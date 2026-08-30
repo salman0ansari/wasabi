@@ -149,10 +149,7 @@ impl GroupPatch {
         }
     }
 
-    pub fn add_participants(
-        chat: ChatId,
-        participants: Vec<ChatId>,
-    ) -> Result<Self, &'static str> {
+    pub fn add_participants(chat: ChatId, participants: Vec<ChatId>) -> Result<Self, &'static str> {
         let mut seen = HashSet::with_capacity(participants.len());
         let participants = participants
             .into_iter()
@@ -287,11 +284,10 @@ mod tests {
         assert!(!debug.contains("120363"));
 
         assert!(GroupPatch::subject(chat.clone(), " ").is_err());
-        assert!(GroupPatch::description(
-            chat.clone(),
-            "x".repeat(GROUP_DESCRIPTION_MAX_CHARS + 1)
-        )
-        .is_err());
+        assert!(
+            GroupPatch::description(chat.clone(), "x".repeat(GROUP_DESCRIPTION_MAX_CHARS + 1))
+                .is_err()
+        );
         assert!(matches!(
             GroupPatch::description(chat, "  ").unwrap().change(),
             GroupChange::Description(None)
@@ -303,11 +299,8 @@ mod tests {
         let chat = ChatId::new("120363000000000001@g.us");
         let first = ChatId::new("15550000001@s.whatsapp.net");
         let second = ChatId::new("15550000002@s.whatsapp.net");
-        let patch = GroupPatch::add_participants(
-            chat,
-            vec![first.clone(), second.clone(), first],
-        )
-        .unwrap();
+        let patch =
+            GroupPatch::add_participants(chat, vec![first.clone(), second.clone(), first]).unwrap();
 
         assert!(matches!(
             patch.change(),

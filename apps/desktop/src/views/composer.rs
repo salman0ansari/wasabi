@@ -2,10 +2,10 @@
 
 use gpui::prelude::*;
 use gpui::{ClickEvent, Context, Window, px};
-use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::input::Position;
-use gpui_component::{Disableable as _, Icon, IconName};
 use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::input::Position;
+use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::{Disableable as _, Icon, IconName};
 
 use crate::state::messages;
 use crate::theme;
@@ -47,7 +47,12 @@ pub fn set_text_at_end(
 
 fn end_position(value: &str) -> Position {
     let line = value.bytes().filter(|byte| *byte == b'\n').count();
-    let character = value.rsplit('\n').next().unwrap_or_default().chars().count();
+    let character = value
+        .rsplit('\n')
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .count();
     Position::new(line as u32, character as u32)
 }
 
@@ -124,15 +129,18 @@ pub fn composer_bar(
             .unwrap_or_else(|| "Original text is outside this history window".to_string())
     });
     let editing_in_flight = selected.as_ref().is_some_and(|chat| {
-        this.active_draft.edit_target.as_ref().is_some_and(|message| {
-            this.editing_messages
-                .contains(&(chat.clone(), message.as_str().to_string()))
-        })
+        this.active_draft
+            .edit_target
+            .as_ref()
+            .is_some_and(|message| {
+                this.editing_messages
+                    .contains(&(chat.clone(), message.as_str().to_string()))
+            })
     });
     let can_compose =
         session_can_send && selected.is_some() && !staging && !sending && !editing_in_flight;
-    let has_payload = !this.composer_input.read(cx).value().trim().is_empty()
-        || attachment.is_some();
+    let has_payload =
+        !this.composer_input.read(cx).value().trim().is_empty() || attachment.is_some();
     let can_submit = can_compose && has_payload;
     let send_label = if sending {
         "Sending…"
@@ -156,9 +164,9 @@ pub fn composer_bar(
             .tooltip("Attach a file")
             .disabled(!enabled);
         if enabled {
-            button = button.on_click(cx.listener(
-                |this, _: &ClickEvent, _window, cx| this.choose_attachment(cx),
-            ));
+            button = button.on_click(
+                cx.listener(|this, _: &ClickEvent, _window, cx| this.choose_attachment(cx)),
+            );
         }
         button
     };
@@ -176,7 +184,10 @@ pub fn composer_bar(
             .py(px(9.0))
             .bg(bg)
             .text_color(fg)
-            .text_size(px(theme::scaled_text(theme::TEXT_SIZE, this.settings.text_scale)))
+            .text_size(px(theme::scaled_text(
+                theme::TEXT_SIZE,
+                this.settings.text_scale,
+            )))
             .child(send_label);
         if can_submit {
             button = button.cursor_pointer().on_click(cx.listener(
@@ -301,18 +312,14 @@ fn edit_preview(preview: String, cx: &mut Context<MainWindow>) -> gpui::Div {
                 .py(px(3.0))
                 .text_color(theme::text_secondary())
                 .hover(|style| style.bg(theme::surface()).text_color(theme::text_primary()))
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                    this.cancel_edit(window, cx)
-                }))
+                .on_click(
+                    cx.listener(|this, _: &ClickEvent, window, cx| this.cancel_edit(window, cx)),
+                )
                 .child("×"),
         )
 }
 
-fn reply_preview(
-    sender: String,
-    preview: String,
-    cx: &mut Context<MainWindow>,
-) -> gpui::Div {
+fn reply_preview(sender: String, preview: String, cx: &mut Context<MainWindow>) -> gpui::Div {
     gpui::div()
         .min_h(px(48.0))
         .rounded(px(theme::RADIUS_MD))
@@ -355,9 +362,7 @@ fn reply_preview(
                 .py(px(3.0))
                 .text_color(theme::text_secondary())
                 .hover(|style| style.bg(theme::surface()).text_color(theme::text_primary()))
-                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
-                    this.cancel_reply(cx)
-                }))
+                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| this.cancel_reply(cx)))
                 .child("×"),
         )
 }

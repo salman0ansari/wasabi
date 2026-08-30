@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui::prelude::*;
 use gpui::{
-    AnyWindowHandle, Context, FocusHandle, Focusable, Global, KeyBinding, ListAlignment,
-    ListState, PathPromptOptions, Subscription, WeakEntity, Window, div, px,
+    AnyWindowHandle, Context, FocusHandle, Focusable, Global, KeyBinding, ListAlignment, ListState,
+    PathPromptOptions, Subscription, WeakEntity, Window, div, px,
 };
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::tooltip::Tooltip;
@@ -20,7 +20,9 @@ use gpui_component::{Icon, IconName, VirtualListScrollHandle};
 
 use crate::core_bridge::DesktopBackend;
 use crate::state::chats::ChatFilter;
-use crate::state::{ChatListModel, DeviceSettings, MessageWindowModel, SessionMirror, SettingsSection};
+use crate::state::{
+    ChatListModel, DeviceSettings, MessageWindowModel, SessionMirror, SettingsSection,
+};
 use crate::theme;
 use crate::views::{
     chat_list, composer, conversation, new_chat, new_group, pairing, right_panel, settings,
@@ -148,7 +150,10 @@ impl TypingDisplay {
                 .as_deref()
                 .and_then(|participant| participant.split('@').next())
                 .filter(|participant| !participant.is_empty())
-                .map_or_else(|| action.to_string(), |participant| format!("{participant} is {action}"))
+                .map_or_else(
+                    || action.to_string(),
+                    |participant| format!("{participant} is {action}"),
+                )
         } else {
             action.to_string()
         }
@@ -168,7 +173,6 @@ impl NavDestination {
             Self::Settings => None,
         }
     }
-
 }
 
 /// Startup-installed global so the window can reach the process bridge.
@@ -270,20 +274,24 @@ impl Focusable for MainWindow {
 pub fn key_bindings() -> Vec<KeyBinding> {
     // One binding per platform prefix: the keystroke parser at this rev
     // rejects the "cmd-k|ctrl-k" compound form.
-    let mut bindings = vec![KeyBinding::new(
-        "escape",
-        CloseInfo,
-        Some(MAIN_KEY_CONTEXT),
-    )];
+    let mut bindings = vec![KeyBinding::new("escape", CloseInfo, Some(MAIN_KEY_CONTEXT))];
     if cfg!(target_os = "macos") {
-        bindings.push(KeyBinding::new("cmd-k", FocusSearch, Some(MAIN_KEY_CONTEXT)));
+        bindings.push(KeyBinding::new(
+            "cmd-k",
+            FocusSearch,
+            Some(MAIN_KEY_CONTEXT),
+        ));
         bindings.push(KeyBinding::new(
             "cmd-,",
             OpenSettings,
             Some(MAIN_KEY_CONTEXT),
         ));
     } else {
-        bindings.push(KeyBinding::new("ctrl-k", FocusSearch, Some(MAIN_KEY_CONTEXT)));
+        bindings.push(KeyBinding::new(
+            "ctrl-k",
+            FocusSearch,
+            Some(MAIN_KEY_CONTEXT),
+        ));
         bindings.push(KeyBinding::new(
             "ctrl-,",
             OpenSettings,
@@ -316,9 +324,8 @@ impl MainWindow {
                 .auto_grow(3, 6)
                 .placeholder("Add a group description")
         });
-        let phone_pair_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Country code and phone number")
-        });
+        let phone_pair_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Country code and phone number"));
         let (notification_click_tx, notification_click_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let mut this = Self {
@@ -383,9 +390,7 @@ impl MainWindow {
             notification_started_at_ms: chrono::Utc::now().timestamp_millis(),
             notification_seen: HashSet::new(),
             notification_seen_order: VecDeque::new(),
-            notifications: crate::notifications::NotificationDispatcher::new(
-                notification_click_tx,
-            ),
+            notifications: crate::notifications::NotificationDispatcher::new(notification_click_tx),
             draft_generations: HashMap::new(),
             outbound_typing_generations: HashMap::new(),
             outbound_typing_sent_at: HashMap::new(),
@@ -686,12 +691,10 @@ impl MainWindow {
                 );
             } else if mode == "group-leave" {
                 let details = crate::state::preview::group_details_preview();
-                self.message_overlay = Some(MessageOverlay::ConfirmLeaveGroup(
-                    GroupLeaveTarget {
-                        chat: details.chat,
-                        group_name: details.subject,
-                    },
-                ));
+                self.message_overlay = Some(MessageOverlay::ConfirmLeaveGroup(GroupLeaveTarget {
+                    chat: details.chat,
+                    group_name: details.subject,
+                }));
             } else if matches!(mode, "group-member-actions" | "group-member-remove") {
                 let details = crate::state::preview::group_details_preview();
                 if let Some(participant) = details
@@ -872,11 +875,7 @@ impl MainWindow {
         cx.notify();
     }
 
-    pub(crate) fn begin_add_group_members(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn begin_add_group_members(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ConversationDetails::Group(details)) = self.conversation_details.as_ref() else {
             return;
         };
@@ -919,9 +918,8 @@ impl MainWindow {
         } else if self.group_participants.len() < wasabi_domain::GROUP_INVITEE_MAX {
             self.group_participants.push(contact);
         } else {
-            self.group_creation_error = Some(
-                "A group can include up to 256 invited participants.".to_string(),
-            );
+            self.group_creation_error =
+                Some("A group can include up to 256 invited participants.".to_string());
         }
         self.group_creation_uncertain = false;
         cx.notify();
@@ -1090,8 +1088,7 @@ impl MainWindow {
             }
         };
         if !self.session.state.is_connected() {
-            self.group_creation_error =
-                Some("Reconnect before creating this group.".to_string());
+            self.group_creation_error = Some("Reconnect before creating this group.".to_string());
             cx.notify();
             return;
         }
@@ -1221,12 +1218,13 @@ impl MainWindow {
         let bridge = Arc::clone(&self.bridge);
         spawn_main(cx, async move |this, cx| {
             if debounce {
-                cx.background_executor().timer(CONTACT_SEARCH_DEBOUNCE).await;
+                cx.background_executor()
+                    .timer(CONTACT_SEARCH_DEBOUNCE)
+                    .await;
             }
             let current = this
                 .update(cx, |this, _| {
-                    this.new_chat_open
-                        && this.contacts_gen.load(Ordering::Acquire) == generation
+                    this.new_chat_open && this.contacts_gen.load(Ordering::Acquire) == generation
                 })
                 .unwrap_or(false);
             if !current {
@@ -1234,9 +1232,7 @@ impl MainWindow {
             }
             let result = bridge.contact_page(query, None, CONTACT_PAGE_LIMIT).await;
             this.update(cx, |this, cx| {
-                if !this.new_chat_open
-                    || this.contacts_gen.load(Ordering::Acquire) != generation
-                {
+                if !this.new_chat_open || this.contacts_gen.load(Ordering::Acquire) != generation {
                     return;
                 }
                 this.contacts_loading = false;
@@ -1271,9 +1267,7 @@ impl MainWindow {
                 .contact_page(query, Some(after), CONTACT_PAGE_LIMIT)
                 .await;
             this.update(cx, |this, cx| {
-                if !this.new_chat_open
-                    || this.contacts_gen.load(Ordering::Acquire) != generation
-                {
+                if !this.new_chat_open || this.contacts_gen.load(Ordering::Acquire) != generation {
                     return;
                 }
                 this.contacts_loading = false;
@@ -1513,8 +1507,9 @@ impl MainWindow {
             .unwrap_or_default();
         let draft_body = draft.body.clone();
         self.active_draft = draft;
-        self.composer_input
-            .update(cx, |input, cx| composer::set_text_at_end(input, draft_body, window, cx));
+        self.composer_input.update(cx, |input, cx| {
+            composer::set_text_at_end(input, draft_body, window, cx)
+        });
         let should_mark_read = window.is_window_active()
             && self.session.can_send()
             && self
@@ -1721,12 +1716,7 @@ impl MainWindow {
         });
     }
 
-    fn spawn_typing_expiry(
-        &mut self,
-        chat: String,
-        generation: u64,
-        cx: &mut Context<Self>,
-    ) {
+    fn spawn_typing_expiry(&mut self, chat: String, generation: u64, cx: &mut Context<Self>) {
         spawn_main(cx, async move |this, cx| {
             cx.background_executor().timer(INCOMING_TYPING_TTL).await;
             this.update(cx, |this, cx| {
@@ -1784,8 +1774,8 @@ impl MainWindow {
                 )
             },
             |attachment| {
-                let caption = (attachment.kind != wasabi_domain::AttachmentKind::Audio)
-                    .then(|| text.clone());
+                let caption =
+                    (attachment.kind != wasabi_domain::AttachmentKind::Audio).then(|| text.clone());
                 reply_to.clone().map_or_else(
                     || {
                         wasabi_domain::SendRequest::attachment(
@@ -1811,9 +1801,9 @@ impl MainWindow {
             let primary_accepted = primary_result.is_ok();
             let mut result = primary_result;
             if primary_accepted
-                && attachment
-                    .as_ref()
-                    .is_some_and(|attachment| attachment.kind == wasabi_domain::AttachmentKind::Audio)
+                && attachment.as_ref().is_some_and(|attachment| {
+                    attachment.kind == wasabi_domain::AttachmentKind::Audio
+                })
                 && !text.is_empty()
             {
                 result = bridge
@@ -1825,7 +1815,9 @@ impl MainWindow {
             }
             let accepted = result.is_ok();
             let text_only = attachment.is_none();
-            let transfer = attachment.as_ref().map(|attachment| attachment.transfer.clone());
+            let transfer = attachment
+                .as_ref()
+                .map(|attachment| attachment.transfer.clone());
             let update = this.update(cx, |this, cx| {
                 this.attachment_sending.remove(&chat_id);
                 if primary_accepted
@@ -1861,11 +1853,7 @@ impl MainWindow {
                         input.update(cx, |state, cx| {
                             if accepted && state.value().trim() == text {
                                 state.set_value("", window, cx);
-                            } else if should_restore_composer(
-                                accepted,
-                                text_only,
-                                &state.value(),
-                            ) {
+                            } else if should_restore_composer(accepted, text_only, &state.value()) {
                                 // This failure happened before a durable row
                                 // was accepted, so there is no bubble Retry to
                                 // own the user's text.
@@ -2020,10 +2008,7 @@ impl MainWindow {
                 return;
             }
         };
-        let request_generation = self
-            .phone_pair_request_gen
-            .fetch_add(1, Ordering::AcqRel)
-            + 1;
+        let request_generation = self.phone_pair_request_gen.fetch_add(1, Ordering::AcqRel) + 1;
         self.phone_pair_ticker_gen.fetch_add(1, Ordering::AcqRel);
         self.session.phone_pair_code = None;
         self.session.phone_pair_deadline = None;
@@ -2127,18 +2112,13 @@ impl MainWindow {
     }
 
     fn load_conversation_details(&mut self, cx: &mut Context<Self>) {
-        let Some((chat, kind)) = self
-            .chats
-            .selected
-            .as_ref()
-            .and_then(|selected| {
-                self.chats
-                    .chats
-                    .iter()
-                    .find(|summary| summary.id.as_str() == selected)
-                    .map(|summary| (selected.clone(), summary.kind))
-            })
-        else {
+        let Some((chat, kind)) = self.chats.selected.as_ref().and_then(|selected| {
+            self.chats
+                .chats
+                .iter()
+                .find(|summary| summary.id.as_str() == selected)
+                .map(|summary| (selected.clone(), summary.kind))
+        }) else {
             self.details_error = Some("Conversation information is unavailable".to_string());
             cx.notify();
             return;
@@ -2166,8 +2146,7 @@ impl MainWindow {
                 }
             };
             this.update(cx, |this, cx| {
-                if this.details_gen.load(Ordering::Acquire) != generation
-                    || !this.show_right_panel
+                if this.details_gen.load(Ordering::Acquire) != generation || !this.show_right_panel
                 {
                     return;
                 }
@@ -2340,9 +2319,11 @@ impl MainWindow {
             self.send_error = None;
         }
         if let Some(starred) = desired_star
-            && let Some(row) = self.messages.rows.iter_mut().find(|row| {
-                row.chat == target.chat && row.id == target.message
-            })
+            && let Some(row) = self
+                .messages
+                .rows
+                .iter_mut()
+                .find(|row| row.chat == target.chat && row.id == target.message)
         {
             row.starred = starred;
         }
@@ -2366,17 +2347,21 @@ impl MainWindow {
                 }
                 if let Err(error) = result {
                     if let Some(starred) = desired_star
-                        && let Some(row) = this.messages.rows.iter_mut().find(|row| {
-                            row.chat == target.chat && row.id == target.message
-                        })
+                        && let Some(row) = this
+                            .messages
+                            .rows
+                            .iter_mut()
+                            .find(|row| row.chat == target.chat && row.id == target.message)
                         && row.starred == starred
                     {
                         row.starred = !starred;
                     }
                     if let Some((previous, optimistic)) = &reaction_change
-                        && let Some(row) = this.messages.rows.iter_mut().find(|row| {
-                            row.chat == target.chat && row.id == target.message
-                        })
+                        && let Some(row) = this
+                            .messages
+                            .rows
+                            .iter_mut()
+                            .find(|row| row.chat == target.chat && row.id == target.message)
                         && row.reactions == *optimistic
                     {
                         row.reactions = previous.clone();
@@ -2556,11 +2541,7 @@ impl MainWindow {
             })
     }
 
-    pub(crate) fn confirm_leave_group(
-        &mut self,
-        target: GroupLeaveTarget,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn confirm_leave_group(&mut self, target: GroupLeaveTarget, cx: &mut Context<Self>) {
         if self.group_mutation_in_progress
             || self.group_leave_uncertain
             || !self.group_leave_target_is_current(&target)
@@ -2579,8 +2560,7 @@ impl MainWindow {
         };
         if !self.group_leave_target_is_current(&target) {
             self.group_mutation_error = Some(
-                "This group can no longer be left from the current conversation state."
-                    .to_string(),
+                "This group can no longer be left from the current conversation state.".to_string(),
             );
             cx.notify();
             return;
@@ -2596,7 +2576,10 @@ impl MainWindow {
             && details.subject == target.group_name
             && self.chats.selected.as_deref() == Some(target.chat.as_str())
             && details.permissions.current_user_role.is_some()
-            && details.participants.iter().any(|participant| participant.is_self)
+            && details
+                .participants
+                .iter()
+                .any(|participant| participant.is_self)
     }
 
     pub(crate) fn confirm_message_action(
@@ -2673,7 +2656,8 @@ impl MainWindow {
         self.active_draft.reply_to = Some(message);
         self.message_overlay = None;
         self.queue_draft_save(cx);
-        self.composer_input.update(cx, |input, cx| input.focus(window, cx));
+        self.composer_input
+            .update(cx, |input, cx| input.focus(window, cx));
         cx.notify();
     }
 
@@ -2727,10 +2711,12 @@ impl MainWindow {
         self.active_draft.body = body.clone();
         self.message_overlay = None;
         self.send_error = None;
-        self.composer_input
-            .update(cx, |input, cx| composer::set_text_at_end(input, body, window, cx));
+        self.composer_input.update(cx, |input, cx| {
+            composer::set_text_at_end(input, body, window, cx)
+        });
         self.queue_draft_save(cx);
-        self.composer_input.update(cx, |input, cx| input.focus(window, cx));
+        self.composer_input
+            .update(cx, |input, cx| input.focus(window, cx));
         cx.notify();
     }
 
@@ -2780,15 +2766,14 @@ impl MainWindow {
             cx.notify();
             return;
         };
-        if !self.messages.rows[row_index]
-            .can_edit_text_at(chrono::Utc::now().timestamp_millis())
-        {
+        if !self.messages.rows[row_index].can_edit_text_at(chrono::Utc::now().timestamp_millis()) {
             self.send_error = Some("This message can no longer be edited".to_string());
             cx.notify();
             return;
         }
-        let wasabi_domain::MessageKind::Text { body: previous_body } =
-            self.messages.rows[row_index].kind.clone()
+        let wasabi_domain::MessageKind::Text {
+            body: previous_body,
+        } = self.messages.rows[row_index].kind.clone()
         else {
             return;
         };
@@ -2802,9 +2787,8 @@ impl MainWindow {
         }
         let previous_edited_at = self.messages.rows[row_index].edited_at_ms;
         let optimistic_edited_at = chrono::Utc::now().timestamp_millis();
-        self.messages.rows[row_index].kind = wasabi_domain::MessageKind::Text {
-            body: body.clone(),
-        };
+        self.messages.rows[row_index].kind =
+            wasabi_domain::MessageKind::Text { body: body.clone() };
         self.messages.rows[row_index].edited_at_ms = Some(optimistic_edited_at);
         let action = wasabi_domain::MessageAction::Edit {
             target: (&self.messages.rows[row_index]).into(),
@@ -2907,12 +2891,7 @@ impl MainWindow {
         message: wasabi_domain::MessageId,
         cx: &mut Context<Self>,
     ) {
-        let Some(row) = self
-            .messages
-            .rows
-            .iter()
-            .find(|row| row.id == message)
-        else {
+        let Some(row) = self.messages.rows.iter().find(|row| row.id == message) else {
             return;
         };
         if row.direction != wasabi_domain::MessageDirection::Outgoing
@@ -3117,9 +3096,7 @@ impl MainWindow {
                         chat.unread_count = 0;
                     }
                 } else {
-                    this.chats
-                        .chats
-                        .retain(|chat| chat.id.as_str() != chat_id);
+                    this.chats.chats.retain(|chat| chat.id.as_str() != chat_id);
                     if this.chats.selected.as_deref() == Some(chat_id.as_str()) {
                         this.stop_outbound_typing(chat_id.clone(), cx);
                         this.messages_gen.fetch_add(1, Ordering::AcqRel);
@@ -3202,9 +3179,8 @@ impl MainWindow {
                     Ok(bytes) => this.media_cache_usage_bytes = Some(bytes),
                     Err(error) => {
                         tracing::warn!(kind = %error.kind, "media cache usage failed");
-                        this.settings_feedback = Some(SettingsFeedback::Error(
-                            error.ui_message().to_string(),
-                        ));
+                        this.settings_feedback =
+                            Some(SettingsFeedback::Error(error.ui_message().to_string()));
                     }
                 }
                 cx.notify();
@@ -3240,9 +3216,8 @@ impl MainWindow {
                     }
                     Err(error) => {
                         tracing::warn!(kind = %error.kind, "media cache quota failed");
-                        this.settings_feedback = Some(SettingsFeedback::Error(
-                            error.ui_message().to_string(),
-                        ));
+                        this.settings_feedback =
+                            Some(SettingsFeedback::Error(error.ui_message().to_string()));
                     }
                 }
                 cx.notify();
@@ -3284,15 +3259,13 @@ impl MainWindow {
                 match result {
                     Ok(()) => {
                         this.media_cache_usage_bytes = Some(0);
-                        this.settings_feedback = Some(SettingsFeedback::Success(
-                            "Media cache cleared".to_string(),
-                        ));
+                        this.settings_feedback =
+                            Some(SettingsFeedback::Success("Media cache cleared".to_string()));
                     }
                     Err(error) => {
                         tracing::warn!(kind = %error.kind, "media cache clear failed");
-                        this.settings_feedback = Some(SettingsFeedback::Error(
-                            error.ui_message().to_string(),
-                        ));
+                        this.settings_feedback =
+                            Some(SettingsFeedback::Error(error.ui_message().to_string()));
                     }
                 }
                 cx.notify();
@@ -3352,9 +3325,8 @@ impl MainWindow {
                     }
                     Err(error) => {
                         tracing::warn!(kind = %error.kind, "account logout failed");
-                        this.settings_feedback = Some(SettingsFeedback::Error(
-                            error.ui_message().to_string(),
-                        ));
+                        this.settings_feedback =
+                            Some(SettingsFeedback::Error(error.ui_message().to_string()));
                     }
                 }
                 cx.notify();
@@ -3527,8 +3499,7 @@ impl MainWindow {
                 .load_chat_page(scope, Some(after), CHAT_PAGE_LIMIT)
                 .await;
             this.update(cx, |this, cx| {
-                if this.chats_gen.load(Ordering::Acquire) != generation
-                    || this.chats.scope != scope
+                if this.chats_gen.load(Ordering::Acquire) != generation || this.chats.scope != scope
                 {
                     return;
                 }
@@ -3575,8 +3546,7 @@ impl MainWindow {
                             // Mid-history: fold newer rows in place.
                             let unseen = this.messages.merge_newer(page);
                             this.sync_message_list(before);
-                            this.pending_new_messages =
-                                this.pending_new_messages.max(unseen);
+                            this.pending_new_messages = this.pending_new_messages.max(unseen);
                         }
                     }
                     Err(err) => this.messages.set_error(err.clone()),
@@ -3620,10 +3590,8 @@ impl MainWindow {
             .ok();
 
             if let Some(chat) = first_chat {
-                this.update_in(cx, |this, window, cx| {
-                    this.select_chat(chat, window, cx)
-                })
-                .ok();
+                this.update_in(cx, |this, window, cx| this.select_chat(chat, window, cx))
+                    .ok();
             }
 
             // Startup connect: paired accounts come up directly; unpaired
@@ -3841,10 +3809,7 @@ impl MainWindow {
     }
 
     fn spawn_phone_pair_countdown(&mut self, cx: &mut Context<Self>) {
-        let generation = self
-            .phone_pair_ticker_gen
-            .fetch_add(1, Ordering::AcqRel)
-            + 1;
+        let generation = self.phone_pair_ticker_gen.fetch_add(1, Ordering::AcqRel) + 1;
         spawn_main(cx, async move |this, cx| {
             loop {
                 cx.background_executor().timer(COUNTDOWN_TICK).await;
@@ -3986,7 +3951,9 @@ fn nav_rail(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
             .aria_label(label)
             .tooltip(move |window, cx| Tooltip::new(label).build(window, cx));
         if active {
-            item = item.bg(theme::row_selected()).text_color(theme::accent_text());
+            item = item
+                .bg(theme::row_selected())
+                .text_color(theme::accent_text());
         } else {
             item = item
                 .text_color(theme::text_secondary())
@@ -4018,7 +3985,8 @@ fn nav_rail(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
                     .aria_label("Settings")
                     .tooltip(|window, cx| Tooltip::new("Settings").build(window, cx))
                     .when(settings_active, |item| {
-                        item.bg(theme::row_selected()).text_color(theme::accent_text())
+                        item.bg(theme::row_selected())
+                            .text_color(theme::accent_text())
                     })
                     .when(!settings_active, |item| {
                         item.text_color(theme::text_secondary())
@@ -4327,10 +4295,19 @@ fn group_member_action_matches_role(
 ) -> bool {
     matches!(
         (kind, role),
-        (GroupMemberActionKind::Promote, wasabi_domain::ParticipantRole::Member)
-            | (GroupMemberActionKind::Demote, wasabi_domain::ParticipantRole::Admin)
-            | (GroupMemberActionKind::Remove, wasabi_domain::ParticipantRole::Member)
-            | (GroupMemberActionKind::Remove, wasabi_domain::ParticipantRole::Admin)
+        (
+            GroupMemberActionKind::Promote,
+            wasabi_domain::ParticipantRole::Member
+        ) | (
+            GroupMemberActionKind::Demote,
+            wasabi_domain::ParticipantRole::Admin
+        ) | (
+            GroupMemberActionKind::Remove,
+            wasabi_domain::ParticipantRole::Member
+        ) | (
+            GroupMemberActionKind::Remove,
+            wasabi_domain::ParticipantRole::Admin
+        )
     )
 }
 
@@ -4455,20 +4432,15 @@ mod tests {
 
     #[test]
     fn formatted_phone_searches_use_canonical_digits_for_the_cache() {
-        assert_eq!(
-            normalized_contact_query("+1 (555) 123-4567"),
-            "15551234567"
-        );
+        assert_eq!(normalized_contact_query("+1 (555) 123-4567"), "15551234567");
         assert_eq!(normalized_contact_query("Avery Chen"), "Avery Chen");
     }
 
     #[test]
     fn ambiguous_group_creation_failure_blocks_blind_retry() {
         let (_, timeout_uncertain) = group_creation_failure(wasabi_domain::ErrorKind::Timeout);
-        let (_, offline_uncertain) =
-            group_creation_failure(wasabi_domain::ErrorKind::NotConnected);
-        let (_, rejected_uncertain) =
-            group_creation_failure(wasabi_domain::ErrorKind::Protocol);
+        let (_, offline_uncertain) = group_creation_failure(wasabi_domain::ErrorKind::NotConnected);
+        let (_, rejected_uncertain) = group_creation_failure(wasabi_domain::ErrorKind::Protocol);
         assert!(timeout_uncertain);
         assert!(!offline_uncertain);
         assert!(!rejected_uncertain);
@@ -4476,12 +4448,10 @@ mod tests {
 
     #[test]
     fn ambiguous_member_add_failure_requires_metadata_refresh() {
-        let (_, timeout_uncertain) =
-            group_member_add_failure(wasabi_domain::ErrorKind::Timeout);
+        let (_, timeout_uncertain) = group_member_add_failure(wasabi_domain::ErrorKind::Timeout);
         let (_, offline_uncertain) =
             group_member_add_failure(wasabi_domain::ErrorKind::NotConnected);
-        let (_, rejected_uncertain) =
-            group_member_add_failure(wasabi_domain::ErrorKind::Protocol);
+        let (_, rejected_uncertain) = group_member_add_failure(wasabi_domain::ErrorKind::Protocol);
         assert!(timeout_uncertain);
         assert!(offline_uncertain);
         assert!(!rejected_uncertain);
@@ -4514,10 +4484,7 @@ mod tests {
         let now = std::time::Instant::now();
         assert!(typing_refresh_due(None, now));
         assert!(!typing_refresh_due(Some(now), now));
-        assert!(typing_refresh_due(
-            Some(now),
-            now + TYPING_REFRESH_AFTER
-        ));
+        assert!(typing_refresh_due(Some(now), now + TYPING_REFRESH_AFTER));
     }
 
     #[test]
@@ -4539,7 +4506,10 @@ mod tests {
 
     #[test]
     fn timeline_splices_only_changed_identity_range() {
-        assert_eq!(timeline_splice(&["date", "m2"], &["date", "m1", "m2"]), (1..1, 1));
+        assert_eq!(
+            timeline_splice(&["date", "m2"], &["date", "m1", "m2"]),
+            (1..1, 1)
+        );
         assert_eq!(
             timeline_splice(&["date", "m1", "m2"], &["date", "m2", "m3"]),
             (1..3, 2)

@@ -31,11 +31,7 @@ pub(crate) fn media_preview() -> MediaPreview {
         height,
         availability: MediaAvailability::Remote,
     };
-    let row = |id: &str,
-               seq: i64,
-               direction: MessageDirection,
-               kind: MessageKind|
-     -> MessageRow {
+    let row = |id: &str, seq: i64, direction: MessageDirection, kind: MessageKind| -> MessageRow {
         MessageRow {
             id: MessageId::new(id),
             chat: chat.clone(),
@@ -167,10 +163,30 @@ pub(crate) fn media_preview() -> MediaPreview {
 
 pub(crate) fn group_details_preview() -> wasabi_domain::GroupDetails {
     let participants = [
-        ("You", "preview-owner@s.whatsapp.net", ParticipantRole::SuperAdmin, true),
-        ("Avery Chen", "preview-avery@s.whatsapp.net", ParticipantRole::Admin, false),
-        ("Amara Okafor", "preview-amara@s.whatsapp.net", ParticipantRole::Member, false),
-        ("Diego Morales", "preview-diego@s.whatsapp.net", ParticipantRole::Member, false),
+        (
+            "You",
+            "preview-owner@s.whatsapp.net",
+            ParticipantRole::SuperAdmin,
+            true,
+        ),
+        (
+            "Avery Chen",
+            "preview-avery@s.whatsapp.net",
+            ParticipantRole::Admin,
+            false,
+        ),
+        (
+            "Amara Okafor",
+            "preview-amara@s.whatsapp.net",
+            ParticipantRole::Member,
+            false,
+        ),
+        (
+            "Diego Morales",
+            "preview-diego@s.whatsapp.net",
+            ParticipantRole::Member,
+            false,
+        ),
     ]
     .into_iter()
     .map(|(display_name, jid, role, is_self)| Participant {

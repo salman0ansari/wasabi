@@ -52,10 +52,17 @@ fn connection_banner(this: &MainWindow) -> gpui::Div {
         .flex()
         .items_center()
         .justify_center()
-        .bg(if failed { theme::danger() } else { theme::warn() })
+        .bg(if failed {
+            theme::danger()
+        } else {
+            theme::warn()
+        })
         .text_color(theme::text_on_accent())
         .text_size(px(theme::TEXT_SIZE_SM))
-        .child(format!("{} — cached messages remain available", this.session.status_label()))
+        .child(format!(
+            "{} — cached messages remain available",
+            this.session.status_label()
+        ))
 }
 
 fn empty_conversation() -> gpui::Div {
@@ -85,12 +92,7 @@ fn header(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
                 .get(chat.id.as_str())
                 .map(|typing| typing.label(chats::is_group(chat.id.as_str())))
                 .unwrap_or_else(|| messages::conversation_subtitle(chat));
-            (
-                name.clone(),
-                subtitle,
-                initials,
-                theme::sender_color(&name),
-            )
+            (name.clone(), subtitle, initials, theme::sender_color(&name))
         }
         None => match this.conversation_details.as_ref() {
             Some(wasabi_domain::ConversationDetails::Direct(contact)) => {
@@ -263,9 +265,7 @@ fn timeline(
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_size(px(theme::TEXT_SIZE_SM))
                     .hover(|style| style.bg(theme::accent_text()))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.jump_to_newest_messages(cx)
-                    }))
+                    .on_click(cx.listener(|this, _, _, cx| this.jump_to_newest_messages(cx)))
                     .child(if pending_new_messages == 1 {
                         "1 new message".to_string()
                     } else {
@@ -305,10 +305,9 @@ fn timeline_row(
                         .get(&(row.chat.clone(), media.id.clone()))
                         .cloned()
                 });
-                let retrying = this.retrying_messages.contains(&(
-                    row.chat.as_str().to_string(),
-                    row.id.as_str().to_string(),
-                ));
+                let retrying = this
+                    .retrying_messages
+                    .contains(&(row.chat.as_str().to_string(), row.id.as_str().to_string()));
                 bubble(
                     row.clone(),
                     *row_ix,
@@ -340,12 +339,17 @@ fn bubble(
     let outgoing = row.direction == MessageDirection::Outgoing;
 
     if matches!(row.kind, MessageKind::System { .. }) {
-        return gpui::div().w_full().flex().justify_center().py(px(6.0)).child(
-            gpui::div()
-                .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
-                .text_color(theme::text_secondary())
-                .child(messages::body_text(&row)),
-        );
+        return gpui::div()
+            .w_full()
+            .flex()
+            .justify_center()
+            .py(px(6.0))
+            .child(
+                gpui::div()
+                    .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+                    .text_color(theme::text_secondary())
+                    .child(messages::body_text(&row)),
+            );
     }
 
     let (bubble_bg, text_color) = if outgoing {
@@ -358,7 +362,11 @@ fn bubble(
     let sender_label = messages::sender_display(&row);
     let sender_color = theme::sender_color(&sender_label);
 
-    let edited = row.edited_at_ms.is_some().then_some("edited · ").unwrap_or("");
+    let edited = row
+        .edited_at_ms
+        .is_some()
+        .then_some("edited · ")
+        .unwrap_or("");
     let meta_ticks = if outgoing {
         format!(
             "{edited}{} {}",
@@ -389,7 +397,10 @@ fn bubble(
                 .text_color(theme::text_secondary())
                 .child("This message was deleted"),
         );
-    } else if matches!(row.kind, MessageKind::Unavailable { .. } | MessageKind::Unknown) {
+    } else if matches!(
+        row.kind,
+        MessageKind::Unavailable { .. } | MessageKind::Unknown
+    ) {
         content = content.child(
             gpui::div()
                 .flex()
@@ -495,38 +506,43 @@ fn reaction_chips(
         .items_center()
         .gap(px(4.0))
         .pt(px(3.0))
-        .children(reactions.into_iter().enumerate().map(|(reaction_index, reaction)| {
-            let selected = reaction.reacted_by_me;
-            let emoji = reaction.emoji.clone();
-            let target = message.clone();
-            gpui::div()
-                .id(("reaction-chip", row_index * 32 + reaction_index))
-                .cursor_pointer()
-                .h(px(26.0))
-                .flex()
-                .items_center()
-                .rounded_full()
-                .border_1()
-                .border_color(if selected {
-                    theme::accent()
-                } else {
-                    theme::border()
-                })
-                .bg(if selected {
-                    theme::bubble_out()
-                } else {
-                    theme::surface()
-                })
-                .px(px(7.0))
-                .py(px(2.0))
-                .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
-                .text_color(theme::text_primary())
-                .hover(|style| style.border_color(theme::accent()))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.react_to_message(target.clone(), emoji.clone(), cx)
-                }))
-                .child(format!("{} {}", reaction.emoji, reaction.count))
-        }))
+        .children(
+            reactions
+                .into_iter()
+                .enumerate()
+                .map(|(reaction_index, reaction)| {
+                    let selected = reaction.reacted_by_me;
+                    let emoji = reaction.emoji.clone();
+                    let target = message.clone();
+                    gpui::div()
+                        .id(("reaction-chip", row_index * 32 + reaction_index))
+                        .cursor_pointer()
+                        .h(px(26.0))
+                        .flex()
+                        .items_center()
+                        .rounded_full()
+                        .border_1()
+                        .border_color(if selected {
+                            theme::accent()
+                        } else {
+                            theme::border()
+                        })
+                        .bg(if selected {
+                            theme::bubble_out()
+                        } else {
+                            theme::surface()
+                        })
+                        .px(px(7.0))
+                        .py(px(2.0))
+                        .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+                        .text_color(theme::text_primary())
+                        .hover(|style| style.border_color(theme::accent()))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.react_to_message(target.clone(), emoji.clone(), cx)
+                        }))
+                        .child(format!("{} {}", reaction.emoji, reaction.count))
+                }),
+        )
 }
 
 fn quoted_message(
@@ -603,7 +619,12 @@ fn media_content(
         MessageKind::Audio {
             voice_note, media, ..
         } => (
-            if *voice_note { "Voice message" } else { "Audio" }.to_string(),
+            if *voice_note {
+                "Voice message"
+            } else {
+                "Audio"
+            }
+            .to_string(),
             None,
             media,
             false,
@@ -622,7 +643,12 @@ fn media_content(
         MessageKind::Sticker {
             animated, media, ..
         } => (
-            if *animated { "Animated sticker" } else { "Sticker" }.to_string(),
+            if *animated {
+                "Animated sticker"
+            } else {
+                "Sticker"
+            }
+            .to_string(),
             None,
             media,
             true,
@@ -710,7 +736,10 @@ fn media_content(
                     } else {
                         theme::accent_text()
                     })
-                    .child(Icon::new(if unavailable { IconName::CircleX } else { icon }).size(px(18.0))),
+                    .child(
+                        Icon::new(if unavailable { IconName::CircleX } else { icon })
+                            .size(px(18.0)),
+                    ),
             )
             .child(
                 gpui::div()
@@ -782,9 +811,7 @@ fn media_content(
     Some(interactive.into_any_element())
 }
 
-fn media_descriptor(
-    kind: &wasabi_domain::MessageKind,
-) -> Option<&wasabi_domain::MediaDescriptor> {
+fn media_descriptor(kind: &wasabi_domain::MessageKind) -> Option<&wasabi_domain::MediaDescriptor> {
     match kind {
         wasabi_domain::MessageKind::Image { media, .. }
         | wasabi_domain::MessageKind::Video { media, .. }
@@ -838,9 +865,7 @@ fn message_actions_button(
         .px(px(2.0))
         .text_color(theme::text_secondary())
         .hover(|style| style.text_color(theme::accent_text()))
-        .on_click(cx.listener(move |this, _, _, cx| {
-            this.open_message_actions(message.clone(), cx)
-        }))
+        .on_click(cx.listener(move |this, _, _, cx| this.open_message_actions(message.clone(), cx)))
         .child("⋯")
 }
 
@@ -909,9 +934,8 @@ fn leave_group_confirmation(
                         .on_click(cx.listener(|this, _, _, cx| this.close_message_overlay(cx))),
                 )
                 .child(
-                    sheet_button("confirm-leave-group", "Leave group", true).on_click(
-                        cx.listener(|this, _, _, cx| this.run_confirmed_leave_group(cx)),
-                    ),
+                    sheet_button("confirm-leave-group", "Leave group", true)
+                        .on_click(cx.listener(|this, _, _, cx| this.run_confirmed_leave_group(cx))),
                 ),
         )
 }
@@ -979,15 +1003,15 @@ fn group_member_action_sheet(
             }))
         }))
         .child(
-            sheet_button("remove-group-member", "Remove from group…", true).on_click(
-                cx.listener(move |this, _, _, cx| {
+            sheet_button("remove-group-member", "Remove from group…", true).on_click(cx.listener(
+                move |this, _, _, cx| {
                     this.confirm_group_member_action(
                         remove_target.clone(),
                         crate::views::root::GroupMemberActionKind::Remove,
                         cx,
                     )
-                }),
-            ),
+                },
+            )),
         )
 }
 
@@ -1018,11 +1042,9 @@ fn group_member_confirmation(
                     sheet_button("cancel-group-member-action", "Cancel", false)
                         .on_click(cx.listener(|this, _, _, cx| this.close_message_overlay(cx))),
                 )
-                .child(
-                    sheet_button(confirm_id, confirm, danger).on_click(cx.listener(
-                        |this, _, _, cx| this.run_confirmed_group_member_action(cx),
-                    )),
-                ),
+                .child(sheet_button(confirm_id, confirm, danger).on_click(
+                    cx.listener(|this, _, _, cx| this.run_confirmed_group_member_action(cx)),
+                )),
         )
 }
 
@@ -1111,9 +1133,11 @@ fn group_text_edit_card(
                     theme::text_secondary()
                 })
                 .child(format!("{count} / {limit} characters"))
-                .children(this.group_text_edit_error.clone().map(|error| {
-                    gpui::div().text_color(theme::danger()).child(error)
-                })),
+                .children(
+                    this.group_text_edit_error
+                        .clone()
+                        .map(|error| gpui::div().text_color(theme::danger()).child(error)),
+                ),
         )
         .child(
             gpui::div()
@@ -1136,7 +1160,13 @@ fn message_action_sheet(
     message: wasabi_domain::MessageId,
     cx: &mut Context<MainWindow>,
 ) -> gpui::Div {
-    let Some(row) = this.messages.rows.iter().find(|row| row.id == message).cloned() else {
+    let Some(row) = this
+        .messages
+        .rows
+        .iter()
+        .find(|row| row.id == message)
+        .cloned()
+    else {
         return action_card().child("This message is no longer available");
     };
     let preview = messages::body_text(&row);
@@ -1196,60 +1226,49 @@ fn message_action_sheet(
                 .text_color(theme::text_secondary())
                 .child(preview),
         )
-        .child(
-            gpui::div()
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .children(["👍", "❤️", "😂", "😮", "😢"].into_iter().map(|emoji| {
-                    let message = message.clone();
-                    sheet_button(emoji, emoji, false).on_click(cx.listener(
-                        move |this, _, _, cx| {
-                            this.react_to_message(message.clone(), emoji.to_string(), cx)
-                        },
-                    ))
-                })),
-        )
+        .child(gpui::div().flex().items_center().gap(px(6.0)).children(
+            ["👍", "❤️", "😂", "😮", "😢"].into_iter().map(|emoji| {
+                let message = message.clone();
+                sheet_button(emoji, emoji, false).on_click(cx.listener(move |this, _, _, cx| {
+                    this.react_to_message(message.clone(), emoji.to_string(), cx)
+                }))
+            }),
+        ))
         .when(can_copy, |card| {
             let message = message.clone();
-            card.child(
-                sheet_button("copy-message", "Copy text", false)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.copy_message(message.clone(), cx)
-                    })),
-            )
+            card.child(sheet_button("copy-message", "Copy text", false).on_click(
+                cx.listener(move |this, _, _, cx| this.copy_message(message.clone(), cx)),
+            ))
         })
         .when_some(reply, |card, message| {
             card.child(
                 sheet_button("reply-to-message", "Reply", false).on_click(cx.listener(
-                    move |this, _, window, cx| {
-                        this.begin_reply(message.clone(), window, cx)
-                    },
+                    move |this, _, window, cx| this.begin_reply(message.clone(), window, cx),
                 )),
             )
         })
         .when_some(edit, |card, message| {
-            card.child(
-                sheet_button("edit-message", "Edit", false).on_click(cx.listener(
-                    move |this, _, window, cx| {
-                        this.begin_edit(message.clone(), window, cx)
-                    },
-                )),
-            )
+            card.child(sheet_button("edit-message", "Edit", false).on_click(
+                cx.listener(move |this, _, window, cx| {
+                    this.begin_edit(message.clone(), window, cx)
+                }),
+            ))
         })
         .when_some(retry, |card, message| {
             card.child(
                 sheet_button("retry-message-from-actions", "Retry send", false).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        this.retry_message(message.clone(), cx)
-                    }),
+                    cx.listener(move |this, _, _, cx| this.retry_message(message.clone(), cx)),
                 ),
             )
         })
         .child(
             sheet_button(
                 "toggle-star-from-actions",
-                if starred { "Unstar message" } else { "Star message" },
+                if starred {
+                    "Unstar message"
+                } else {
+                    "Star message"
+                },
                 false,
             )
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -1259,18 +1278,14 @@ fn message_action_sheet(
         )
         .child(
             sheet_button("delete-message-local", "Delete for me…", true).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    this.confirm_message_action(delete_for_me.clone(), cx)
-                },
+                move |this, _, _, cx| this.confirm_message_action(delete_for_me.clone(), cx),
             )),
         )
         .when_some(revoke, |card, revoke| {
             card.child(
-                sheet_button("revoke-message", "Delete for everyone…", true).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        this.confirm_message_action(revoke.clone(), cx)
-                    }),
-                ),
+                sheet_button("revoke-message", "Delete for everyone…", true).on_click(cx.listener(
+                    move |this, _, _, cx| this.confirm_message_action(revoke.clone(), cx),
+                )),
             )
         })
 }
@@ -1299,7 +1314,11 @@ fn message_delete_confirmation(
             "WhatsApp will replace this sent message with a deletion notice when revocation is allowed.",
             "Delete for everyone",
         ),
-        _ => ("Confirm message action?", "This action will be synchronized.", "Confirm"),
+        _ => (
+            "Confirm message action?",
+            "This action will be synchronized.",
+            "Confirm",
+        ),
     };
     action_card()
         .child(
@@ -1335,9 +1354,9 @@ fn message_delete_confirmation(
                         .on_click(cx.listener(|this, _, _, cx| this.close_message_overlay(cx))),
                 )
                 .child(
-                    sheet_button("confirm-message-delete", confirm, true).on_click(cx.listener(
-                        |this, _, _, cx| this.run_confirmed_message_action(cx),
-                    )),
+                    sheet_button("confirm-message-delete", confirm, true).on_click(
+                        cx.listener(|this, _, _, cx| this.run_confirmed_message_action(cx)),
+                    ),
                 ),
         )
 }
@@ -1378,9 +1397,8 @@ fn chat_action_confirmation(
                         .on_click(cx.listener(|this, _, _, cx| this.close_message_overlay(cx))),
                 )
                 .child(
-                    sheet_button(confirm_id, confirm, true).on_click(cx.listener(
-                        |this, _, _, cx| this.run_confirmed_chat_action(cx),
-                    )),
+                    sheet_button(confirm_id, confirm, true)
+                        .on_click(cx.listener(|this, _, _, cx| this.run_confirmed_chat_action(cx))),
                 ),
         )
 }
@@ -1425,11 +1443,7 @@ fn action_card() -> gpui::Div {
         .gap(px(10.0))
 }
 
-fn sheet_button(
-    id: &'static str,
-    label: &'static str,
-    danger: bool,
-) -> gpui::Stateful<gpui::Div> {
+fn sheet_button(id: &'static str, label: &'static str, danger: bool) -> gpui::Stateful<gpui::Div> {
     gpui::div()
         .id(id)
         .cursor_pointer()

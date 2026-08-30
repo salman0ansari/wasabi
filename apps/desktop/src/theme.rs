@@ -75,35 +75,67 @@ fn dark_mode() -> bool {
 }
 
 pub fn accent() -> Rgba {
-    if dark_mode() { rgb_const(0x21C063) } else { ACCENT }
+    if dark_mode() {
+        rgb_const(0x21C063)
+    } else {
+        ACCENT
+    }
 }
 
 pub fn accent_text() -> Rgba {
-    if dark_mode() { rgb_const(0x53D995) } else { ACCENT_TEXT }
+    if dark_mode() {
+        rgb_const(0x53D995)
+    } else {
+        ACCENT_TEXT
+    }
 }
 
 pub fn canvas() -> Rgba {
-    if dark_mode() { rgb_const(0x0B141A) } else { CANVAS }
+    if dark_mode() {
+        rgb_const(0x0B141A)
+    } else {
+        CANVAS
+    }
 }
 
 pub fn surface() -> Rgba {
-    if dark_mode() { rgb_const(0x111B21) } else { SURFACE }
+    if dark_mode() {
+        rgb_const(0x111B21)
+    } else {
+        SURFACE
+    }
 }
 
 pub fn nav_rail() -> Rgba {
-    if dark_mode() { rgb_const(0x0F191F) } else { NAV_RAIL }
+    if dark_mode() {
+        rgb_const(0x0F191F)
+    } else {
+        NAV_RAIL
+    }
 }
 
 pub fn border() -> Rgba {
-    if dark_mode() { rgb_const(0x27343B) } else { BORDER }
+    if dark_mode() {
+        rgb_const(0x27343B)
+    } else {
+        BORDER
+    }
 }
 
 pub fn text_primary() -> Rgba {
-    if dark_mode() { rgb_const(0xE9EDEF) } else { TEXT_PRIMARY }
+    if dark_mode() {
+        rgb_const(0xE9EDEF)
+    } else {
+        TEXT_PRIMARY
+    }
 }
 
 pub fn text_secondary() -> Rgba {
-    if dark_mode() { rgb_const(0xAEBAC1) } else { TEXT_SECONDARY }
+    if dark_mode() {
+        rgb_const(0xAEBAC1)
+    } else {
+        TEXT_SECONDARY
+    }
 }
 
 pub fn text_on_accent() -> Rgba {
@@ -111,39 +143,75 @@ pub fn text_on_accent() -> Rgba {
 }
 
 pub fn bubble_in() -> Rgba {
-    if dark_mode() { rgb_const(0x202C33) } else { BUBBLE_IN }
+    if dark_mode() {
+        rgb_const(0x202C33)
+    } else {
+        BUBBLE_IN
+    }
 }
 
 pub fn bubble_out() -> Rgba {
-    if dark_mode() { rgb_const(0x005C4B) } else { BUBBLE_OUT }
+    if dark_mode() {
+        rgb_const(0x005C4B)
+    } else {
+        BUBBLE_OUT
+    }
 }
 
 pub fn row_selected() -> Rgba {
-    if dark_mode() { rgb_const(0x2A3942) } else { ROW_SELECTED }
+    if dark_mode() {
+        rgb_const(0x2A3942)
+    } else {
+        ROW_SELECTED
+    }
 }
 
 pub fn row_hover() -> Rgba {
-    if dark_mode() { rgba_const(0xFFFFFF0B) } else { ROW_HOVER }
+    if dark_mode() {
+        rgba_const(0xFFFFFF0B)
+    } else {
+        ROW_HOVER
+    }
 }
 
 pub fn chip_idle() -> Rgba {
-    if dark_mode() { rgb_const(0x202C33) } else { CHIP_IDLE }
+    if dark_mode() {
+        rgb_const(0x202C33)
+    } else {
+        CHIP_IDLE
+    }
 }
 
 pub fn danger() -> Rgba {
-    if dark_mode() { rgb_const(0xFF6B6B) } else { DANGER }
+    if dark_mode() {
+        rgb_const(0xFF6B6B)
+    } else {
+        DANGER
+    }
 }
 
 pub fn warn() -> Rgba {
-    if dark_mode() { rgb_const(0xC9861A) } else { WARN }
+    if dark_mode() {
+        rgb_const(0xC9861A)
+    } else {
+        WARN
+    }
 }
 
 pub fn skeleton() -> Rgba {
-    if dark_mode() { rgb_const(0x2A3942) } else { SKELETON }
+    if dark_mode() {
+        rgb_const(0x2A3942)
+    } else {
+        SKELETON
+    }
 }
 
 pub fn scrim() -> Rgba {
-    if dark_mode() { rgba_const(0x00000070) } else { SCRIM }
+    if dark_mode() {
+        rgba_const(0x00000070)
+    } else {
+        SCRIM
+    }
 }
 
 /// Sender-name palette (purple/blue variants per the design reference).

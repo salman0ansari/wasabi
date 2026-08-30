@@ -142,9 +142,10 @@ pub fn pairing_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpu
                 .child("Open WhatsApp on your phone")
                 .child("Settings → Linked devices → Link a device"),
         )
-        .child(link_button("Link with phone number instead").on_click(cx.listener(
-            |this, _, _, cx| this.show_phone_pairing(cx),
-        )))
+        .child(
+            link_button("Link with phone number instead")
+                .on_click(cx.listener(|this, _, _, cx| this.show_phone_pairing(cx))),
+        )
 }
 
 fn phone_pairing_panel(
@@ -289,7 +290,10 @@ fn phone_pairing_panel(
 }
 
 fn display_pair_code(code: &str) -> String {
-    let compact = code.chars().filter(|character| !character.is_whitespace()).collect::<String>();
+    let compact = code
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
     match compact.get(0..4).zip(compact.get(4..8)) {
         Some((first, second)) => format!("{first}  {second}"),
         None => compact,

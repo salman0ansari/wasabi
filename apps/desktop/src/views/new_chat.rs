@@ -10,7 +10,12 @@ use crate::theme;
 use crate::views::root::{MainWindow, PhoneLookupUi};
 
 pub fn overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
-    let query = this.contact_search_input.read(cx).value().trim().to_string();
+    let query = this
+        .contact_search_input
+        .read(cx)
+        .value()
+        .trim()
+        .to_string();
     let connected = this.session.state.is_connected();
     let phone = wasabi_domain::ContactPhoneNumber::parse(&query).ok();
     let has_cached_number = phone.as_ref().is_some_and(|phone| {
@@ -216,14 +221,11 @@ pub fn overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div
                         ),
                 )
                 .child(
-                    gpui::div()
-                        .px(px(14.0))
-                        .pb(px(12.0))
-                        .child(
-                            Input::new(&this.contact_search_input)
-                                .prefix(Icon::new(IconName::Search).size(px(16.0)))
-                                .cleanable(true),
-                        ),
+                    gpui::div().px(px(14.0)).pb(px(12.0)).child(
+                        Input::new(&this.contact_search_input)
+                            .prefix(Icon::new(IconName::Search).size(px(16.0)))
+                            .cleanable(true),
+                    ),
                 )
                 .when(query.is_empty(), |dialog| {
                     dialog.child(

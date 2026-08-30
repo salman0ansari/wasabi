@@ -87,7 +87,11 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
                     gpui::div()
                         .text_size(px(theme::TEXT_NAME))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(if is_group { "Group info" } else { "Contact info" }),
+                        .child(if is_group {
+                            "Group info"
+                        } else {
+                            "Contact info"
+                        }),
                 ),
         )
         .child(
@@ -162,15 +166,26 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
         panel = panel.child(participants_section(this, cx));
         if let Some(ConversationDetails::Group(details)) = this.conversation_details.clone()
             && details.permissions.current_user_role.is_some()
-            && details.participants.iter().any(|participant| participant.is_self)
+            && details
+                .participants
+                .iter()
+                .any(|participant| participant.is_self)
         {
             panel = panel.child(leave_group_action(this, cx, details));
         }
     }
 
     panel = panel
-        .child(destructive_chat_action(this, cx, DestructiveChatAction::Clear))
-        .child(destructive_chat_action(this, cx, DestructiveChatAction::Delete));
+        .child(destructive_chat_action(
+            this,
+            cx,
+            DestructiveChatAction::Clear,
+        ))
+        .child(destructive_chat_action(
+            this,
+            cx,
+            DestructiveChatAction::Delete,
+        ));
 
     panel
 }
@@ -199,9 +214,9 @@ fn leave_group_action(
             row.cursor_pointer()
                 .aria_label("Leave group")
                 .hover(|style| style.bg(theme::row_hover()))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.confirm_leave_group(target.clone(), cx)
-                }))
+                .on_click(
+                    cx.listener(move |this, _, _, cx| this.confirm_leave_group(target.clone(), cx)),
+                )
         })
         .child(
             gpui::div()
@@ -387,10 +402,18 @@ fn group_permission_row(
     };
     let value = match action {
         GroupPermissionAction::EditInfo | GroupPermissionAction::SendMessages => {
-            if enabled { "Admins only" } else { "All participants" }
+            if enabled {
+                "Admins only"
+            } else {
+                "All participants"
+            }
         }
         GroupPermissionAction::ApproveMembers => {
-            if enabled { "On" } else { "Off" }
+            if enabled {
+                "On"
+            } else {
+                "Off"
+            }
         }
     };
     let detail = if this.group_leave_uncertain {
@@ -416,9 +439,9 @@ fn group_permission_row(
         .when(allowed && !blocked, |row| {
             row.cursor_pointer()
                 .hover(|style| style.bg(theme::row_hover()))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.apply_group_patch(patch.clone(), cx)
-                }))
+                .on_click(
+                    cx.listener(move |this, _, _, cx| this.apply_group_patch(patch.clone(), cx)),
+                )
         })
         .child(
             gpui::div()
@@ -574,7 +597,8 @@ fn chat_sync_action(
         ChatSyncAction::Mute => {
             let now = chrono::Utc::now().timestamp_millis();
             let enabled = summary.is_some_and(|chat| {
-                chat.muted_until_ms.is_some_and(|until| until == 0 || until > now)
+                chat.muted_until_ms
+                    .is_some_and(|until| until == 0 || until > now)
             });
             (
                 "Mute notifications",
@@ -589,7 +613,11 @@ fn chat_sync_action(
         ChatSyncAction::Archive => {
             let enabled = summary.is_some_and(|chat| chat.archived);
             (
-                if enabled { "Unarchive chat" } else { "Archive chat" },
+                if enabled {
+                    "Unarchive chat"
+                } else {
+                    "Archive chat"
+                },
                 enabled,
                 if enabled { "Archived" } else { "Active" },
                 wasabi_domain::ChatAction::Archive {
@@ -601,7 +629,11 @@ fn chat_sync_action(
         ChatSyncAction::MarkRead => {
             let enabled = summary.is_some_and(|chat| chat.unread_count != 0);
             (
-                if enabled { "Mark as read" } else { "Mark as unread" },
+                if enabled {
+                    "Mark as read"
+                } else {
+                    "Mark as unread"
+                },
                 enabled,
                 if enabled { "Unread" } else { "Read" },
                 wasabi_domain::ChatAction::MarkRead {
@@ -628,9 +660,7 @@ fn chat_sync_action(
         .border_t_1()
         .border_color(theme::border())
         .hover(|style| style.bg(theme::row_hover()))
-        .on_click(cx.listener(move |this, _, _, cx| {
-            this.perform_chat_action(action.clone(), cx)
-        }))
+        .on_click(cx.listener(move |this, _, _, cx| this.perform_chat_action(action.clone(), cx)))
         .child(
             gpui::div()
                 .flex_1()
@@ -694,9 +724,9 @@ fn destructive_chat_action(
         .when(!pending, |row| {
             row.cursor_pointer()
                 .hover(|style| style.bg(theme::row_hover()))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.confirm_chat_action(action.clone(), cx)
-                }))
+                .on_click(
+                    cx.listener(move |this, _, _, cx| this.confirm_chat_action(action.clone(), cx)),
+                )
         })
         .child(
             gpui::div()

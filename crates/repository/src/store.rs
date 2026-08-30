@@ -272,28 +272,21 @@ impl AccountStore {
         limit: usize,
     ) -> Result<domain::ChatPage, domain::ServiceError> {
         let fetch = limit.saturating_add(1);
-        let mut rows = crate::chat_indexes::archived_page(
-            self.shared_db(),
-            self.device_id(),
-            after,
-            fetch,
-        )
-        .await
-        .map_err(|error| {
-            domain::ServiceError::new(domain::ErrorKind::Database, error.to_string())
-        })?
-        .into_iter()
-        .map(archived_chat_row_to_summary)
-        .collect::<Vec<_>>();
+        let mut rows =
+            crate::chat_indexes::archived_page(self.shared_db(), self.device_id(), after, fetch)
+                .await
+                .map_err(|error| {
+                    domain::ServiceError::new(domain::ErrorKind::Database, error.to_string())
+                })?
+                .into_iter()
+                .map(archived_chat_row_to_summary)
+                .collect::<Vec<_>>();
         let has_more = rows.len() > limit;
         rows.truncate(limit);
         self.hydrate_chat_preferences(&mut rows).await?;
         let next_after =
             has_more.then(|| chat_summary_cursor(rows.last().expect("non-empty page")));
-        Ok(domain::ChatPage {
-            rows,
-            next_after,
-        })
+        Ok(domain::ChatPage { rows, next_after })
     }
 
     /// One keyset page of messages for a chat, newest→oldest.

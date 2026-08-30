@@ -11,9 +11,7 @@ use crate::views::root::{MainWindow, NewChatMode};
 
 pub fn overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
     let content = match this.new_chat_mode {
-        NewChatMode::GroupParticipants | NewChatMode::AddGroupMembers => {
-            participant_step(this, cx)
-        }
+        NewChatMode::GroupParticipants | NewChatMode::AddGroupMembers => participant_step(this, cx),
         NewChatMode::GroupSubject => subject_step(this, cx),
         NewChatMode::Direct => gpui::div(),
     };
@@ -277,7 +275,11 @@ fn participant_step(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui
     let footer = if adding_to_existing_group {
         group_footer(
             this.group_creation_error.clone(),
-            if this.group_creating { "Adding…" } else { "Add" },
+            if this.group_creating {
+                "Adding…"
+            } else {
+                "Add"
+            },
             selected_count > 0 && !this.group_creating && !this.group_creation_uncertain,
             cx.listener(|this, _, _, cx| {
                 cx.stop_propagation();
@@ -302,14 +304,11 @@ fn participant_step(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui
         .flex()
         .flex_col()
         .child(
-            gpui::div()
-                .px(px(14.0))
-                .pb(px(10.0))
-                .child(
-                    Input::new(&this.contact_search_input)
-                        .prefix(Icon::new(IconName::Search).size(px(16.0)))
-                        .cleanable(true),
-                ),
+            gpui::div().px(px(14.0)).pb(px(10.0)).child(
+                Input::new(&this.contact_search_input)
+                    .prefix(Icon::new(IconName::Search).size(px(16.0)))
+                    .cleanable(true),
+            ),
         )
         .child(
             gpui::div()
@@ -346,8 +345,8 @@ fn participant_step(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui
 
 fn subject_step(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
     let subject = this.group_subject_input.read(cx).value().trim().to_string();
-    let valid_subject = !subject.is_empty()
-        && subject.chars().count() <= wasabi_domain::GROUP_SUBJECT_MAX_CHARS;
+    let valid_subject =
+        !subject.is_empty() && subject.chars().count() <= wasabi_domain::GROUP_SUBJECT_MAX_CHARS;
     let creating = this.group_creating;
     let count = this.group_participants.len();
     let mut members = gpui::div()
@@ -453,7 +452,11 @@ fn subject_step(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Di
         .child(members)
         .child(group_footer(
             this.group_creation_error.clone(),
-            if creating { "Creating…" } else { "Create group" },
+            if creating {
+                "Creating…"
+            } else {
+                "Create group"
+            },
             valid_subject && !creating && !this.group_creation_uncertain,
             cx.listener(|this, _, window, cx| {
                 cx.stop_propagation();

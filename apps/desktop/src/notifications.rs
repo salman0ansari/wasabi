@@ -17,11 +17,7 @@ impl NotificationDispatcher {
 
     /// Show one already-policy-checked candidate off the UI thread. The
     /// worker logs only delivery failures, never title/body/chat identity.
-    pub fn show(
-        &self,
-        candidate: wasabi_domain::NotificationCandidate,
-        settings: &DeviceSettings,
-    ) {
+    pub fn show(&self, candidate: wasabi_domain::NotificationCandidate, settings: &DeviceSettings) {
         let clicked = self.clicked.clone();
         let clicked_candidate = candidate.clone();
         let body = notification_body(&candidate, settings);

@@ -4,8 +4,8 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{Context, Window, px, size};
-use gpui_component::v_virtual_list;
 use gpui_component::tooltip::Tooltip;
+use gpui_component::v_virtual_list;
 use gpui_component::{Icon, IconName};
 
 use crate::state::chats::{self, ChatFilter};

@@ -98,10 +98,7 @@ impl MessageWindowModel {
     }
 
     /// Render-list index (including date chips) for an exact message.
-    pub fn timeline_index_for_message(
-        &self,
-        message: &wasabi_domain::MessageId,
-    ) -> Option<usize> {
+    pub fn timeline_index_for_message(&self, message: &wasabi_domain::MessageId) -> Option<usize> {
         self.items.iter().position(|item| match item {
             TimelineItem::Message(row) => self
                 .rows
@@ -257,9 +254,10 @@ impl MessageWindowModel {
             .iter()
             .filter_map(|item| match item {
                 TimelineItem::Date(label) => Some(TimelineKey::Date(label.clone())),
-                TimelineItem::Message(index) => self.rows.get(*index).map(|row| {
-                    TimelineKey::Message(row.id.clone(), row.seq.0)
-                }),
+                TimelineItem::Message(index) => self
+                    .rows
+                    .get(*index)
+                    .map(|row| TimelineKey::Message(row.id.clone(), row.seq.0)),
             })
             .collect()
     }
@@ -296,9 +294,10 @@ pub fn body_text(row: &MessageRow) -> String {
                 "Audio".to_string()
             }
         }
-        MessageKind::Document { media } => {
-            media.file_name.clone().unwrap_or_else(|| "Document".to_string())
-        }
+        MessageKind::Document { media } => media
+            .file_name
+            .clone()
+            .unwrap_or_else(|| "Document".to_string()),
         MessageKind::Sticker { .. } => "Sticker".to_string(),
         MessageKind::Reaction { emoji } => emoji.clone(),
         MessageKind::System { text } => text.clone(),
@@ -314,15 +313,11 @@ pub fn unavailable_text(reason: wasabi_domain::UnavailableMessageReason) -> &'st
         UnavailableMessageReason::WaitingForDecryption => {
             "Waiting for this message. It may take a moment."
         }
-        UnavailableMessageReason::ViewOnceOnPhone => {
-            "View-once message. Open it on your phone."
-        }
+        UnavailableMessageReason::ViewOnceOnPhone => "View-once message. Open it on your phone.",
         UnavailableMessageReason::HostedContent => {
             "This hosted message is unavailable on linked devices."
         }
-        UnavailableMessageReason::BotContent => {
-            "This automated message cannot be displayed yet."
-        }
+        UnavailableMessageReason::BotContent => "This automated message cannot be displayed yet.",
     }
 }
 
@@ -404,9 +399,13 @@ mod tests {
     fn unavailable_messages_explain_the_correct_recovery_path() {
         use wasabi_domain::UnavailableMessageReason;
 
-        assert!(unavailable_text(UnavailableMessageReason::WaitingForDecryption).contains("moment"));
+        assert!(
+            unavailable_text(UnavailableMessageReason::WaitingForDecryption).contains("moment")
+        );
         assert!(unavailable_text(UnavailableMessageReason::ViewOnceOnPhone).contains("phone"));
-        assert!(unavailable_text(UnavailableMessageReason::HostedContent).contains("linked devices"));
+        assert!(
+            unavailable_text(UnavailableMessageReason::HostedContent).contains("linked devices")
+        );
         assert!(unavailable_text(UnavailableMessageReason::BotContent).contains("automated"));
     }
     use wasabi_domain::{
@@ -447,10 +446,18 @@ mod tests {
             has_more_newer: true,
         });
         assert_eq!(
-            model.rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            model
+                .rows
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
             ["M1", "M2", "M3"]
         );
-        assert!(model.timeline_index_for_message(&MessageId::new("M2")).is_some());
+        assert!(
+            model
+                .timeline_index_for_message(&MessageId::new("M2"))
+                .is_some()
+        );
 
         let added = model.append_newer_context(&MessageContext {
             rows: vec![row("M5", 5), row("M4", 4), row("M3", 3)],
@@ -460,7 +467,11 @@ mod tests {
         });
         assert_eq!(added, 2);
         assert_eq!(
-            model.rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            model
+                .rows
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
             ["M1", "M2", "M3", "M4", "M5"]
         );
         assert!(!model.has_more_newer);

@@ -86,7 +86,8 @@ fn settings_navigation(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> g
                     gpui::FontWeight::NORMAL
                 })
                 .when(selected, |el| {
-                    el.bg(theme::row_selected()).text_color(theme::text_primary())
+                    el.bg(theme::row_selected())
+                        .text_color(theme::text_primary())
                 })
                 .when(!selected, |el| {
                     el.text_color(theme::text_secondary())
@@ -222,7 +223,12 @@ fn toggle_visual(checked: bool) -> gpui::Div {
         .items_center()
         .when(checked, |el| el.justify_end().bg(theme::accent()))
         .when(!checked, |el| el.justify_start().bg(theme::skeleton()))
-        .child(gpui::div().size(px(16.0)).rounded_full().bg(theme::surface()))
+        .child(
+            gpui::div()
+                .size(px(16.0))
+                .rounded_full()
+                .bg(theme::surface()),
+        )
 }
 
 fn toggle_row(
@@ -408,7 +414,8 @@ fn chats(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElemen
                 .cursor_pointer()
                 .border_1()
                 .when(selected, |el| {
-                    el.border_color(theme::accent()).text_color(theme::accent_text())
+                    el.border_color(theme::accent())
+                        .text_color(theme::accent_text())
                 })
                 .when(!selected, |el| {
                     el.border_color(theme::border())
@@ -453,7 +460,8 @@ fn chats(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElemen
                 .cursor_pointer()
                 .border_1()
                 .when(selected, |el| {
-                    el.border_color(theme::accent()).text_color(theme::accent_text())
+                    el.border_color(theme::accent())
+                        .text_color(theme::accent_text())
                 })
                 .when(!selected, |el| {
                     el.border_color(theme::border())
@@ -534,7 +542,8 @@ fn storage(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElem
                 .cursor_pointer()
                 .border_1()
                 .when(selected, |el| {
-                    el.border_color(theme::accent()).text_color(theme::accent_text())
+                    el.border_color(theme::accent())
+                        .text_color(theme::accent_text())
                 })
                 .when(!selected, |el| {
                     el.border_color(theme::border())
@@ -546,9 +555,9 @@ fn storage(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElem
                 } else {
                     format!("{quota_mb} MB")
                 })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.set_media_cache_quota(quota_mb, cx)
-                })),
+                .on_click(
+                    cx.listener(move |this, _, _, cx| this.set_media_cache_quota(quota_mb, cx)),
+                ),
         );
     }
 

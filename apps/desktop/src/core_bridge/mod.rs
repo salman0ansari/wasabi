@@ -29,11 +29,11 @@ use wasabi_domain::{
     StagedAttachment, TransferId, TransferJob,
 };
 use wasabi_repository::AccountStore;
-use whatsapp_rust::wacore::proto_helpers::MessageBuilderExt;
-use whatsapp_rust::wacore_binary::JidExt as _;
 use wasabi_whatsapp::lifecycle::QrState;
 use wasabi_whatsapp::outbox::Outbox;
 use wasabi_whatsapp::session::{AccountSession, SessionConfig};
+use whatsapp_rust::wacore::proto_helpers::MessageBuilderExt;
+use whatsapp_rust::wacore_binary::JidExt as _;
 
 /// Mockable product boundary consumed by GPUI entities. Implementations may
 /// use protocol, SQLite, or network types internally, but every value crossing
@@ -51,10 +51,8 @@ pub trait DesktopBackend: Send + Sync {
 
     async fn connect_session(&self) -> Result<(), String>;
     async fn start_pairing(&self) -> Result<(), String>;
-    async fn start_phone_pairing(
-        &self,
-        phone: PairingPhoneNumber,
-    ) -> Result<PhonePairCode, String>;
+    async fn start_phone_pairing(&self, phone: PairingPhoneNumber)
+    -> Result<PhonePairCode, String>;
     async fn cancel_phone_pairing(&self) -> Result<(), String>;
     async fn stop_session(&self) -> Result<(), String>;
     async fn logout(&self) -> Result<(), ServiceError>;
@@ -103,7 +101,8 @@ pub trait DesktopBackend: Send + Sync {
     ) -> Result<SearchPage, String>;
     async fn direct_contact_details(&self, jid: String) -> Result<DirectContactDetails, String>;
     async fn group_details(&self, chat: String) -> Result<GroupDetails, String>;
-    async fn create_group(&self, request: CreateGroupRequest) -> Result<GroupDetails, ServiceError>;
+    async fn create_group(&self, request: CreateGroupRequest)
+    -> Result<GroupDetails, ServiceError>;
     async fn update_group(&self, patch: GroupPatch) -> Result<GroupPatchResult, ServiceError>;
     async fn set_favorite(&self, chat: ChatId, favorite: bool) -> Result<(), String>;
     async fn save_draft(
@@ -474,7 +473,10 @@ impl CoreBridge {
                 };
                 return Err(ServiceError::new(
                     kind,
-                    format!("registration subprotocol rejected lookup: code={:?}", error.code),
+                    format!(
+                        "registration subprotocol rejected lookup: code={:?}",
+                        error.code
+                    ),
                 ));
             }
             if !result.is_registered {
@@ -691,28 +693,28 @@ impl CoreBridge {
                 let client = session.client().await.ok_or_else(|| {
                     ServiceError::new(ErrorKind::NotConnected, "protocol client unavailable")
                 })?;
-                let participants = request
-                    .participants()
-                    .iter()
-                    .map(|participant| {
-                        let jid = participant
-                            .as_str()
-                            .parse::<whatsapp_rust::Jid>()
-                            .map_err(|_| {
-                                ServiceError::new(
+                let participants =
+                    request
+                        .participants()
+                        .iter()
+                        .map(|participant| {
+                            let jid = participant.as_str().parse::<whatsapp_rust::Jid>().map_err(
+                                |_| {
+                                    ServiceError::new(
+                                        ErrorKind::InvalidRequest,
+                                        "invalid group participant identity",
+                                    )
+                                },
+                            )?;
+                            if !jid.is_pn() && !jid.is_lid() {
+                                return Err(ServiceError::new(
                                     ErrorKind::InvalidRequest,
-                                    "invalid group participant identity",
-                                )
-                            })?;
-                        if !jid.is_pn() && !jid.is_lid() {
-                            return Err(ServiceError::new(
-                                ErrorKind::InvalidRequest,
-                                "group participants must be direct contacts",
-                            ));
-                        }
-                        Ok(whatsapp_rust::GroupParticipantOptions::new(jid))
-                    })
-                    .collect::<Result<Vec<_>, ServiceError>>()?;
+                                    "group participants must be direct contacts",
+                                ));
+                            }
+                            Ok(whatsapp_rust::GroupParticipantOptions::new(jid))
+                        })
+                        .collect::<Result<Vec<_>, ServiceError>>()?;
                 let options = whatsapp_rust::GroupCreateOptions::new(request.subject())
                     .with_participants(participants);
                 let created = client
@@ -752,10 +754,7 @@ impl CoreBridge {
         Ok(result)
     }
 
-    pub async fn update_group(
-        &self,
-        patch: GroupPatch,
-    ) -> Result<GroupPatchResult, ServiceError> {
+    pub async fn update_group(&self, patch: GroupPatch) -> Result<GroupPatchResult, ServiceError> {
         if !self.commands_accepted() {
             return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
         }
@@ -791,9 +790,13 @@ impl CoreBridge {
                 let groups = client.groups();
                 let (applied_participants, rejected_participants, left) = match patch.change() {
                     GroupChange::Subject(subject) => {
-                        let subject = whatsapp_rust::GroupSubject::new(subject)
-                            .map_err(|_| ServiceError::new(ErrorKind::InvalidRequest, "invalid group subject"))?;
-                        groups.set_subject(chat.clone(), subject).await.map_err(group_service_error)?;
+                        let subject = whatsapp_rust::GroupSubject::new(subject).map_err(|_| {
+                            ServiceError::new(ErrorKind::InvalidRequest, "invalid group subject")
+                        })?;
+                        groups
+                            .set_subject(chat.clone(), subject)
+                            .await
+                            .map_err(group_service_error)?;
                         (0, 0, false)
                     }
                     GroupChange::Description(description) => {
@@ -801,7 +804,12 @@ impl CoreBridge {
                             .as_deref()
                             .map(whatsapp_rust::GroupDescription::new)
                             .transpose()
-                            .map_err(|_| ServiceError::new(ErrorKind::InvalidRequest, "invalid group description"))?;
+                            .map_err(|_| {
+                                ServiceError::new(
+                                    ErrorKind::InvalidRequest,
+                                    "invalid group description",
+                                )
+                            })?;
                         groups
                             .set_description(
                                 chat.clone(),
@@ -813,11 +821,17 @@ impl CoreBridge {
                         (0, 0, false)
                     }
                     GroupChange::OnlyAdminsEdit(enabled) => {
-                        groups.set_locked(chat.clone(), *enabled).await.map_err(group_service_error)?;
+                        groups
+                            .set_locked(chat.clone(), *enabled)
+                            .await
+                            .map_err(group_service_error)?;
                         (0, 0, false)
                     }
                     GroupChange::OnlyAdminsSend(enabled) => {
-                        groups.set_announce(chat.clone(), *enabled).await.map_err(group_service_error)?;
+                        groups
+                            .set_announce(chat.clone(), *enabled)
+                            .await
+                            .map_err(group_service_error)?;
                         (0, 0, false)
                     }
                     GroupChange::MembershipApproval(enabled) => {
@@ -826,27 +840,42 @@ impl CoreBridge {
                         } else {
                             whatsapp_rust::MembershipApprovalMode::Off
                         };
-                        groups.set_membership_approval(chat.clone(), mode).await.map_err(group_service_error)?;
+                        groups
+                            .set_membership_approval(chat.clone(), mode)
+                            .await
+                            .map_err(group_service_error)?;
                         (0, 0, false)
                     }
                     GroupChange::AddParticipants(participants) => {
                         let participants = participant_jids(participants)?;
-                        let responses = groups.add_participants(chat.clone(), &participants).await.map_err(group_service_error)?;
+                        let responses = groups
+                            .add_participants(chat.clone(), &participants)
+                            .await
+                            .map_err(group_service_error)?;
                         participant_result_counts(&responses)
                     }
                     GroupChange::RemoveParticipant(participant) => {
                         let participants = participant_jids(std::slice::from_ref(participant))?;
-                        let responses = groups.remove_participants(chat.clone(), &participants).await.map_err(group_service_error)?;
+                        let responses = groups
+                            .remove_participants(chat.clone(), &participants)
+                            .await
+                            .map_err(group_service_error)?;
                         participant_result_counts(&responses)
                     }
                     GroupChange::PromoteParticipant(participant) => {
                         let participants = participant_jids(std::slice::from_ref(participant))?;
-                        let responses = groups.promote_participants(chat.clone(), &participants).await.map_err(group_service_error)?;
+                        let responses = groups
+                            .promote_participants(chat.clone(), &participants)
+                            .await
+                            .map_err(group_service_error)?;
                         participant_result_counts(&responses)
                     }
                     GroupChange::DemoteParticipant(participant) => {
                         let participants = participant_jids(std::slice::from_ref(participant))?;
-                        let responses = groups.demote_participants(chat.clone(), &participants).await.map_err(group_service_error)?;
+                        let responses = groups
+                            .demote_participants(chat.clone(), &participants)
+                            .await
+                            .map_err(group_service_error)?;
                         participant_result_counts(&responses)
                     }
                     GroupChange::Leave => {
@@ -869,8 +898,7 @@ impl CoreBridge {
                         .write()
                         .expect("left group lock")
                         .insert(group.clone());
-                    if let Err(error) = store.remove_cached_group_details(&group).await
-                    {
+                    if let Err(error) = store.remove_cached_group_details(&group).await {
                         // The remote mutation is already accepted; do not
                         // present a retryable leave action that could run
                         // twice. The UI closes the drawer and the next live
@@ -883,7 +911,10 @@ impl CoreBridge {
                         rejected_participants,
                     });
                 }
-                let metadata = groups.get_metadata(&chat).await.map_err(group_service_error)?;
+                let metadata = groups
+                    .get_metadata(&chat)
+                    .await
+                    .map_err(group_service_error)?;
                 let details = project_group_metadata(&session, metadata, false).await;
                 if let Err(error) = store
                     .save_group_details(details.clone(), chrono::Utc::now().timestamp_millis())
@@ -919,12 +950,9 @@ impl CoreBridge {
         draft: Option<wasabi_domain::Draft>,
     ) -> Result<(), String> {
         let store = self.store_snapshot()?;
-        self.run_on_core(async move {
-            store
-                .save_draft(chat, draft)
-                .await
-                .map_err(service_message)
-        })
+        self.run_on_core(
+            async move { store.save_draft(chat, draft).await.map_err(service_message) },
+        )
         .await
     }
 
@@ -951,9 +979,7 @@ impl CoreBridge {
                 .chat
                 .as_str()
                 .parse::<whatsapp_rust::Jid>()
-                .map_err(|error| {
-                    ServiceError::new(ErrorKind::InvalidRequest, error.to_string())
-                })?;
+                .map_err(|error| ServiceError::new(ErrorKind::InvalidRequest, error.to_string()))?;
             let stored = session
                 .chats
                 .message(&chat, request.media.as_str())
@@ -1054,19 +1080,12 @@ impl CoreBridge {
             .media_snapshot()
             .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
         self.run_on_core_service(async move {
-            let job = store
-                .transfer_job(transfer.clone())
-                .await?
-                .ok_or_else(|| {
-                    ServiceError::new(ErrorKind::InvalidRequest, "attachment transfer not found")
-                })?;
+            let job = store.transfer_job(transfer.clone()).await?.ok_or_else(|| {
+                ServiceError::new(ErrorKind::InvalidRequest, "attachment transfer not found")
+            })?;
             if !job.state.is_terminal()
                 && !store
-                    .set_transfer_state(
-                        transfer,
-                        wasabi_domain::TransferState::Cancelled,
-                        None,
-                    )
+                    .set_transfer_state(transfer, wasabi_domain::TransferState::Cancelled, None)
                     .await?
             {
                 return Err(ServiceError::new(
@@ -1075,7 +1094,10 @@ impl CoreBridge {
                 ));
             }
             if let Some(source) = job.source_path {
-                manager.discard_staged_upload(source).await.map_err(map_media_error)?;
+                manager
+                    .discard_staged_upload(source)
+                    .await
+                    .map_err(map_media_error)?;
             }
             Ok(())
         })
@@ -1157,11 +1179,7 @@ impl CoreBridge {
         .await
     }
 
-    pub async fn set_typing(
-        &self,
-        chat: ChatId,
-        composing: bool,
-    ) -> Result<(), ServiceError> {
+    pub async fn set_typing(&self, chat: ChatId, composing: bool) -> Result<(), ServiceError> {
         if !self.commands_accepted() {
             return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
         }
@@ -1172,9 +1190,7 @@ impl CoreBridge {
             let chat = chat
                 .as_str()
                 .parse::<whatsapp_rust::Jid>()
-                .map_err(|error| {
-                    ServiceError::new(ErrorKind::InvalidRequest, error.to_string())
-                })?;
+                .map_err(|error| ServiceError::new(ErrorKind::InvalidRequest, error.to_string()))?;
             let client = session.client().await.ok_or_else(|| {
                 ServiceError::new(ErrorKind::NotConnected, "no live protocol client")
             })?;
@@ -1250,23 +1266,19 @@ impl CoreBridge {
                     caption,
                     reply_to,
                 } => {
-                    let mut job = store
-                        .transfer_job(transfer.clone())
-                        .await?
-                        .ok_or_else(|| {
-                            ServiceError::new(
-                                ErrorKind::InvalidRequest,
-                                "attachment transfer does not exist",
-                            )
-                        })?;
+                    let mut job = store.transfer_job(transfer.clone()).await?.ok_or_else(|| {
+                        ServiceError::new(
+                            ErrorKind::InvalidRequest,
+                            "attachment transfer does not exist",
+                        )
+                    })?;
                     if job.chat != request.chat {
                         return Err(ServiceError::new(
                             ErrorKind::InvalidRequest,
                             "attachment transfer belongs to a different chat",
                         ));
                     }
-                    let reply_context =
-                        load_reply_context(&session.chats, &to, reply_to).await?;
+                    let reply_context = load_reply_context(&session.chats, &to, reply_to).await?;
                     if !matches!(
                         job.state,
                         wasabi_domain::TransferState::Staged
@@ -1352,8 +1364,7 @@ impl CoreBridge {
                         Err(error) => {
                             let service = map_media_error(error);
                             let state = transfer_failure_state(service.kind);
-                            let persisted_kind = (state
-                                != wasabi_domain::TransferState::Cancelled)
+                            let persisted_kind = (state != wasabi_domain::TransferState::Cancelled)
                                 .then_some(service.kind);
                             let _ = store
                                 .set_transfer_state(transfer, state, persisted_kind)
@@ -1406,8 +1417,7 @@ impl CoreBridge {
                         Err(error) => {
                             let service = map_outbox_error_ref(&error);
                             let state = transfer_failure_state(service.kind);
-                            let persisted_kind = (state
-                                != wasabi_domain::TransferState::Cancelled)
+                            let persisted_kind = (state != wasabi_domain::TransferState::Cancelled)
                                 .then_some(service.kind);
                             let _ = store
                                 .set_transfer_state(transfer, state, persisted_kind)
@@ -1431,10 +1441,7 @@ impl CoreBridge {
         .await
     }
 
-    pub async fn perform_message_action(
-        &self,
-        action: MessageAction,
-    ) -> Result<(), ServiceError> {
+    pub async fn perform_message_action(&self, action: MessageAction) -> Result<(), ServiceError> {
         if !self.commands_accepted() {
             return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
         }
@@ -1453,15 +1460,11 @@ impl CoreBridge {
                 .chat
                 .as_str()
                 .parse::<whatsapp_rust::Jid>()
-                .map_err(|error| {
-                    ServiceError::new(ErrorKind::InvalidRequest, error.to_string())
-                })?;
+                .map_err(|error| ServiceError::new(ErrorKind::InvalidRequest, error.to_string()))?;
             let participant = (!target.from_me && target.chat.as_str().ends_with("@g.us"))
                 .then(|| target.sender.parse::<whatsapp_rust::Jid>())
                 .transpose()
-                .map_err(|error| {
-                    ServiceError::new(ErrorKind::InvalidRequest, error.to_string())
-                })?;
+                .map_err(|error| ServiceError::new(ErrorKind::InvalidRequest, error.to_string()))?;
 
             match action {
                 MessageAction::Retry { target } => {
@@ -1514,12 +1517,7 @@ impl CoreBridge {
                         .map_err(map_protocol_send_error)?;
                     session
                         .chats
-                        .record_reaction(
-                            &chat,
-                            &key,
-                            &emoji,
-                            whatsapp_rust::chrono::Utc::now(),
-                        )
+                        .record_reaction(&chat, &key, &emoji, whatsapp_rust::chrono::Utc::now())
                         .map_err(|error| {
                             ServiceError::new(ErrorKind::Database, error.to_string())
                         })?;
@@ -1545,21 +1543,13 @@ impl CoreBridge {
                         .chats
                         .message(&chat, target.message.as_str())
                         .await
-                        .map_err(|error| {
-                            ServiceError::new(ErrorKind::Database, error.to_string())
-                        })?
+                        .map_err(|error| ServiceError::new(ErrorKind::Database, error.to_string()))?
                         .ok_or_else(|| {
-                            ServiceError::new(
-                                ErrorKind::InvalidRequest,
-                                "message no longer exists",
-                            )
+                            ServiceError::new(ErrorKind::InvalidRequest, "message no longer exists")
                         })?;
                     if !stored.from_me
                         || stored.revoked
-                        || !matches!(
-                            stored.kind,
-                            whatsapp_rust_chat_store::MessageKind::Text
-                        )
+                        || !matches!(stored.kind, whatsapp_rust_chat_store::MessageKind::Text)
                     {
                         return Err(ServiceError::new(
                             ErrorKind::InvalidRequest,
@@ -1578,14 +1568,9 @@ impl CoreBridge {
                             "message edit window has expired",
                         ));
                     }
-                    let new_content =
-                        whatsapp_rust::waproto::whatsapp::Message::text(body);
+                    let new_content = whatsapp_rust::waproto::whatsapp::Message::text(body);
                     client
-                        .edit_message(
-                            chat.clone(),
-                            target.message.as_str(),
-                            new_content.clone(),
-                        )
+                        .edit_message(chat.clone(), target.message.as_str(), new_content.clone())
                         .await
                         .map_err(map_protocol_send_error)?;
                     // Materialize only after the protocol accepts the edit.
@@ -1594,12 +1579,7 @@ impl CoreBridge {
                     // that never reached other devices.
                     session
                         .chats
-                        .record_edit(
-                            &chat,
-                            target.message.as_str(),
-                            &new_content,
-                            now,
-                        )
+                        .record_edit(&chat, target.message.as_str(), &new_content, now)
                         .map_err(|error| {
                             ServiceError::new(ErrorKind::Database, error.to_string())
                         })?;
@@ -1665,9 +1645,7 @@ impl CoreBridge {
                 .chat()
                 .as_str()
                 .parse::<whatsapp_rust::Jid>()
-                .map_err(|error| {
-                    ServiceError::new(ErrorKind::InvalidRequest, error.to_string())
-                })?;
+                .map_err(|error| ServiceError::new(ErrorKind::InvalidRequest, error.to_string()))?;
             let actions = client.chat_actions();
             let result = match action {
                 ChatAction::Pin { pinned, .. } => {
@@ -1789,8 +1767,8 @@ fn map_outbox_error_ref(error: &wasabi_whatsapp::outbox::OutboxError) -> Service
 }
 
 fn map_protocol_send_error(error: whatsapp_rust::SendError) -> ServiceError {
-    use whatsapp_rust::client::ClientError;
     use whatsapp_rust::SendError;
+    use whatsapp_rust::client::ClientError;
 
     let kind = match &error {
         SendError::NotLoggedIn => ErrorKind::NotPaired,
@@ -1817,7 +1795,10 @@ fn normalized_caption(caption: Option<String>) -> Result<Option<String>, Service
     let caption = caption
         .map(|caption| caption.trim().to_string())
         .filter(|caption| !caption.is_empty());
-    if caption.as_ref().is_some_and(|caption| caption.chars().count() > 1024) {
+    if caption
+        .as_ref()
+        .is_some_and(|caption| caption.chars().count() > 1024)
+    {
         return Err(ServiceError::new(
             ErrorKind::InvalidRequest,
             "attachment caption exceeds 1024 characters",
@@ -1844,7 +1825,10 @@ async fn load_reply_context(
             ServiceError::new(ErrorKind::InvalidRequest, "reply target no longer exists")
         })?;
     let quoted_message = quoted.message.as_deref().ok_or_else(|| {
-        ServiceError::new(ErrorKind::InvalidRequest, "reply target content is unavailable")
+        ServiceError::new(
+            ErrorKind::InvalidRequest,
+            "reply target content is unavailable",
+        )
     })?;
     Ok(Some(build_quote_context_with_info(
         quoted.id,
@@ -1922,9 +1906,7 @@ fn map_media_error(error: wasabi_media::MediaError) -> ServiceError {
         | MediaError::Download(_)
         | MediaError::Upload(_)
         | MediaError::Encryption(_)
-        | MediaError::Decode(_) => {
-            ErrorKind::MediaUnavailable
-        }
+        | MediaError::Decode(_) => ErrorKind::MediaUnavailable,
         MediaError::Io(_) => ErrorKind::Database,
     };
     ServiceError::new(kind, error.to_string())
@@ -2084,12 +2066,7 @@ async fn project_group_metadata(
         .into_iter()
         .flatten()
         .any(|jid| own_identities.contains(&jid.to_non_ad().to_string()));
-        let contact = session
-            .chats
-            .contact(&identity)
-            .await
-            .ok()
-            .flatten();
+        let contact = session.chats.contact(&identity).await.ok().flatten();
         let display_name = if is_self {
             "You".to_string()
         } else {
@@ -2130,7 +2107,9 @@ async fn project_group_metadata(
                     .cmp(&right.display_name.to_lowercase())
             })
     });
-    let participant_count = metadata.size.map_or(participants.len(), |size| size as usize);
+    let participant_count = metadata
+        .size
+        .map_or(participants.len(), |size| size as usize);
     GroupDetails {
         chat: ChatId::new(metadata.id.to_string()),
         subject: metadata.subject,
@@ -2286,7 +2265,10 @@ impl DesktopBackend for CoreBridge {
         CoreBridge::group_details(self, chat).await
     }
 
-    async fn create_group(&self, request: CreateGroupRequest) -> Result<GroupDetails, ServiceError> {
+    async fn create_group(
+        &self,
+        request: CreateGroupRequest,
+    ) -> Result<GroupDetails, ServiceError> {
         CoreBridge::create_group(self, request).await
     }
 
@@ -2569,5 +2551,4 @@ mod tests {
         assert!(participant_jids(&[ChatId::new("120363000000000001@g.us")]).is_err());
         assert_eq!(participant_result_counts(&[]), (0, 0, false));
     }
-
 }
