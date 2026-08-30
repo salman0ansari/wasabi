@@ -50,8 +50,14 @@ pub struct AccountSession {
     typing_tx: tokio::sync::broadcast::Sender<wasabi_domain::TypingUpdate>,
     bot_handle: tokio::sync::Mutex<Option<BotHandle>>,
     pump: tokio::sync::Mutex<Option<lifecycle::Pump>>,
+    outbox_recovery: tokio::sync::Mutex<Option<OutboxRecoveryTask>>,
     config: SessionConfig,
     db_path: PathBuf,
+}
+
+struct OutboxRecoveryTask {
+    token: CancellationToken,
+    join: tokio::task::JoinHandle<()>,
 }
 
 impl AccountSession {
@@ -78,6 +84,7 @@ impl AccountSession {
             typing_tx,
             bot_handle: tokio::sync::Mutex::new(None),
             pump: tokio::sync::Mutex::new(None),
+            outbox_recovery: tokio::sync::Mutex::new(None),
             config: config.clone(),
             db_path,
         }))
@@ -259,6 +266,41 @@ impl AccountSession {
 
         let handle = bot.spawn();
 
+        // A committed Pending outbox row is the crash window between the
+        // record-before-send barrier and the server ack. Recovery used to be
+        // implemented but never scheduled, so those rows could survive every
+        // restart indefinitely. Arm one sweep per session run and wait until
+        // the event pump reports a usable connection before touching the
+        // network. Capture the cutoff before the bot starts so a new send that
+        // races the first Connected event can never be mistaken for crash
+        // residue. Ambiguous pre-launch publication is safe to repeat under
+        // the original id.
+        let recovery_cutoff = whatsapp_rust::chrono::Utc::now();
+        let recovery_token = run_token.child_token();
+        let recovery_task_token = recovery_token.clone();
+        let recovery_wait_token = recovery_token.clone();
+        let recovery_client = handle.client();
+        let recovery_chats = Arc::clone(&self.chats);
+        let recovery_state = self.subscribe_state();
+        let recovery_join = tokio::spawn(run_once_after_first_connected(
+            recovery_state,
+            recovery_wait_token,
+            move || async move {
+                let stale_after = whatsapp_rust::chrono::Utc::now() - recovery_cutoff;
+                crate::outbox::reconcile_stale_pending(
+                    recovery_chats,
+                    recovery_client,
+                    stale_after,
+                    recovery_token,
+                )
+                .await;
+            },
+        ));
+        *self.outbox_recovery.lock().await = Some(OutboxRecoveryTask {
+            token: recovery_task_token,
+            join: recovery_join,
+        });
+
         let pump = lifecycle::spawn_event_pump(
             event_rx,
             self.state_tx.clone(),
@@ -287,6 +329,10 @@ impl AccountSession {
         if let Some(pump) = self.pump.lock().await.take() {
             pump.token.cancel();
             let _ = tokio::time::timeout(lifecycle::PUMP_JOIN_TIMEOUT, pump.join).await;
+        }
+        if let Some(recovery) = self.outbox_recovery.lock().await.take() {
+            recovery.token.cancel();
+            let _ = tokio::time::timeout(lifecycle::PUMP_JOIN_TIMEOUT, recovery.join).await;
         }
         if let Some(bot) = self.bot_handle.lock().await.take() {
             info!("session: shutting down bot");
@@ -319,5 +365,97 @@ impl AccountSession {
             warn!("session: logout requested with no running bot");
         }
         self.stop().await;
+    }
+}
+
+async fn wait_for_first_connected(
+    mut state_rx: watch::Receiver<SessionState>,
+    token: CancellationToken,
+) -> bool {
+    loop {
+        if state_rx.borrow().is_connected() {
+            return true;
+        }
+        tokio::select! {
+            _ = token.cancelled() => return false,
+            changed = state_rx.changed() => {
+                if changed.is_err() {
+                    return false;
+                }
+            }
+        }
+    }
+}
+
+async fn run_once_after_first_connected<F, Fut>(
+    state_rx: watch::Receiver<SessionState>,
+    token: CancellationToken,
+    recover: F,
+) where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    if wait_for_first_connected(state_rx, token).await {
+        recover().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_once_after_first_connected;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::watch;
+    use tokio_util::sync::CancellationToken;
+    use wasabi_core::state::SessionState;
+
+    #[tokio::test]
+    async fn outbox_recovery_waits_for_connected_state() {
+        let (state_tx, state_rx) = watch::channel(SessionState::Connecting);
+        let token = CancellationToken::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let task_calls = Arc::clone(&calls);
+        let wait = tokio::spawn(run_once_after_first_connected(
+            state_rx,
+            token,
+            move || async move {
+                task_calls.fetch_add(1, Ordering::SeqCst);
+            },
+        ));
+
+        tokio::task::yield_now().await;
+        assert!(
+            !wait.is_finished(),
+            "recovery must not run while connecting"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        state_tx.send(SessionState::Reconnecting).unwrap();
+        tokio::task::yield_now().await;
+        assert!(!wait.is_finished(), "recovery must survive reconnecting");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        state_tx.send(SessionState::Connected).unwrap();
+        wait.await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn outbox_recovery_wait_is_cancelled_with_session_run() {
+        let (_state_tx, state_rx) = watch::channel(SessionState::Connecting);
+        let token = CancellationToken::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let task_calls = Arc::clone(&calls);
+        let wait = tokio::spawn(run_once_after_first_connected(
+            state_rx,
+            token.clone(),
+            move || async move {
+                task_calls.fetch_add(1, Ordering::SeqCst);
+            },
+        ));
+
+        token.cancel();
+        wait.await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 }

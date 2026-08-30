@@ -291,26 +291,43 @@ async fn record_send_failure(
     chats.flush().await
 }
 
-/// Backward-scan bounds. The scan cap keeps pathological histories cheap;
-/// the sent-run break exploits locality — a run of recent sends that all
-/// completed means the unsent tail (if any) is close behind.
-const RECONCILE_SCAN_CAP: usize = 500;
 const RECONCILE_PAGE_SIZE: i64 = 100;
-/// Consecutive from-me rows already past `Pending` that end one chat's walk.
-const SENT_RUN_BREAK: usize = 5;
 /// Upper bound on chats inspected per pass; larger accounts simply cover
 /// their remainder on the next scheduled pass.
 const RECONCILE_CHAT_CAP: i64 = 500;
 
+/// Add stale outgoing pending rows from one history page and report whether
+/// an older page can still exist.
+///
+/// Reconciliation must not infer "nothing older is pending" from completed
+/// rows: a crash can leave a Pending row anywhere in durable history, even
+/// behind a long run of later successful sends. Therefore page exhaustion is
+/// the only per-chat traversal stop condition.
+fn collect_reconcile_page(
+    page: &[StoredMessage],
+    cutoff: DateTime<Utc>,
+    stale: &mut Vec<StoredMessage>,
+) -> bool {
+    stale.extend(
+        page.iter()
+            .filter(|m| m.from_me && m.status == MessageStatus::Pending && m.timestamp <= cutoff)
+            .cloned(),
+    );
+    page.len() == RECONCILE_PAGE_SIZE as usize
+}
+
 /// Startup sweep: publish this account's committed-but-unpublished messages.
 ///
 /// Collects `from_me` rows still in [`MessageStatus::Pending`] older than
-/// `stale_after` by paging each chat backwards, then resends each ONE attempt
-/// under its ORIGINAL id — never a new id, because the durable row and any
-/// server-side dedupe state are keyed by it. A row whose stored proto is
-/// missing cannot be re-materialized and is marked failed rather than
-/// silently dropped. Every resend failure ends in a durable error marker: the
-/// sweep never loops on a sick recipient, and the user retries manually.
+/// `stale_after` by paging each selected chat backwards to history exhaustion,
+/// then resends each ONE attempt under its ORIGINAL id — never a new id,
+/// because the durable row and any server-side dedupe state are keyed by it.
+/// Completed rows and history depth never terminate a selected chat's scan:
+/// every pre-cutoff Pending row in that chat is considered in this pass unless
+/// the pass is cancelled or a store read fails. A row whose stored proto is
+/// missing cannot be re-materialized and is marked failed rather than silently
+/// dropped. Every resend failure ends in a durable error marker: the sweep
+/// never loops on a sick recipient, and the user retries manually.
 ///
 /// Single concurrent instance is the CALLER's obligation (one spawned task
 /// per session). Cancelling mid-send drops that send future: the stanza may
@@ -345,13 +362,11 @@ pub async fn reconcile_stale_pending(
     };
 
     let mut stale: Vec<StoredMessage> = Vec::new();
-    'chats: for entry in chat_list {
+    for entry in chat_list {
         if token.is_cancelled() {
             return;
         }
         let mut before: Option<MessageCursor> = None;
-        let mut scanned = 0usize;
-        let mut sent_run = 0usize;
         loop {
             if token.is_cancelled() {
                 return;
@@ -369,30 +384,9 @@ pub async fn reconcile_stale_pending(
             if page.is_empty() {
                 break;
             }
-            for m in &page {
-                scanned += 1;
-                if !m.from_me {
-                    continue;
-                }
-                if m.status == MessageStatus::Pending {
-                    sent_run = 0;
-                    if m.timestamp <= cutoff {
-                        stale.push(m.clone());
-                    }
-                } else {
-                    sent_run += 1;
-                    if sent_run >= SENT_RUN_BREAK {
-                        // Everything newer than here was published; this
-                        // chat has no unsent tail worth paging further for.
-                        continue 'chats;
-                    }
-                }
-                if scanned >= RECONCILE_SCAN_CAP {
-                    continue 'chats;
-                }
-            }
+            let has_older_page = collect_reconcile_page(&page, cutoff, &mut stale);
             before = page.last().map(MessageCursor::from);
-            if page.len() < RECONCILE_PAGE_SIZE as usize || scanned >= RECONCILE_SCAN_CAP {
+            if !has_older_page {
                 break;
             }
         }
@@ -461,9 +455,11 @@ pub async fn reconcile_stale_pending(
 
 #[cfg(test)]
 mod tests {
-    use super::{OutboxError, validate_retry_candidate};
+    use super::{
+        OutboxError, RECONCILE_PAGE_SIZE, collect_reconcile_page, validate_retry_candidate,
+    };
     use whatsapp_rust::Jid;
-    use whatsapp_rust::chrono::Utc;
+    use whatsapp_rust::chrono::{DateTime, Duration, Utc};
     use whatsapp_rust::wacore::proto_helpers::MessageBuilderExt;
     use whatsapp_rust::waproto::whatsapp as wa;
     use whatsapp_rust_chat_store::{MessageKind, MessageStatus, types::StoredMessage};
@@ -502,5 +498,38 @@ mod tests {
                 Err(OutboxError::InvalidRequest(_))
             ));
         }
+    }
+
+    #[test]
+    fn reconciliation_does_not_skip_old_pending_behind_long_completed_history() {
+        let cutoff = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let completed_count = 650usize;
+        let mut history = (0..completed_count)
+            .map(|seq| StoredMessage {
+                id: format!("DONE-{seq}"),
+                status: MessageStatus::ServerAck,
+                seq: seq as i64,
+                timestamp: cutoff - Duration::seconds(1),
+                ..retry_candidate(true, MessageStatus::ServerAck, true)
+            })
+            .collect::<Vec<_>>();
+        history.push(StoredMessage {
+            id: "STALE-PENDING".to_string(),
+            status: MessageStatus::Pending,
+            seq: completed_count as i64,
+            timestamp: cutoff - Duration::hours(1),
+            ..retry_candidate(true, MessageStatus::Pending, true)
+        });
+
+        let mut stale = Vec::new();
+        for page in history.chunks(RECONCILE_PAGE_SIZE as usize) {
+            let has_older_page = collect_reconcile_page(page, cutoff, &mut stale);
+            if !has_older_page {
+                break;
+            }
+        }
+
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].id, "STALE-PENDING");
     }
 }
