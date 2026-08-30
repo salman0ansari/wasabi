@@ -1,6 +1,6 @@
 # What works today
 
-This page describes the shipped behavior in wasabi `0.2.0-alpha.7`. It is a capability inventory, not a promise about unfinished controls. Features without a complete data source, failure state, and usable workflow stay hidden.
+This page describes the shipped behavior in wasabi `0.2.0-alpha.8`. It is a capability inventory, not a promise about unfinished controls. Features without a complete data source, failure state, and usable workflow stay hidden.
 
 ## Account and startup
 
@@ -60,6 +60,7 @@ This page describes the shipped behavior in wasabi `0.2.0-alpha.7`. It is a capa
 | Status | Capability |
 | --- | --- |
 | Done | Open direct-contact information on demand; direct conversations never display Participants. |
+| Done | Block or unblock a direct contact when the live block state is known, and delete a saved contact name for a bare phone-number identity without deleting the chat. |
 | Done | Refresh a direct contact's real About metadata when connected and retain the last authoritative value for honest offline viewing. |
 | Done | Render a contact or group profile photo in the conversation header and information drawer when the linked account provides one, keeping initials when the photo is unavailable or restricted. |
 | Done | Load real group subject, description, participant count, identities, and admin roles. |
