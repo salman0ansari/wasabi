@@ -965,14 +965,35 @@ impl CoreBridge {
             let message = stored.message.ok_or_else(|| {
                 ServiceError::new(ErrorKind::Unsupported, "media metadata is unavailable")
             })?;
-            let downloadable = wasabi_media::media_downloadable(&message).ok_or_else(|| {
-                ServiceError::new(ErrorKind::Unsupported, "this media cannot be downloaded")
-            })?;
-            let expected_sha = <[u8; 32]>::try_from(downloadable.file_sha256.as_slice()).ok();
-            let path = manager
-                .download(downloadable, expected_sha, None, cancel)
-                .await
-                .map_err(map_media_error)?;
+            let path = match static_url_media(&message) {
+                Some(StaticUrlMedia::Image(downloadable)) => {
+                    let expected_sha = expected_media_sha(downloadable.file_sha256.as_deref());
+                    manager
+                        .download(downloadable, expected_sha, None, cancel)
+                        .await
+                }
+                Some(StaticUrlMedia::Video(downloadable))
+                | Some(StaticUrlMedia::Ptv(downloadable)) => {
+                    let expected_sha = expected_media_sha(downloadable.file_sha256.as_deref());
+                    manager
+                        .download(downloadable, expected_sha, None, cancel)
+                        .await
+                }
+                None => {
+                    let downloadable =
+                        wasabi_media::media_downloadable(&message).ok_or_else(|| {
+                            ServiceError::new(
+                                ErrorKind::Unsupported,
+                                "this media cannot be downloaded",
+                            )
+                        })?;
+                    let expected_sha = expected_media_sha(Some(&downloadable.file_sha256));
+                    manager
+                        .download(downloadable, expected_sha, None, cancel)
+                        .await
+                }
+            }
+            .map_err(map_media_error)?;
             Ok(CachedMedia {
                 media: request.media,
                 path,
@@ -2327,10 +2348,45 @@ impl DesktopBackend for CoreBridge {
     }
 }
 
+enum StaticUrlMedia {
+    Image(whatsapp_rust::waproto::whatsapp::message::ImageMessage),
+    Video(whatsapp_rust::waproto::whatsapp::message::VideoMessage),
+    Ptv(whatsapp_rust::waproto::whatsapp::message::VideoMessage),
+}
+
+/// `DownloadParams` cannot retain the upstream `static_url` field. Keep these
+/// message types intact so channel/newsletter media follows whatsapp-rust's
+/// verbatim-URL download path instead of incorrectly rebuilding a CDN URL from
+/// `direct_path`.
+fn static_url_media(message: &whatsapp_rust::waproto::whatsapp::Message) -> Option<StaticUrlMedia> {
+    let base = whatsapp_rust::wacore::proto_helpers::MessageExt::get_base_message(message);
+    if let Some(image) = base.image_message.as_option()
+        && image.static_url.is_some()
+    {
+        return Some(StaticUrlMedia::Image(image.clone()));
+    }
+    if let Some(video) = base.video_message.as_option()
+        && video.static_url.is_some()
+    {
+        return Some(StaticUrlMedia::Video(video.clone()));
+    }
+    if let Some(ptv) = base.ptv_message.as_option()
+        && ptv.static_url.is_some()
+    {
+        return Some(StaticUrlMedia::Ptv(ptv.clone()));
+    }
+    None
+}
+
+fn expected_media_sha(file_sha256: Option<&[u8]>) -> Option<[u8; 32]> {
+    file_sha256.and_then(|sha| <[u8; 32]>::try_from(sha).ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use whatsapp_rust::wacore::proto_helpers::MessageExt;
+    use whatsapp_rust::waproto::buffa::MessageField;
 
     #[test]
     fn generated_transfer_ids_are_unique_and_path_free() {
@@ -2340,6 +2396,80 @@ mod tests {
         assert!(first.as_str().starts_with('w'));
         assert!(!first.as_str().contains('/'));
         assert_eq!(format!("{first:?}"), "TransferId(<opaque>)");
+    }
+
+    #[test]
+    fn static_url_media_keeps_original_typed_downloadables() {
+        let image = whatsapp_rust::waproto::whatsapp::Message {
+            image_message: MessageField::some(
+                whatsapp_rust::waproto::whatsapp::message::ImageMessage {
+                    static_url: Some("https://static.example/image".to_string()),
+                    file_sha256: Some(vec![1; 32]),
+                    ..Default::default()
+                },
+            ),
+            ..Default::default()
+        };
+        let Some(StaticUrlMedia::Image(image)) = static_url_media(&image) else {
+            panic!("image static URL must stay on the typed path");
+        };
+        assert_eq!(
+            image.static_url.as_deref(),
+            Some("https://static.example/image")
+        );
+        assert_eq!(
+            expected_media_sha(image.file_sha256.as_deref()),
+            Some([1; 32])
+        );
+
+        let video = whatsapp_rust::waproto::whatsapp::Message {
+            video_message: MessageField::some(
+                whatsapp_rust::waproto::whatsapp::message::VideoMessage {
+                    static_url: Some("https://static.example/video".to_string()),
+                    file_sha256: Some(vec![2; 32]),
+                    ..Default::default()
+                },
+            ),
+            ..Default::default()
+        };
+        let Some(StaticUrlMedia::Video(video)) = static_url_media(&video) else {
+            panic!("video static URL must stay on the typed path");
+        };
+        assert_eq!(
+            video.static_url.as_deref(),
+            Some("https://static.example/video")
+        );
+
+        let ptv = whatsapp_rust::waproto::whatsapp::Message {
+            ptv_message: MessageField::some(
+                whatsapp_rust::waproto::whatsapp::message::VideoMessage {
+                    static_url: Some("https://static.example/ptv".to_string()),
+                    file_sha256: Some(vec![3; 32]),
+                    ..Default::default()
+                },
+            ),
+            ..Default::default()
+        };
+        let Some(StaticUrlMedia::Ptv(ptv)) = static_url_media(&ptv) else {
+            panic!("PTV static URL must stay on the typed path");
+        };
+        assert_eq!(
+            ptv.static_url.as_deref(),
+            Some("https://static.example/ptv")
+        );
+
+        let host_routed = whatsapp_rust::waproto::whatsapp::Message {
+            video_message: MessageField::some(
+                whatsapp_rust::waproto::whatsapp::message::VideoMessage {
+                    direct_path: Some("/v/t62.7118-24/media".to_string()),
+                    file_sha256: Some(vec![4; 32]),
+                    ..Default::default()
+                },
+            ),
+            ..Default::default()
+        };
+        assert!(static_url_media(&host_routed).is_none());
+        assert!(wasabi_media::media_downloadable(&host_routed).is_some());
     }
 
     #[test]

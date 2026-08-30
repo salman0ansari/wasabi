@@ -43,6 +43,9 @@ pub fn media_downloadable(message: &wa::Message) -> Option<DownloadParams> {
     let base = message.get_base_message();
     let (direct_path, media_key, file_sha256, file_enc_sha256, file_length, media_type) =
         if let Some(m) = base.image_message.as_option() {
+            if m.static_url.is_some() {
+                return None;
+            }
             (
                 m.direct_path.clone()?,
                 m.media_key.clone(),
@@ -52,6 +55,9 @@ pub fn media_downloadable(message: &wa::Message) -> Option<DownloadParams> {
                 MediaType::Image,
             )
         } else if let Some(m) = base.video_message.as_option() {
+            if m.static_url.is_some() {
+                return None;
+            }
             (
                 m.direct_path.clone()?,
                 m.media_key.clone(),
@@ -61,6 +67,9 @@ pub fn media_downloadable(message: &wa::Message) -> Option<DownloadParams> {
                 MediaType::Video,
             )
         } else if let Some(m) = base.ptv_message.as_option() {
+            if m.static_url.is_some() {
+                return None;
+            }
             (
                 m.direct_path.clone()?,
                 m.media_key.clone(),
@@ -866,6 +875,7 @@ mod tests {
     use std::io::Seek;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
+    use waproto::buffa::MessageField;
 
     const ABC_SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 
@@ -981,6 +991,75 @@ mod tests {
                 "application/octet-stream".to_string()
             )
         );
+    }
+
+    fn downloadable_video(static_url: Option<&str>) -> wa::message::VideoMessage {
+        wa::message::VideoMessage {
+            direct_path: Some("/v/t62.7118-24/media".to_string()),
+            static_url: static_url.map(str::to_string),
+            media_key: Some(vec![1; 32]),
+            file_sha256: Some(vec![2; 32]),
+            file_enc_sha256: Some(vec![3; 32]),
+            file_length: Some(123),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn raw_download_params_refuse_media_that_requires_static_url() {
+        let image = wa::Message {
+            image_message: MessageField::some(wa::message::ImageMessage {
+                direct_path: Some("/v/t62.7118-24/media".to_string()),
+                static_url: Some("https://static.cdn.example/media/image".to_string()),
+                media_key: Some(vec![1; 32]),
+                file_sha256: Some(vec![2; 32]),
+                file_enc_sha256: Some(vec![3; 32]),
+                file_length: Some(123),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(
+            media_downloadable(&image).is_none(),
+            "DownloadParams cannot preserve ImageMessage.static_url"
+        );
+
+        let video = wa::Message {
+            video_message: MessageField::some(downloadable_video(Some(
+                "https://static.cdn.example/media/video",
+            ))),
+            ..Default::default()
+        };
+        assert!(
+            media_downloadable(&video).is_none(),
+            "DownloadParams cannot preserve VideoMessage.static_url"
+        );
+
+        let ptv = wa::Message {
+            ptv_message: MessageField::some(downloadable_video(Some(
+                "https://static.cdn.example/media/ptv",
+            ))),
+            ..Default::default()
+        };
+        assert!(
+            media_downloadable(&ptv).is_none(),
+            "DownloadParams cannot preserve PTV static_url"
+        );
+    }
+
+    #[test]
+    fn raw_download_params_keep_host_routed_video_metadata() {
+        let message = wa::Message {
+            video_message: MessageField::some(downloadable_video(None)),
+            ..Default::default()
+        };
+        let params = media_downloadable(&message).expect("host-routed media can use raw params");
+        assert_eq!(params.direct_path, "/v/t62.7118-24/media");
+        assert_eq!(params.media_key.as_deref(), Some(&[1; 32][..]));
+        assert_eq!(params.file_sha256, vec![2; 32]);
+        assert_eq!(params.file_enc_sha256.as_deref(), Some(&[3; 32][..]));
+        assert_eq!(params.file_length, 123);
+        assert_eq!(params.media_type, MediaType::Video);
     }
 
     type TestOutcome = u64;
