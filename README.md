@@ -1,6 +1,6 @@
 # wasabi
 
-**Current release: 0.2.0-alpha.2 — developer preview**
+**Current release: 0.2.0-alpha.3 — developer preview**
 
 wasabi is a fast, native Linux desktop messenger for WhatsApp accounts. It is built in Rust with GPUI and is designed to feel at home on the desktop without shipping an Electron runtime.
 
@@ -25,7 +25,7 @@ wasabi is being built around a few straightforward principles:
 
 ## Native footprint
 
-On the current Linux reference machine, five fresh-profile launches of wasabi `0.2.0-alpha.1` had a 132 ms startup median and settled at 237.2 MiB proportional set size (PSS). A blank Electron 41 window had a 536 ms median and settled at 334.5 MiB PSS. wasabi used one process versus Electron's six. A retained 3,776 ms first wasabi launch raised its mean to 860.8 ms versus Electron's 685.0 ms; all four subsequent wasabi samples were 130–135 ms. Every raw sample is committed.
+On the current Linux reference machine, five fresh-profile launches of wasabi `0.2.0-alpha.3` had a 118 ms startup median and settled at 233.5 MiB proportional set size (PSS). A blank Electron 41 window had a 467 ms median and settled at 321.1 MiB PSS. wasabi used one process versus Electron's six. A retained 3,730 ms first wasabi launch raised its mean to 840.2 ms versus Electron's 527.8 ms; all four subsequent wasabi samples were 117–118 ms. Every raw sample is committed.
 
 This is a reproducible runtime-baseline comparison, not a fabricated measurement of the official WhatsApp app. There is no official Linux desktop binary to measure locally, and Meta's current Windows and Mac apps should not be described as the old Electron client. Read the complete methodology, raw results, package-size context, limitations, and rerun instructions in [`benchmarks/desktop`](benchmarks/desktop/README.md).
 

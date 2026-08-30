@@ -4,6 +4,10 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
+_No changes yet._
+
+## [0.2.0-alpha.3] - 2026-08-30
+
 ### Added
 
 - Group admins can now add real members from the information drawer through a
@@ -36,6 +40,13 @@ All notable user-visible changes to wasabi are recorded here. The format follows
   enforce protocol character limits, treat an empty description as removal,
   retain validation errors in the modal, and apply the update through the same
   chat-bound acknowledged mutation path.
+
+### Changed
+
+- Refreshed the reproducible Linux native-versus-blank-Electron benchmark for
+  this release. Five fresh-profile runs retain the cold-start outlier, report
+  both mean and median startup, and record the complete process-tree resource
+  samples without claiming to measure an unavailable official Linux client.
 
 ## [0.2.0-alpha.2] - 2026-08-27
 
@@ -222,6 +233,7 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 - Selecting a different chat now closes the information drawer.
 - Narrow windows use a dismissible overlay drawer instead of permanently crushing the conversation.
 
-[Unreleased]: https://github.com/salman0ansari/wasabi/compare/v0.2.0-alpha.2...HEAD
+[Unreleased]: https://github.com/salman0ansari/wasabi/compare/v0.2.0-alpha.3...HEAD
+[0.2.0-alpha.3]: https://github.com/salman0ansari/wasabi/compare/v0.2.0-alpha.2...v0.2.0-alpha.3
 [0.2.0-alpha.2]: https://github.com/salman0ansari/wasabi/compare/v0.2.0-alpha.1...v0.2.0-alpha.2
 [0.2.0-alpha.1]: https://github.com/salman0ansari/wasabi/releases/tag/v0.2.0-alpha.1
