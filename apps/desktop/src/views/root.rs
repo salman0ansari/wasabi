@@ -142,7 +142,7 @@ pub(crate) enum SettingsFeedback {
 #[derive(Clone)]
 pub(crate) enum MediaDownloadUi {
     Downloading,
-    Ready(#[allow(dead_code)] std::path::PathBuf),
+    Ready(std::path::PathBuf),
     Failed,
 }
 
@@ -2078,6 +2078,93 @@ impl MainWindow {
             })
             .ok();
         });
+        cx.notify();
+    }
+
+    pub(crate) fn save_downloaded_media(
+        &mut self,
+        chat: wasabi_domain::ChatId,
+        media: wasabi_domain::MediaId,
+        suggested_name: String,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (chat, media);
+        let Some(MediaDownloadUi::Ready(path)) = self.media_downloads.get(&key).cloned() else {
+            return;
+        };
+        if conversation::classify_cached_media(&path) == conversation::CachedMediaAccess::Missing {
+            self.recover_missing_cached_media(key, cx);
+            return;
+        }
+        self.message_overlay = None;
+        self.send_error = None;
+        let directory = std::path::PathBuf::from(&self.settings.download_path);
+        let chosen = cx.prompt_for_new_path(&directory, Some(&suggested_name));
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let selected = match chosen.await {
+                Ok(Ok(path)) => path,
+                Ok(Err(_)) | Err(_) => {
+                    this.update(cx, |this, cx| {
+                        this.send_error = Some("Could not open the save dialog".to_string());
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let Some(dest) = selected else {
+                return;
+            };
+            let result = bridge.copy_cached_media(path, dest).await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => {
+                        this.send_error = None;
+                    }
+                    Err(error) if error.kind == wasabi_domain::ErrorKind::MediaUnavailable => {
+                        this.recover_missing_cached_media(key, cx);
+                    }
+                    Err(error) => {
+                        tracing::warn!(kind = %error.kind, "save media failed");
+                        this.send_error = Some("Could not save the file".to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn reveal_downloaded_media(
+        &mut self,
+        chat: wasabi_domain::ChatId,
+        media: wasabi_domain::MediaId,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (chat, media);
+        let Some(MediaDownloadUi::Ready(path)) = self.media_downloads.get(&key).cloned() else {
+            return;
+        };
+        self.message_overlay = None;
+        if conversation::classify_cached_media(&path) == conversation::CachedMediaAccess::Missing {
+            self.recover_missing_cached_media(key, cx);
+            return;
+        }
+        cx.reveal_path(&path);
+        cx.notify();
+    }
+
+    fn recover_missing_cached_media(
+        &mut self,
+        key: (wasabi_domain::ChatId, wasabi_domain::MediaId),
+        cx: &mut Context<Self>,
+    ) {
+        self.media_downloads.remove(&key);
+        self.message_overlay = None;
+        self.send_error =
+            Some("This file is no longer in the cache. Download it again.".to_string());
         cx.notify();
     }
 

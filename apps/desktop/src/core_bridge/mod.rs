@@ -126,6 +126,7 @@ pub trait DesktopBackend: Send + Sync {
         key: String,
         source: PathBuf,
     ) -> Result<PathBuf, ServiceError>;
+    async fn copy_cached_media(&self, source: PathBuf, dest: PathBuf) -> Result<(), ServiceError>;
     async fn profile_picture(
         &self,
         request: ProfilePictureRequest,
@@ -1219,6 +1220,43 @@ impl CoreBridge {
                 .store_bytes(&key, bytes.as_ref())
                 .await
                 .map_err(|error| ServiceError::new(ErrorKind::Internal, error.to_string()))
+        })
+        .await
+    }
+
+    pub async fn copy_cached_media(
+        &self,
+        source: PathBuf,
+        dest: PathBuf,
+    ) -> Result<(), ServiceError> {
+        self.run_on_core_service(async move {
+            let metadata = tokio::fs::metadata(&source).await.map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    ServiceError::new(ErrorKind::MediaUnavailable, "cache file missing")
+                } else {
+                    ServiceError::new(ErrorKind::Internal, error.to_string())
+                }
+            })?;
+            if !metadata.is_file() {
+                return Err(ServiceError::new(
+                    ErrorKind::MediaUnavailable,
+                    "cache path is not a file",
+                ));
+            }
+            if let Err(error) = tokio::fs::copy(&source, &dest).await {
+                let source_missing = tokio::fs::metadata(&source)
+                    .await
+                    .map(|metadata| !metadata.is_file())
+                    .unwrap_or(true);
+                if source_missing {
+                    return Err(ServiceError::new(
+                        ErrorKind::MediaUnavailable,
+                        "cache file missing",
+                    ));
+                }
+                return Err(ServiceError::new(ErrorKind::Internal, error.to_string()));
+            }
+            Ok(())
         })
         .await
     }
@@ -2849,6 +2887,10 @@ impl DesktopBackend for CoreBridge {
         source: PathBuf,
     ) -> Result<PathBuf, ServiceError> {
         CoreBridge::cache_thumb_bytes(self, key, source).await
+    }
+
+    async fn copy_cached_media(&self, source: PathBuf, dest: PathBuf) -> Result<(), ServiceError> {
+        CoreBridge::copy_cached_media(self, source, dest).await
     }
 
     async fn profile_picture(

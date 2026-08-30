@@ -24,7 +24,7 @@ gpui = { git = "https://github.com/zed-industries/zed", package = "gpui" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", package = "gpui_platform", features = ["font-kit", "x11"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component.git", rev = "0775df394083c1ed74f36f846b78868d1267398f" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component.git", rev = "0775df394083c1ed74f36f846b78868d1267398f" }
-tokio = { version = "1.53", default-features = false, features = ["rt-multi-thread","sync","time","macros"] }
+tokio = { version = "1.53", default-features = false, features = ["rt-multi-thread","sync","time","macros","fs"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 chrono = "0.4"
 anyhow = "1.0"

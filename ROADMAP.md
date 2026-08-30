@@ -46,8 +46,9 @@ wasabi is being built in public toward a dependable Linux-first replacement for 
 | --- | --- |
 | Done | Multiline text, per-chat drafts, reply/edit context, Enter-to-send, durable staging, multi-kind outbox, progress/cancel/retry, and verified cache. |
 | Done | Local categorized Unicode emoji picker that inserts at the composer caret. |
+| Done | Save As and Reveal in Files for media already in the local cache. |
 | In progress | Live-account interoperability for each media class, metadata fidelity, visible thumbnail loading, and policy-driven auto-download. |
-| Planned | Group mentions, voice recording, Save As, Reveal in Files, contact/location sharing, poll/event creation, and sticker creation. |
+| Planned | Group mentions, voice recording, contact/location sharing, poll/event creation, and sticker creation. |
 
 ## Settings and Linux integration
 

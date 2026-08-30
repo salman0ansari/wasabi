@@ -1,6 +1,8 @@
 //! Conversation pane: header, date-chipped timeline of variable-height
 //! bubbles, and the scroll/anchor plumbing for history paging.
 
+use std::path::{Path, PathBuf};
+
 use gpui::prelude::*;
 use gpui::{Context, ListSizingBehavior, ObjectFit, StyledImage, list, px};
 use gpui_component::input::Input;
@@ -693,18 +695,18 @@ fn media_content(
 
     let metadata = media_metadata(descriptor);
     let unavailable = descriptor.availability == MediaAvailability::Unavailable;
-    let (transfer_label, can_download) = if unavailable {
-        ("Media unavailable", false)
+    let (transfer_label, can_download, cached_path) = if unavailable {
+        ("Media unavailable", false, None)
     } else {
         match download_state.as_ref() {
-            Some(crate::views::root::MediaDownloadUi::Downloading) => ("Downloading…", false),
-            Some(crate::views::root::MediaDownloadUi::Ready(_)) => {
-                ("Downloaded to secure cache", false)
+            Some(crate::views::root::MediaDownloadUi::Downloading) => ("Downloading…", false, None),
+            Some(crate::views::root::MediaDownloadUi::Ready(path)) => {
+                ("Downloaded to secure cache", false, Some(path.clone()))
             }
             Some(crate::views::root::MediaDownloadUi::Failed) => {
-                ("Download failed · click to retry", true)
+                ("Download failed · click to retry", true, None)
             }
-            None => ("Click to download", true),
+            None => ("Click to download", true, None),
         }
     };
     let thumb_path = match (
@@ -835,6 +837,9 @@ fn media_content(
                     .text_color(theme::text_primary())
                     .child(caption),
             )
+        })
+        .when_some(cached_path, |el, path| {
+            el.child(cached_media_actions(row, path, text_scale, cx))
         });
     let chat = row.chat.clone();
     let media = descriptor.id.clone();
@@ -856,6 +861,168 @@ fn media_content(
 
 fn paints_downloaded_image_thumbnail(kind: &wasabi_domain::MessageKind) -> bool {
     matches!(kind, wasabi_domain::MessageKind::Image { .. })
+}
+
+fn cached_media_actions(
+    row: &wasabi_domain::MessageRow,
+    path: PathBuf,
+    text_scale: u16,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Div {
+    let Some(media) = media_descriptor(&row.kind).map(|media| media.id.clone()) else {
+        return gpui::div();
+    };
+    let seq = row.seq.0 as usize;
+    let suggested = suggested_save_name(&row.kind, Some(path.as_path()));
+    let save_chat = row.chat.clone();
+    let save_media = media.clone();
+    let reveal_chat = row.chat.clone();
+    gpui::div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(6.0))
+        .child(
+            cached_media_action_chip(("save-cached-media", seq), "Save as…", text_scale).on_click(
+                cx.listener(move |this, _, _, cx| {
+                    this.save_downloaded_media(
+                        save_chat.clone(),
+                        save_media.clone(),
+                        suggested.clone(),
+                        cx,
+                    )
+                }),
+            ),
+        )
+        .child(
+            cached_media_action_chip(("reveal-cached-media", seq), "Reveal in Files", text_scale)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.reveal_downloaded_media(reveal_chat.clone(), media.clone(), cx)
+                })),
+        )
+}
+
+fn cached_media_action_chip(
+    id: (&'static str, usize),
+    label: &'static str,
+    text_scale: u16,
+) -> gpui::Stateful<gpui::Div> {
+    gpui::div()
+        .id(id)
+        .cursor_pointer()
+        .rounded(px(theme::RADIUS_SM))
+        .border_1()
+        .border_color(theme::border())
+        .px(px(6.0))
+        .py(px(2.0))
+        .bg(theme::surface())
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+        .text_color(theme::accent_text())
+        .hover(|style| style.bg(theme::chip_idle()))
+        .child(label)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CachedMediaAccess {
+    Available,
+    Missing,
+}
+
+pub(crate) fn classify_cached_media(path: &Path) -> CachedMediaAccess {
+    if path.is_file() {
+        CachedMediaAccess::Available
+    } else {
+        CachedMediaAccess::Missing
+    }
+}
+
+pub(crate) fn suggested_save_name(
+    kind: &wasabi_domain::MessageKind,
+    cache_path: Option<&Path>,
+) -> String {
+    if let Some(file_name) = media_descriptor(kind)
+        .and_then(|media| media.file_name.as_deref())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .and_then(safe_save_file_name)
+    {
+        return file_name;
+    }
+    if let Some(name) = kind_default_save_name(kind) {
+        return name;
+    }
+    cache_path
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("media.bin")
+        .to_string()
+}
+
+fn safe_save_file_name(name: &str) -> Option<String> {
+    let base = Path::new(name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && *name != "." && *name != "..")?;
+    if base
+        .chars()
+        .any(|ch| ch.is_control() || ch == '/' || ch == '\\' || ch == '\0')
+    {
+        return None;
+    }
+    Some(base.to_string())
+}
+
+fn kind_default_save_name(kind: &wasabi_domain::MessageKind) -> Option<String> {
+    let mime = media_descriptor(kind).and_then(|media| media.mime_type.as_deref());
+    let ext = extension_for_media(kind, mime);
+    Some(match kind {
+        wasabi_domain::MessageKind::Image { .. } => format!("photo.{ext}"),
+        wasabi_domain::MessageKind::Video { .. } => format!("video.{ext}"),
+        wasabi_domain::MessageKind::Audio { .. } => format!("audio.{ext}"),
+        wasabi_domain::MessageKind::Sticker { .. } => format!("sticker.{ext}"),
+        wasabi_domain::MessageKind::Document { .. } => format!("document.{ext}"),
+        _ => return None,
+    })
+}
+
+fn extension_for_media(kind: &wasabi_domain::MessageKind, mime: Option<&str>) -> &'static str {
+    if let Some(ext) = mime.and_then(mime_extension) {
+        return ext;
+    }
+    match kind {
+        wasabi_domain::MessageKind::Image { .. } => "jpg",
+        wasabi_domain::MessageKind::Video { .. } => "mp4",
+        wasabi_domain::MessageKind::Audio { .. } => "ogg",
+        wasabi_domain::MessageKind::Sticker { .. } => "webp",
+        wasabi_domain::MessageKind::Document { .. } => "bin",
+        _ => "bin",
+    }
+}
+
+fn mime_extension(mime: &str) -> Option<&'static str> {
+    let mime = mime.split(';').next()?.trim().to_ascii_lowercase();
+    Some(match mime.as_str() {
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/png" => "png",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        "video/mp4" => "mp4",
+        "video/webm" => "webm",
+        "video/3gpp" => "3gp",
+        "audio/ogg" | "audio/opus" => "ogg",
+        "audio/mpeg" | "audio/mp3" => "mp3",
+        "audio/mp4" | "audio/aac" | "audio/x-m4a" => "m4a",
+        "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
+        "audio/amr" => "amr",
+        "application/pdf" => "pdf",
+        "application/zip" => "zip",
+        "text/plain" => "txt",
+        _ => return None,
+    })
 }
 
 fn visual_media_placeholder(
@@ -1562,6 +1729,18 @@ fn message_action_sheet(
     let edit = row
         .can_edit_text_at(chrono::Utc::now().timestamp_millis())
         .then(|| row.id.clone());
+    let ready_cached_media = media_descriptor(&row.kind).and_then(|media| {
+        match this
+            .media_downloads
+            .get(&(row.chat.clone(), media.id.clone()))
+        {
+            Some(crate::views::root::MediaDownloadUi::Ready(path)) => Some((
+                media.id.clone(),
+                suggested_save_name(&row.kind, Some(path.as_path())),
+            )),
+            _ => None,
+        }
+    });
 
     action_card()
         .child(
@@ -1619,6 +1798,30 @@ fn message_action_sheet(
                     this.begin_edit(message.clone(), window, cx)
                 }),
             ))
+        })
+        .when_some(ready_cached_media, |card, (media, suggested)| {
+            let save_chat = row.chat.clone();
+            let save_media = media.clone();
+            let reveal_chat = row.chat.clone();
+            card.child(
+                sheet_button("save-as-media", "Save as…", false).on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.save_downloaded_media(
+                            save_chat.clone(),
+                            save_media.clone(),
+                            suggested.clone(),
+                            cx,
+                        )
+                    },
+                )),
+            )
+            .child(
+                sheet_button("reveal-in-files", "Reveal in Files", false).on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.reveal_downloaded_media(reveal_chat.clone(), media.clone(), cx)
+                    },
+                )),
+            )
         })
         .when_some(retry, |card, message| {
             card.child(
@@ -1911,10 +2114,11 @@ fn sheet_button(id: &'static str, label: &'static str, danger: bool) -> gpui::St
 #[cfg(test)]
 mod tests {
     use super::{
-        chat_confirmation_copy, contact_confirmation_copy, format_bytes,
-        group_member_confirmation_copy, invite_link_error_copy,
-        invite_link_reset_confirmation_copy, join_request_confirmation_copy,
-        leave_group_confirmation_copy, maps_url, paints_downloaded_image_thumbnail,
+        CachedMediaAccess, chat_confirmation_copy, classify_cached_media,
+        contact_confirmation_copy, format_bytes, group_member_confirmation_copy,
+        invite_link_error_copy, invite_link_reset_confirmation_copy,
+        join_request_confirmation_copy, leave_group_confirmation_copy, maps_url,
+        paints_downloaded_image_thumbnail, suggested_save_name,
     };
 
     fn test_media() -> wasabi_domain::MediaDescriptor {
@@ -1928,6 +2132,118 @@ mod tests {
             height: None,
             availability: wasabi_domain::MediaAvailability::Remote,
         }
+    }
+
+    #[test]
+    fn suggested_save_name_prefers_document_filename() {
+        let mut media = test_media();
+        media.file_name = Some("Quarterly report.pdf".to_string());
+        media.mime_type = Some("application/pdf".to_string());
+        let hash_path = std::path::Path::new(
+            "/cache/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        assert_eq!(
+            suggested_save_name(
+                &wasabi_domain::MessageKind::Document { media },
+                Some(hash_path)
+            ),
+            "Quarterly report.pdf"
+        );
+    }
+
+    #[test]
+    fn suggested_save_name_uses_image_mime_and_kind_fallback() {
+        let hash_path = std::path::Path::new(
+            "/cache/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        );
+        let mut png = test_media();
+        png.mime_type = Some("image/png".to_string());
+        assert_eq!(
+            suggested_save_name(
+                &wasabi_domain::MessageKind::Image {
+                    caption: None,
+                    media: png,
+                },
+                Some(hash_path),
+            ),
+            "photo.png"
+        );
+
+        assert_eq!(
+            suggested_save_name(
+                &wasabi_domain::MessageKind::Image {
+                    caption: None,
+                    media: test_media(),
+                },
+                Some(hash_path),
+            ),
+            "photo.jpg"
+        );
+        assert_eq!(
+            suggested_save_name(
+                &wasabi_domain::MessageKind::Video {
+                    caption: None,
+                    video_note: false,
+                    media: test_media(),
+                },
+                Some(hash_path),
+            ),
+            "video.mp4"
+        );
+        assert_eq!(
+            suggested_save_name(
+                &wasabi_domain::MessageKind::Audio {
+                    voice_note: true,
+                    media: test_media(),
+                },
+                Some(hash_path),
+            ),
+            "audio.ogg"
+        );
+        assert_eq!(
+            suggested_save_name(
+                &wasabi_domain::MessageKind::Sticker {
+                    animated: false,
+                    media: test_media(),
+                },
+                Some(hash_path),
+            ),
+            "sticker.webp"
+        );
+    }
+
+    #[test]
+    fn suggested_save_name_does_not_leak_cache_hash_when_kind_exists() {
+        let hash = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        let hash_path = std::path::Path::new("/cache").join(hash);
+        let name = suggested_save_name(
+            &wasabi_domain::MessageKind::Image {
+                caption: None,
+                media: test_media(),
+            },
+            Some(&hash_path),
+        );
+        assert_eq!(name, "photo.jpg");
+        assert!(!name.contains(hash));
+        assert!(!name.contains("cccc"));
+    }
+
+    #[test]
+    fn missing_cache_file_is_classified_as_unavailable() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let missing = dir.path().join("evicted-payload");
+        assert_eq!(classify_cached_media(&missing), CachedMediaAccess::Missing);
+
+        let present = dir.path().join("payload");
+        std::fs::write(&present, b"ok").expect("write cache file");
+        assert_eq!(
+            classify_cached_media(&present),
+            CachedMediaAccess::Available
+        );
+        assert_eq!(
+            classify_cached_media(dir.path()),
+            CachedMediaAccess::Missing
+        );
     }
 
     #[test]

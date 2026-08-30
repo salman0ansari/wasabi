@@ -4,7 +4,12 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
-_No changes yet._
+### Added
+
+- Downloaded photos, videos, audio, documents, and stickers can be saved to a
+  chosen path or revealed in the file manager. Wasabi copies from the local
+  cache and keeps the cache entry; a missing cache file says so and returns
+  the message to download instead of claiming the file is still present.
 
 ## [0.3.3] - 2026-08-31
 
