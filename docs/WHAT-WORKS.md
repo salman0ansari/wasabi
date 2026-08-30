@@ -1,6 +1,6 @@
 # What works today
 
-This page describes the shipped behavior in wasabi `0.2.0-alpha.5`. It is a capability inventory, not a promise about unfinished controls. Features without a complete data source, failure state, and usable workflow stay hidden.
+This page describes the shipped behavior in wasabi `0.2.0-alpha.6`. It is a capability inventory, not a promise about unfinished controls. Features without a complete data source, failure state, and usable workflow stay hidden.
 
 ## Account and startup
 
@@ -51,6 +51,7 @@ This page describes the shipped behavior in wasabi `0.2.0-alpha.5`. It is a capa
 | Done | Stage outgoing files durably, recover interrupted attachments after restart, and cancel safely. |
 | Done | Stream encryption and upload without buffering an entire file in memory. |
 | Done | Download received media into a bounded, content-addressed, SHA-256-verified cache. |
+| Done | Paint a still-image thumbnail for downloaded photos in the timeline; video, audio, and documents keep their existing cards. |
 | Done | Configure the download location and actively enforced cache quota. |
 | Done | Inspect cache usage and clear downloaded media through an explicit confirmation flow. |
 
