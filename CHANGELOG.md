@@ -6,6 +6,35 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 _No changes yet._
 
+## [0.2.0-alpha.4] - 2026-08-30
+
+### Added
+
+- Direct-contact information now refreshes real About/avatar metadata from the
+  linked account when connected and persists the last authoritative snapshot
+  for offline details. A successful privacy/unavailable response clears stale
+  cached fields instead of continuing to display old metadata.
+- Linux releases now have a canonical freedesktop application-menu entry and
+  a deterministic packaging metadata check that is exercised by root CI.
+
+### Fixed
+
+- Restart recovery now waits for the first connected state and reconciles
+  durable pre-launch Pending sends exactly once. The sweep walks selected chat
+  history to exhaustion, so an old unsent row is no longer skipped behind a
+  long run of later acknowledged messages.
+- Received image/video/PTV media that carries a protocol `static_url` now stays
+  on whatsapp-rust's typed verbatim-URL download path instead of losing that
+  routing metadata while being projected into host-routed download parameters.
+- Active and archived chat pagination now use Wasabi-owned partial keyset
+  indexes for their actual filters. Archived pages query archived rows directly
+  rather than scanning and discarding thousands of unrelated active chats.
+- Core-owned task accounting now releases its shutdown-drain count on normal
+  completion, cancellation, abort, or panic, preventing a failed background
+  future from holding the drain open until timeout.
+- Opening a database written by a newer Wasabi schema now fails before any
+  migration mutation instead of overwriting its version with an older one.
+
 ## [0.2.0-alpha.3] - 2026-08-30
 
 ### Added
@@ -233,7 +262,8 @@ _No changes yet._
 - Selecting a different chat now closes the information drawer.
 - Narrow windows use a dismissible overlay drawer instead of permanently crushing the conversation.
 
-[Unreleased]: https://github.com/salman0ansari/wasabi/compare/v0.2.0-alpha.3...HEAD
+[Unreleased]: https://github.com/salman0ansari/wasabi/compare/v0.2.0-alpha.4...HEAD
+[0.2.0-alpha.4]: https://github.com/salman0ansari/wasabi/compare/v0.2.0-alpha.3...v0.2.0-alpha.4
 [0.2.0-alpha.3]: https://github.com/salman0ansari/wasabi/compare/v0.2.0-alpha.2...v0.2.0-alpha.3
 [0.2.0-alpha.2]: https://github.com/salman0ansari/wasabi/compare/v0.2.0-alpha.1...v0.2.0-alpha.2
 [0.2.0-alpha.1]: https://github.com/salman0ansari/wasabi/releases/tag/v0.2.0-alpha.1

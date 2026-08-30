@@ -1,6 +1,6 @@
 # wasabi
 
-**Current release: 0.2.0-alpha.3 — developer preview**
+**Current release: 0.2.0-alpha.4 — developer preview**
 
 wasabi is a fast, native Linux desktop messenger for WhatsApp accounts. It is built in Rust with GPUI and is designed to feel at home on the desktop without shipping an Electron runtime.
 
@@ -31,7 +31,7 @@ This is a reproducible runtime-baseline comparison, not a fabricated measurement
 
 ## Before the stable release
 
-The stable release is gated on live-account media interoperability testing, durable contact metadata refresh, remaining group/account controls, expanded recovery/interaction tests, and performance validation on large synchronized histories.
+The stable release is gated on live-account media interoperability testing, remaining group/account controls, expanded recovery/interaction tests, and performance validation on large synchronized histories.
 
 Calls, Status, Channels, and Communities remain hidden until their complete workflows are ready. wasabi does not ship placeholder destinations.
 
@@ -54,10 +54,14 @@ wasabi stores account data under the platform data directory (normally `~/.local
 The headless workspace and native desktop workspace are intentionally isolated:
 
 ```bash
-cargo test --workspace --all-targets
-cargo test --manifest-path apps/desktop/Cargo.toml --all-targets
-cargo check --manifest-path apps/desktop/Cargo.toml --all-targets
+cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace --all-targets
+(cd apps/desktop && cargo fmt --all -- --check)
+cargo check --locked --manifest-path apps/desktop/Cargo.toml --all-targets
+cargo test --locked --manifest-path apps/desktop/Cargo.toml --all-targets
 ./scripts/check-release-metadata.sh
+./scripts/check-linux-packaging.sh
 ```
 
 ## Versioning and releases
