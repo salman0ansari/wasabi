@@ -59,6 +59,7 @@ pub(crate) enum MessageOverlay {
     GroupMemberActions(GroupMemberTarget),
     ConfirmGroupMember(GroupMemberAction),
     ConfirmLeaveGroup(GroupLeaveTarget),
+    ConfirmContact(wasabi_domain::ContactAction),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -203,6 +204,8 @@ pub struct MainWindow {
     pub(crate) group_mutation_in_progress: bool,
     pub(crate) group_mutation_error: Option<String>,
     pub(crate) group_mutation_feedback: Option<String>,
+    pub(crate) contact_mutation_in_progress: bool,
+    pub(crate) contact_mutation_error: Option<String>,
     pub(crate) group_leave_uncertain: bool,
     pub(crate) group_text_edit_error: Option<String>,
     pub(crate) settings: DeviceSettings,
@@ -267,6 +270,7 @@ pub struct MainWindow {
     messages_gen: AtomicU64,
     details_gen: AtomicU64,
     group_mutation_gen: AtomicU64,
+    contact_mutation_gen: AtomicU64,
     qr_ticker_gen: AtomicU64,
     phone_pair_ticker_gen: AtomicU64,
     pairing_request_gen: AtomicU64,
@@ -353,6 +357,8 @@ impl MainWindow {
             group_mutation_in_progress: false,
             group_mutation_error: None,
             group_mutation_feedback: None,
+            contact_mutation_in_progress: false,
+            contact_mutation_error: None,
             group_leave_uncertain: false,
             group_text_edit_error: None,
             settings: DeviceSettings::load(),
@@ -414,6 +420,7 @@ impl MainWindow {
             messages_gen: AtomicU64::new(0),
             details_gen: AtomicU64::new(0),
             group_mutation_gen: AtomicU64::new(0),
+            contact_mutation_gen: AtomicU64::new(0),
             qr_ticker_gen: AtomicU64::new(0),
             phone_pair_ticker_gen: AtomicU64::new(0),
             pairing_request_gen: AtomicU64::new(0),
@@ -1325,6 +1332,7 @@ impl MainWindow {
                 phone_number: contact.phone_number,
                 about: None,
                 avatar: contact.avatar,
+                is_blocked: None,
             },
         ));
         cx.notify();
@@ -1422,6 +1430,7 @@ impl MainWindow {
         self.chats.loading = true;
         self.details_gen.fetch_add(1, Ordering::AcqRel);
         self.group_mutation_gen.fetch_add(1, Ordering::AcqRel);
+        self.contact_mutation_gen.fetch_add(1, Ordering::AcqRel);
         self.show_right_panel = false;
         self.message_overlay = None;
         self.active_draft = wasabi_domain::Draft::default();
@@ -1432,6 +1441,8 @@ impl MainWindow {
         self.group_mutation_error = None;
         self.group_mutation_feedback = None;
         self.group_leave_uncertain = false;
+        self.contact_mutation_in_progress = false;
+        self.contact_mutation_error = None;
         self.refresh_chats(cx);
     }
 
@@ -1492,6 +1503,7 @@ impl MainWindow {
         self.messages_gen.fetch_add(1, Ordering::AcqRel);
         self.details_gen.fetch_add(1, Ordering::AcqRel);
         self.group_mutation_gen.fetch_add(1, Ordering::AcqRel);
+        self.contact_mutation_gen.fetch_add(1, Ordering::AcqRel);
         self.chats.selected = Some(chat_id.clone());
         self.messages.reset_for_chat(&chat_id);
         self.msg_scroll.reset(0);
@@ -1504,6 +1516,8 @@ impl MainWindow {
         self.group_mutation_error = None;
         self.group_mutation_feedback = None;
         self.group_leave_uncertain = false;
+        self.contact_mutation_in_progress = false;
+        self.contact_mutation_error = None;
         self.first_visible = 0;
         self.pending_new_messages = 0;
         // An anchored search result starts in the middle of its context; do
@@ -2182,12 +2196,15 @@ impl MainWindow {
     pub(crate) fn close_right_panel(&mut self, cx: &mut Context<Self>) {
         self.details_gen.fetch_add(1, Ordering::AcqRel);
         self.group_mutation_gen.fetch_add(1, Ordering::AcqRel);
+        self.contact_mutation_gen.fetch_add(1, Ordering::AcqRel);
         self.show_right_panel = false;
         self.details_loading = false;
         self.group_mutation_in_progress = false;
         self.group_mutation_error = None;
         self.group_mutation_feedback = None;
         self.group_leave_uncertain = false;
+        self.contact_mutation_in_progress = false;
+        self.contact_mutation_error = None;
         cx.notify();
     }
 
@@ -2210,6 +2227,7 @@ impl MainWindow {
         self.group_mutation_error = None;
         self.group_mutation_feedback = None;
         self.group_leave_uncertain = false;
+        self.contact_mutation_error = None;
         let bridge = Arc::clone(&self.bridge);
         spawn_main(cx, async move |this, cx| {
             let result = match kind {
@@ -3135,6 +3153,92 @@ impl MainWindow {
             return;
         };
         self.perform_chat_action(action, cx);
+    }
+
+    pub(crate) fn confirm_contact_action(
+        &mut self,
+        action: wasabi_domain::ContactAction,
+        cx: &mut Context<Self>,
+    ) {
+        if self.contact_mutation_in_progress {
+            return;
+        }
+        self.contact_mutation_error = None;
+        self.message_overlay = Some(MessageOverlay::ConfirmContact(action));
+        cx.notify();
+    }
+
+    pub(crate) fn run_confirmed_contact_action(&mut self, cx: &mut Context<Self>) {
+        let Some(MessageOverlay::ConfirmContact(action)) = self.message_overlay.take() else {
+            return;
+        };
+        self.perform_contact_action(action, cx);
+    }
+
+    fn perform_contact_action(
+        &mut self,
+        action: wasabi_domain::ContactAction,
+        cx: &mut Context<Self>,
+    ) {
+        if self.contact_mutation_in_progress {
+            return;
+        }
+        let jid = action.jid().as_str().to_string();
+        let generation = self.contact_mutation_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        self.contact_mutation_in_progress = true;
+        self.contact_mutation_error = None;
+        self.message_overlay = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.perform_contact_action(action.clone()).await;
+            this.update(cx, |this, cx| {
+                if this.contact_mutation_gen.load(Ordering::Acquire) != generation {
+                    return;
+                }
+                this.contact_mutation_in_progress = false;
+                if this.chats.selected.as_deref() != Some(jid.as_str()) || !this.show_right_panel {
+                    return;
+                }
+                match result {
+                    Ok(()) => {
+                        this.contact_mutation_error = None;
+                        match &action {
+                            wasabi_domain::ContactAction::Block { .. } => {
+                                if let Some(ConversationDetails::Direct(details)) =
+                                    this.conversation_details.as_mut()
+                                {
+                                    details.is_blocked = Some(true);
+                                }
+                            }
+                            wasabi_domain::ContactAction::Unblock { .. } => {
+                                if let Some(ConversationDetails::Direct(details)) =
+                                    this.conversation_details.as_mut()
+                                {
+                                    details.is_blocked = Some(false);
+                                }
+                            }
+                            wasabi_domain::ContactAction::Remove { .. } => {
+                                if let Some(ConversationDetails::Direct(details)) =
+                                    this.conversation_details.as_mut()
+                                {
+                                    if let Some(phone) = details.phone_number.clone() {
+                                        details.display_name = phone;
+                                    }
+                                }
+                                this.contacts.retain(|contact| contact.jid.as_str() != jid);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(kind = %error.kind, "contact action failed");
+                        this.contact_mutation_error = Some(error.ui_message().to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
     }
 
     fn perform_destructive_chat_action(

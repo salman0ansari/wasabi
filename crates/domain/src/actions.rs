@@ -99,6 +99,21 @@ impl ChatAction {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContactAction {
+    Block { jid: ChatId },
+    Unblock { jid: ChatId },
+    Remove { jid: ChatId },
+}
+
+impl ContactAction {
+    pub fn jid(&self) -> &ChatId {
+        match self {
+            Self::Block { jid } | Self::Unblock { jid } | Self::Remove { jid } => jid,
+        }
+    }
+}
+
 impl MessageAction {
     pub fn target(&self) -> &MessageActionTarget {
         match self {
@@ -180,6 +195,30 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn contact_actions_capture_jid_and_are_not_chat_delete() {
+        let jid = ChatId::new("15550000001@s.whatsapp.net");
+        let block = ContactAction::Block { jid: jid.clone() };
+        let unblock = ContactAction::Unblock { jid: jid.clone() };
+        let remove = ContactAction::Remove { jid: jid.clone() };
+        let delete_chat = ChatAction::Delete {
+            chat: jid.clone(),
+            delete_media: false,
+        };
+
+        assert_eq!(block.jid().as_str(), "15550000001@s.whatsapp.net");
+        assert_eq!(unblock.jid().as_str(), "15550000001@s.whatsapp.net");
+        assert_eq!(remove.jid().as_str(), "15550000001@s.whatsapp.net");
+        assert!(matches!(block, ContactAction::Block { .. }));
+        assert!(matches!(remove, ContactAction::Remove { .. }));
+        assert!(matches!(delete_chat, ChatAction::Delete { .. }));
+        assert_ne!(
+            format!("{remove:?}"),
+            format!("{delete_chat:?}"),
+            "removing a saved contact is not ChatAction::Delete"
+        );
     }
 
     #[test]

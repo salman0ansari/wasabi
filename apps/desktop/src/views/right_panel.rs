@@ -171,6 +171,16 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
         {
             panel = panel.child(leave_group_action(this, cx, details));
         }
+    } else {
+        if let Some(error) = this.contact_mutation_error.clone() {
+            panel = panel.child(section("CONTACT UPDATE FAILED", error));
+        }
+        if let Some(row) = contact_block_action(this, cx) {
+            panel = panel.child(row);
+        }
+        if let Some(row) = contact_remove_action(this, cx) {
+            panel = panel.child(row);
+        }
     }
 
     panel = panel
@@ -676,6 +686,128 @@ fn chat_sync_action(
                 })
                 .child(detail),
         )
+}
+
+fn contact_block_action(
+    this: &MainWindow,
+    cx: &mut Context<MainWindow>,
+) -> Option<gpui::Stateful<gpui::Div>> {
+    let ConversationDetails::Direct(details) = this.conversation_details.as_ref()? else {
+        return None;
+    };
+    let is_blocked = details.is_blocked?;
+    let pending = this.contact_mutation_in_progress;
+    let connected = this.session.state.is_connected();
+    let enabled = connected && !pending;
+    let jid = wasabi_domain::ChatId::new(details.jid.clone());
+    let action = if is_blocked {
+        wasabi_domain::ContactAction::Unblock { jid }
+    } else {
+        wasabi_domain::ContactAction::Block { jid }
+    };
+    let (id, label) = if pending {
+        (
+            if is_blocked {
+                "unblock-contact"
+            } else {
+                "block-contact"
+            },
+            "Working…",
+        )
+    } else if is_blocked {
+        ("unblock-contact", "Unblock…")
+    } else {
+        ("block-contact", "Block…")
+    };
+    Some(
+        gpui::div()
+            .id(id)
+            .mx(px(16.0))
+            .min_h(px(52.0))
+            .py(px(10.0))
+            .flex()
+            .items_center()
+            .border_t_1()
+            .border_color(theme::border())
+            .when(enabled, |row| {
+                row.cursor_pointer()
+                    .hover(|style| style.bg(theme::row_hover()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.confirm_contact_action(action.clone(), cx)
+                    }))
+            })
+            .child(
+                gpui::div()
+                    .flex_1()
+                    .text_size(px(theme::TEXT_SIZE))
+                    .text_color(if enabled {
+                        if is_blocked {
+                            theme::text_primary()
+                        } else {
+                            theme::danger()
+                        }
+                    } else {
+                        theme::text_secondary()
+                    })
+                    .child(label),
+            ),
+    )
+}
+
+fn contact_remove_action(
+    this: &MainWindow,
+    cx: &mut Context<MainWindow>,
+) -> Option<gpui::Stateful<gpui::Div>> {
+    let ConversationDetails::Direct(details) = this.conversation_details.as_ref()? else {
+        return None;
+    };
+    let jid = bare_phone_jid(details)?;
+    let pending = this.contact_mutation_in_progress;
+    let connected = this.session.state.is_connected();
+    let enabled = connected && !pending;
+    let action = wasabi_domain::ContactAction::Remove { jid };
+    Some(
+        gpui::div()
+            .id("delete-contact")
+            .mx(px(16.0))
+            .min_h(px(52.0))
+            .py(px(10.0))
+            .flex()
+            .items_center()
+            .border_t_1()
+            .border_color(theme::border())
+            .when(enabled, |row| {
+                row.cursor_pointer()
+                    .hover(|style| style.bg(theme::row_hover()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.confirm_contact_action(action.clone(), cx)
+                    }))
+            })
+            .child(
+                gpui::div()
+                    .flex_1()
+                    .text_size(px(theme::TEXT_SIZE))
+                    .text_color(if enabled {
+                        theme::danger()
+                    } else {
+                        theme::text_secondary()
+                    })
+                    .child(if pending {
+                        "Working…"
+                    } else {
+                        "Delete contact…"
+                    }),
+            ),
+    )
+}
+
+fn bare_phone_jid(details: &wasabi_domain::DirectContactDetails) -> Option<wasabi_domain::ChatId> {
+    let phone = details.phone_number.as_deref()?;
+    let (user, server) = details.jid.split_once('@')?;
+    if server != "s.whatsapp.net" || user.contains(':') || user != phone {
+        return None;
+    }
+    Some(wasabi_domain::ChatId::new(details.jid.clone()))
 }
 
 #[derive(Clone, Copy)]

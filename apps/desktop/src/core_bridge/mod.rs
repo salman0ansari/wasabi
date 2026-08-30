@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use wasabi_core::events::{Invalidation, InvalidationPublisher};
 use wasabi_core::state::SessionState;
 use wasabi_domain::{
-    AvatarRef, CachedAvatar, CachedMedia, ChatAction, ChatId, ChatPage, ChatScope,
+    AvatarRef, CachedAvatar, CachedMedia, ChatAction, ChatId, ChatPage, ChatScope, ContactAction,
     ContactLookupResult, ContactPage, ContactPageCursor, ContactPhoneNumber, ContactSummary,
     CreateGroupRequest, DirectContactDetails, ErrorKind, GroupChange, GroupDetails, GroupPatch,
     GroupPatchResult, GroupPermissions, MediaDownloadRequest, MessageAction, MessageContext,
@@ -134,6 +134,7 @@ pub trait DesktopBackend: Send + Sync {
     async fn send(&self, request: SendRequest) -> Result<SendReceipt, ServiceError>;
     async fn perform_message_action(&self, action: MessageAction) -> Result<(), ServiceError>;
     async fn perform_chat_action(&self, action: ChatAction) -> Result<(), ServiceError>;
+    async fn perform_contact_action(&self, action: ContactAction) -> Result<(), ServiceError>;
 }
 
 /// Shared handle bundle handed to the UI.
@@ -574,6 +575,7 @@ impl CoreBridge {
             let Some(client) = session.client().await else {
                 return Ok(cached);
             };
+            let is_blocked = live_is_blocked(&client, &contact).await;
             let info = match client
                 .contacts()
                 .get_user_info(std::slice::from_ref(&contact))
@@ -583,18 +585,25 @@ impl CoreBridge {
                 Err(error) => {
                     let error = contact_lookup_error(error);
                     tracing::warn!(kind = %error.kind, "live contact metadata refresh failed; using cache");
-                    return Ok(cached);
+                    return Ok(DirectContactDetails {
+                        is_blocked,
+                        ..cached
+                    });
                 }
             };
             let Some(info) = info.get(&contact) else {
                 tracing::warn!("live contact metadata response omitted requested contact; using cache");
-                return Ok(cached);
+                return Ok(DirectContactDetails {
+                    is_blocked,
+                    ..cached
+                });
             };
             let about = optional_profile_text(info.status.as_deref());
             let avatar = avatar_ref_from_picture_id(info.picture_id.as_deref());
             let details = DirectContactDetails {
                 about,
                 avatar,
+                is_blocked,
                 ..cached
             };
             if let Err(error) = store.save_direct_contact_metadata(&details).await {
@@ -1805,6 +1814,54 @@ impl CoreBridge {
         .await
     }
 
+    pub async fn perform_contact_action(&self, action: ContactAction) -> Result<(), ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let session = self
+            .session_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
+        self.run_on_core_service(async move {
+            let client = session.client().await.ok_or_else(|| {
+                ServiceError::new(ErrorKind::NotConnected, "no live protocol client")
+            })?;
+            let jid = action
+                .jid()
+                .as_str()
+                .parse::<whatsapp_rust::Jid>()
+                .map_err(|_| {
+                    ServiceError::new(ErrorKind::InvalidRequest, "invalid contact identity")
+                })?;
+            match action {
+                ContactAction::Block { .. } => client
+                    .blocking()
+                    .block(&jid)
+                    .await
+                    .map_err(map_blocking_error),
+                ContactAction::Unblock { .. } => client
+                    .blocking()
+                    .unblock(&jid)
+                    .await
+                    .map_err(map_blocking_error),
+                ContactAction::Remove { .. } => {
+                    if !(jid.is_pn() && jid.device == 0) {
+                        return Err(ServiceError::new(
+                            ErrorKind::InvalidRequest,
+                            "contact removal requires a bare phone-number identity",
+                        ));
+                    }
+                    client
+                        .chat_actions()
+                        .remove_contact(&jid)
+                        .await
+                        .map_err(map_app_state_contact_error)?;
+                    session.store.delete_local_contact(&jid.to_string()).await
+                }
+            }
+        })
+        .await
+    }
+
     // ---- Plumbing -----------------------------------------------------------
 
     fn store_snapshot(&self) -> Result<Arc<AccountStore>, String> {
@@ -2247,6 +2304,52 @@ fn contact_lookup_error(error: whatsapp_rust::ContactError) -> ServiceError {
     ServiceError::new(contact_error_kind(&error), "registration lookup failed")
 }
 
+async fn live_is_blocked(
+    client: &whatsapp_rust::client::Client,
+    jid: &whatsapp_rust::Jid,
+) -> Option<bool> {
+    match client.blocking().is_blocked(jid).await {
+        Ok(blocked) => Some(blocked),
+        Err(_) => {
+            tracing::warn!("live block state unavailable");
+            None
+        }
+    }
+}
+
+fn map_blocking_error(error: whatsapp_rust::BlockingError) -> ServiceError {
+    use whatsapp_rust::BlockingError;
+    use whatsapp_rust::request::IqError;
+
+    let kind = match &error {
+        BlockingError::InvalidJid(_) => ErrorKind::InvalidRequest,
+        BlockingError::Iq(IqError::NotConnected)
+        | BlockingError::Iq(IqError::ClientState(_))
+        | BlockingError::Iq(IqError::Socket(_))
+        | BlockingError::Iq(IqError::EncryptSend(_))
+        | BlockingError::Iq(IqError::Disconnected(_))
+        | BlockingError::Iq(IqError::InternalChannelClosed) => ErrorKind::NotConnected,
+        BlockingError::Iq(_) | BlockingError::Internal(_) => ErrorKind::Protocol,
+        _ => ErrorKind::Protocol,
+    };
+    let detail = match kind {
+        ErrorKind::InvalidRequest => "invalid blocklist target",
+        ErrorKind::NotConnected => "not connected",
+        _ => "blocklist operation failed",
+    };
+    ServiceError::new(kind, detail)
+}
+
+fn map_app_state_contact_error(error: whatsapp_rust::AppStateError) -> ServiceError {
+    let kind = match error {
+        whatsapp_rust::AppStateError::InvalidRequest(_) => ErrorKind::InvalidRequest,
+        whatsapp_rust::AppStateError::NotConnected => ErrorKind::NotConnected,
+        whatsapp_rust::AppStateError::Internal(_) => ErrorKind::Protocol,
+        _ => ErrorKind::Protocol,
+    };
+    ServiceError::new(kind, "contact action failed")
+}
+
 fn group_service_error(error: whatsapp_rust::GroupError) -> ServiceError {
     use whatsapp_rust::GroupError;
     use whatsapp_rust::request::IqError;
@@ -2587,6 +2690,10 @@ impl DesktopBackend for CoreBridge {
     async fn perform_chat_action(&self, action: ChatAction) -> Result<(), ServiceError> {
         CoreBridge::perform_chat_action(self, action).await
     }
+
+    async fn perform_contact_action(&self, action: ContactAction) -> Result<(), ServiceError> {
+        CoreBridge::perform_contact_action(self, action).await
+    }
 }
 
 enum StaticUrlMedia {
@@ -2795,6 +2902,23 @@ mod tests {
             .kind,
             ErrorKind::InvalidRequest
         );
+    }
+
+    #[test]
+    fn blocking_errors_keep_actionable_typed_kinds_without_jids() {
+        use whatsapp_rust::request::IqError;
+
+        let invalid = map_blocking_error(whatsapp_rust::BlockingError::InvalidJid(
+            "15551234567@s.whatsapp.net".to_string(),
+        ));
+        assert_eq!(invalid.kind, ErrorKind::InvalidRequest);
+        assert!(!invalid.detail.contains("15551234567"));
+        assert!(!invalid.detail.contains("@s.whatsapp.net"));
+
+        let disconnected =
+            map_blocking_error(whatsapp_rust::BlockingError::Iq(IqError::NotConnected));
+        assert_eq!(disconnected.kind, ErrorKind::NotConnected);
+        assert!(!disconnected.detail.contains('@'));
     }
 
     #[test]
