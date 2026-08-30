@@ -2,6 +2,7 @@
 //! rest of the product depends on. ChatStore specifics never
 //! leak past this crate.
 
+mod chat_indexes;
 pub mod config;
 mod contacts;
 mod group_cache;

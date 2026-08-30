@@ -92,6 +92,9 @@ impl AccountStore {
         crate::wasabi_schema::migrate(sqlite.shared())
             .await
             .map_err(|error| OpenError::WasabiSchema(error.to_string()))?;
+        crate::chat_indexes::ensure(sqlite.shared())
+            .await
+            .map_err(|error| OpenError::WasabiSchema(error.to_string()))?;
         Ok(Self { sqlite, chats })
     }
 
@@ -261,55 +264,34 @@ impl AccountStore {
         Ok(domain::ChatPage { rows, next_after })
     }
 
-    /// The upstream store exposes active-only or active+archived scans. Walk
-    /// that ordered keyset in bounded chunks and retain only archived rows so
-    /// the product receives an honest archived-only destination without
-    /// OFFSET pagination or a divergent SQL schema.
+    /// Archived-only keyset page, preserving the upstream pinned-first then
+    /// activity ordering without scanning unrelated active chats.
     async fn archived_chat_page(
         &self,
         after: Option<domain::ChatPageCursor>,
         limit: usize,
     ) -> Result<domain::ChatPage, domain::ServiceError> {
-        const SCAN_CHUNK: usize = 128;
-
-        let mut scan_after = after;
-        let mut archived = Vec::with_capacity(limit.saturating_add(1));
-        loop {
-            let raw = self
-                .chats
-                .chats_page(
-                    true,
-                    scan_after.clone().map(domain_cursor_to_upstream),
-                    SCAN_CHUNK as i64,
-                )
-                .await
-                .map_err(database_error)?;
-            let scanned = raw.len();
-            if scanned == 0 {
-                break;
-            }
-            for entry in raw {
-                let summary = chat_entry_to_summary(entry);
-                scan_after = Some(chat_summary_cursor(&summary));
-                if summary.archived {
-                    archived.push(summary);
-                    if archived.len() > limit {
-                        break;
-                    }
-                }
-            }
-            if archived.len() > limit || scanned < SCAN_CHUNK {
-                break;
-            }
-        }
-
-        let has_more = archived.len() > limit;
-        archived.truncate(limit);
-        self.hydrate_chat_preferences(&mut archived).await?;
+        let fetch = limit.saturating_add(1);
+        let mut rows = crate::chat_indexes::archived_page(
+            self.shared_db(),
+            self.device_id(),
+            after,
+            fetch,
+        )
+        .await
+        .map_err(|error| {
+            domain::ServiceError::new(domain::ErrorKind::Database, error.to_string())
+        })?
+        .into_iter()
+        .map(archived_chat_row_to_summary)
+        .collect::<Vec<_>>();
+        let has_more = rows.len() > limit;
+        rows.truncate(limit);
+        self.hydrate_chat_preferences(&mut rows).await?;
         let next_after =
-            has_more.then(|| chat_summary_cursor(archived.last().expect("non-empty page")));
+            has_more.then(|| chat_summary_cursor(rows.last().expect("non-empty page")));
         Ok(domain::ChatPage {
-            rows: archived,
+            rows,
             next_after,
         })
     }
@@ -746,6 +728,24 @@ fn chat_entry_to_summary(e: whatsapp_rust_chat_store::types::ChatEntry) -> domai
         pinned_at_ms: e.pinned_at.map(|t| t.timestamp_millis()),
         muted_until_ms: e.muted_until.map(|t| t.timestamp_millis()),
         archived: e.archived,
+        favorite: false,
+        draft_preview: None,
+        draft: None,
+    }
+}
+
+fn archived_chat_row_to_summary(row: crate::chat_indexes::ChatListRow) -> domain::ChatSummary {
+    let kind = chat_kind(&row.jid);
+    domain::ChatSummary {
+        id: domain::ChatId::new(row.jid),
+        kind,
+        display_name: row.name,
+        last_activity_ms: row.last_message_ts,
+        last_message_preview: row.last_message_preview,
+        unread_count: row.unread_count as i64,
+        pinned_at_ms: row.pinned_at,
+        muted_until_ms: row.muted_until,
+        archived: true,
         favorite: false,
         draft_preview: None,
         draft: None,
