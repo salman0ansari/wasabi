@@ -85,7 +85,7 @@ pub fn build_input(window: &mut Window, cx: &mut Context<MainWindow>) -> gpui::E
 
 pub fn composer_bar(
     this: &mut MainWindow,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut Context<MainWindow>,
 ) -> gpui::Div {
     let session_can_send = this.session.can_send();
@@ -245,6 +245,7 @@ pub fn composer_bar(
             .items_end()
             .gap(px(8.0))
             .child(attach)
+            .child(super::emoji::picker_button(this, can_compose, window, cx))
             .child(
                 Input::new(&this.composer_input)
                     .cleanable(false)

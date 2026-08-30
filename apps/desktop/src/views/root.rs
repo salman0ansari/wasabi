@@ -18,6 +18,7 @@ use gpui_component::input::{InputEvent, InputState};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{Icon, IconName, VirtualListScrollHandle};
 
+use super::emoji;
 use crate::core_bridge::DesktopBackend;
 use crate::state::chats::ChatFilter;
 use crate::state::{
@@ -285,6 +286,8 @@ pub struct MainWindow {
     pub(crate) group_creating: bool,
     pub(crate) group_creation_uncertain: bool,
     pub(crate) composer_input: gpui::Entity<InputState>,
+    pub(crate) emoji_picker_open: bool,
+    pub(crate) emoji_category: emoji::EmojiCategory,
     pub(crate) search_input: gpui::Entity<InputState>,
     pub(crate) contact_search_input: gpui::Entity<InputState>,
     pub(crate) group_subject_input: gpui::Entity<InputState>,
@@ -448,6 +451,8 @@ impl MainWindow {
             group_creating: false,
             group_creation_uncertain: false,
             composer_input,
+            emoji_picker_open: false,
+            emoji_category: emoji::EmojiCategory::Smileys,
             search_input,
             contact_search_input,
             group_subject_input,
@@ -1491,6 +1496,7 @@ impl MainWindow {
         self.contact_mutation_gen.fetch_add(1, Ordering::AcqRel);
         self.show_right_panel = false;
         self.message_overlay = None;
+        self.emoji_picker_open = false;
         self.active_draft = wasabi_domain::Draft::default();
         self.conversation_details = None;
         self.groups_in_common.clear();
@@ -1570,6 +1576,7 @@ impl MainWindow {
         self.msg_scroll.reset(0);
         self.show_right_panel = false;
         self.message_overlay = None;
+        self.emoji_picker_open = false;
         self.conversation_details = None;
         self.groups_in_common.clear();
         self.details_loading = false;
@@ -2670,6 +2677,7 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         self.message_overlay = Some(MessageOverlay::Actions(message));
+        self.emoji_picker_open = false;
         cx.notify();
     }
 
@@ -3445,6 +3453,9 @@ impl MainWindow {
                 self.close_new_chat(cx);
             }
         } else if self.settings_overlay.take().is_some() || self.message_overlay.take().is_some() {
+            cx.notify();
+        } else if self.emoji_picker_open {
+            self.emoji_picker_open = false;
             cx.notify();
         } else {
             self.close_right_panel(cx);

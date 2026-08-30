@@ -37,6 +37,7 @@ This page describes the shipped behavior in wasabi `0.3.1`. It is a capability i
 | Done | Preserve the visible history anchor across prepends and incoming messages, with an explicit jump-to-newest control. |
 | Done | Keep independent, restart-safe drafts for each chat. |
 | Done | Grow the composer to six visible lines; `Enter` follows the preference and `Shift+Enter` inserts a newline. |
+| Done | Insert Unicode emoji from a local categorized composer picker at the caret; Escape, click-outside, or the toggle closes it. |
 | Done | Bind sends and actions to the immutable chat identity captured at submission time. |
 | Done | Keep failed outgoing rows visible and retry them under the same message identity. |
 | Done | Restore composer text when a send fails before durable acceptance. |

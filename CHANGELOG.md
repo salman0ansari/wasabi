@@ -4,7 +4,11 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
-_No changes yet._
+### Added
+
+- Composer now has a local categorized Unicode emoji picker next to attach.
+  Clicking an emoji inserts it at the caret and leaves the draft focused;
+  Escape, click-outside, or the toggle closes the picker.
 
 ## [0.3.1] - 2026-08-31
 ### Added
