@@ -4,7 +4,12 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
-_No changes yet._
+### Added
+
+- Group admins can now copy or reset the live invite link from group details.
+  The URL is fetched while connected, never stored locally, and reset only
+  after a cancel-first confirmation that names the group and explains that
+  anyone with the old link can no longer join.
 
 ## [0.2.0-alpha.9] - 2026-08-30
 

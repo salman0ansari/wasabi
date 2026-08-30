@@ -68,6 +68,40 @@ impl fmt::Debug for CreateGroupRequest {
     }
 }
 
+/// Fetch or revoke a group's invite link. GET is not a metadata mutation.
+///
+/// The group identity is captured before async dispatch. Debug redacts the
+/// chat so diagnostics cannot leak a JID or the resulting URL.
+#[derive(Clone, PartialEq, Eq)]
+pub struct GroupInviteLinkRequest {
+    chat: ChatId,
+    reset: bool,
+}
+
+impl GroupInviteLinkRequest {
+    pub fn new(chat: ChatId, reset: bool) -> Self {
+        Self { chat, reset }
+    }
+
+    pub fn chat(&self) -> &ChatId {
+        &self.chat
+    }
+
+    pub fn reset(&self) -> bool {
+        self.reset
+    }
+}
+
+impl fmt::Debug for GroupInviteLinkRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GroupInviteLinkRequest")
+            .field("chat", &"[REDACTED]")
+            .field("reset", &self.reset)
+            .finish()
+    }
+}
+
 /// One validated, immutable mutation against an exact group identity.
 ///
 /// Text and participant identities are redacted from `Debug`; callers may log
@@ -290,6 +324,19 @@ mod tests {
         assert!(!debug.contains("Secret launch"));
         assert!(!debug.contains("15551234567"));
         assert!(debug.contains("participant_count"));
+    }
+
+    #[test]
+    fn invite_link_request_debug_contains_neither_url_nor_jid() {
+        let request = GroupInviteLinkRequest::new(ChatId::new("120363000000000001@g.us"), true);
+        assert!(request.reset());
+        assert_eq!(request.chat().as_str(), "120363000000000001@g.us");
+        let debug = format!("{request:?}");
+        assert!(!debug.contains("120363"));
+        assert!(!debug.contains("@g.us"));
+        assert!(!debug.contains("chat.whatsapp.com"));
+        assert!(!debug.contains("https://"));
+        assert!(debug.contains("reset: true"));
     }
 
     #[test]

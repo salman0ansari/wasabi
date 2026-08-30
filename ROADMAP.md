@@ -36,7 +36,8 @@ wasabi is being built in public toward a dependable Linux-first replacement for 
 | Done | Cached New Chat address book, verified unknown-number lookup, real group creation, distinct direct details with live/durable About metadata refresh, profile photos in the conversation header, information drawer, and chat list (disk-cached only), real group participants/admin roles, and offline snapshots. |
 | Done | Real group creation, subject/description editing, add-member search, admin promotion/demotion, participant removal, permission controls, leave confirmation, truthful disconnected snapshots, and join-request review. |
 | Done | Block, unblock, and delete-contact from direct details. Block state is live-only; delete contact removes the saved name without deleting the chat. Report is omitted because the protocol requires a message id. |
-| Planned | Invite links and deeper role explanations. |
+| Done | Get and reset a group invite link from details when the linked account is an admin. The URL is fetched live, copied to the clipboard, and revoked through a cancel-first confirmation. |
+| Planned | Join via invite link, QR of the link, sharing into chats, and deeper role explanations. |
 
 ## Composer and media
 

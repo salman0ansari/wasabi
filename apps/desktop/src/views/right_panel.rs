@@ -159,6 +159,7 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
             panel = panel.child(group_text_actions(this, cx, &details));
             panel = panel.child(group_permissions(this, cx, &details));
             if details.permissions.can_manage_members() {
+                panel = panel.child(invite_link_section(this, cx, &details));
                 panel = panel.child(join_requests_section(this, cx, &details));
             }
         }
@@ -480,6 +481,159 @@ fn group_permission_row(
                 })
                 .child(detail),
         )
+}
+
+fn invite_link_section(
+    this: &MainWindow,
+    cx: &mut Context<MainWindow>,
+    details: &wasabi_domain::GroupDetails,
+) -> gpui::Div {
+    let mut body = gpui::div()
+        .mx(px(16.0))
+        .py(px(14.0))
+        .border_t_1()
+        .border_color(theme::border())
+        .child(
+            gpui::div()
+                .mb(px(8.0))
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme::accent_text())
+                .child("INVITE LINK"),
+        );
+    if !this.session.state.is_connected() {
+        return body.child(
+            gpui::div()
+                .py(px(8.0))
+                .text_size(px(theme::TEXT_SIZE))
+                .text_color(theme::text_secondary())
+                .child("Connect to load the invite link"),
+        );
+    }
+    if this.invite_link_loading {
+        return body.child(
+            gpui::div()
+                .py(px(8.0))
+                .text_size(px(theme::TEXT_SIZE))
+                .text_color(theme::text_secondary())
+                .child("Loading invite link…"),
+        );
+    }
+    if this.invite_link.as_ref().is_none_or(|url| url.is_empty()) {
+        let message = this
+            .invite_link_error
+            .clone()
+            .unwrap_or_else(|| "Invite link is unavailable".to_string());
+        return body.child(
+            gpui::div()
+                .py(px(8.0))
+                .text_size(px(theme::TEXT_SIZE))
+                .text_color(theme::text_secondary())
+                .child(message),
+        );
+    }
+    let blocked =
+        this.invite_link_resetting || this.group_mutation_in_progress || this.group_leave_uncertain;
+    body = body.child(invite_link_row(this, details, blocked, cx));
+    if let Some(error) = this.invite_link_error.clone() {
+        body = body.child(
+            gpui::div()
+                .pt(px(8.0))
+                .text_size(px(theme::TEXT_SIZE))
+                .text_color(theme::text_secondary())
+                .child(error),
+        );
+    }
+    body
+}
+
+fn invite_link_row(
+    this: &MainWindow,
+    details: &wasabi_domain::GroupDetails,
+    blocked: bool,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Div {
+    let url = this.invite_link.clone().unwrap_or_default();
+    let reset_target = crate::views::root::InviteLinkResetTarget {
+        chat: details.chat.clone(),
+        group_name: details.subject.clone(),
+    };
+    let reset_label = if this.invite_link_resetting {
+        "Resetting…"
+    } else {
+        "Reset…"
+    };
+    gpui::div()
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .child(
+            gpui::div()
+                .min_w(px(0.0))
+                .truncate()
+                .text_size(px(theme::TEXT_SIZE))
+                .text_color(theme::text_primary())
+                .child(url),
+        )
+        .child(
+            gpui::div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(invite_link_action_button(
+                    "copy-invite-link",
+                    "Copy",
+                    false,
+                    false,
+                    None,
+                    cx,
+                ))
+                .child(invite_link_action_button(
+                    "reset-invite-link",
+                    reset_label,
+                    true,
+                    blocked,
+                    Some(reset_target),
+                    cx,
+                )),
+        )
+}
+
+fn invite_link_action_button(
+    id: &'static str,
+    label: &'static str,
+    danger: bool,
+    blocked: bool,
+    reset: Option<crate::views::root::InviteLinkResetTarget>,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Stateful<gpui::Div> {
+    gpui::div()
+        .id(id)
+        .px(px(8.0))
+        .py(px(4.0))
+        .rounded(px(4.0))
+        .text_size(px(theme::TEXT_SIZE_SM))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(if blocked {
+            theme::text_secondary()
+        } else if danger {
+            theme::danger()
+        } else {
+            theme::accent_text()
+        })
+        .when(!blocked, |button| {
+            button
+                .cursor_pointer()
+                .hover(|style| style.bg(theme::row_hover()))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(target) = reset.clone() {
+                        this.confirm_reset_invite_link(target, cx);
+                    } else {
+                        this.copy_invite_link(cx);
+                    }
+                }))
+        })
+        .child(label)
 }
 
 fn join_requests_section(

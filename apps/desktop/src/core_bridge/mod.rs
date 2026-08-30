@@ -22,12 +22,12 @@ use wasabi_core::state::SessionState;
 use wasabi_domain::{
     AvatarRef, CachedAvatar, CachedMedia, ChatAction, ChatId, ChatPage, ChatScope, ContactAction,
     ContactLookupResult, ContactPage, ContactPageCursor, ContactPhoneNumber, ContactSummary,
-    CreateGroupRequest, DirectContactDetails, ErrorKind, GroupChange, GroupDetails, GroupPatch,
-    GroupPatchResult, GroupPermissions, MediaDownloadRequest, MessageAction, MessageContext,
-    MessageId, MessagePage, NotificationCandidate, PageCursor, PairingPhoneNumber, Participant,
-    ParticipantRole, PendingMembershipRequest, PhonePairCode, ProfilePictureRequest, SearchPage,
-    SendContent, SendReceipt, SendRequest, ServiceError, SharedGroup, StagedAttachment, TransferId,
-    TransferJob,
+    CreateGroupRequest, DirectContactDetails, ErrorKind, GroupChange, GroupDetails,
+    GroupInviteLinkRequest, GroupPatch, GroupPatchResult, GroupPermissions, MediaDownloadRequest,
+    MessageAction, MessageContext, MessageId, MessagePage, NotificationCandidate, PageCursor,
+    PairingPhoneNumber, Participant, ParticipantRole, PendingMembershipRequest, PhonePairCode,
+    ProfilePictureRequest, SearchPage, SendContent, SendReceipt, SendRequest, ServiceError,
+    SharedGroup, StagedAttachment, TransferId, TransferJob,
 };
 use wasabi_repository::AccountStore;
 use wasabi_whatsapp::lifecycle::QrState;
@@ -110,6 +110,7 @@ pub trait DesktopBackend: Send + Sync {
         &self,
         chat: ChatId,
     ) -> Result<Vec<PendingMembershipRequest>, ServiceError>;
+    async fn group_invite_link(&self, chat: ChatId, reset: bool) -> Result<String, ServiceError>;
     async fn set_favorite(&self, chat: ChatId, favorite: bool) -> Result<(), String>;
     async fn save_draft(
         &self,
@@ -1043,6 +1044,58 @@ impl CoreBridge {
                 });
             }
             Ok(pending)
+        })
+        .await
+    }
+
+    pub async fn group_invite_link(
+        &self,
+        chat: ChatId,
+        reset: bool,
+    ) -> Result<String, ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let session = self
+            .session_snapshot()
+            .map_err(|_| ServiceError::new(ErrorKind::NotPaired, "session unavailable"))?;
+        if !session.state().is_connected() {
+            return Err(ServiceError::new(
+                ErrorKind::NotConnected,
+                "invite link requires a connected session",
+            ));
+        }
+        let request = GroupInviteLinkRequest::new(chat, reset);
+        self.run_on_core_service(async move {
+            let jid = request
+                .chat()
+                .as_str()
+                .parse::<whatsapp_rust::Jid>()
+                .map_err(|_| {
+                    ServiceError::new(ErrorKind::InvalidRequest, "invalid group identity")
+                })?;
+            if !jid.is_group() {
+                return Err(ServiceError::new(
+                    ErrorKind::InvalidRequest,
+                    "conversation is not a group",
+                ));
+            }
+            let client = session.client().await.ok_or_else(|| {
+                ServiceError::new(ErrorKind::NotConnected, "protocol client unavailable")
+            })?;
+            let link = client
+                .groups()
+                .get_invite_link(jid, request.reset())
+                .await
+                .map_err(group_service_error)?;
+            let link = link.trim().to_string();
+            if link.is_empty() {
+                return Err(ServiceError::new(
+                    ErrorKind::Protocol,
+                    "invite link missing",
+                ));
+            }
+            Ok(link)
         })
         .await
     }
@@ -2765,6 +2818,10 @@ impl DesktopBackend for CoreBridge {
         chat: ChatId,
     ) -> Result<Vec<PendingMembershipRequest>, ServiceError> {
         CoreBridge::membership_requests(self, chat).await
+    }
+
+    async fn group_invite_link(&self, chat: ChatId, reset: bool) -> Result<String, ServiceError> {
+        CoreBridge::group_invite_link(self, chat, reset).await
     }
 
     async fn set_favorite(&self, chat: ChatId, favorite: bool) -> Result<(), String> {

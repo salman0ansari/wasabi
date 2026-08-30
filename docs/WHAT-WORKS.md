@@ -68,6 +68,7 @@ This page describes the shipped behavior in wasabi `0.2.0-alpha.9`. It is a capa
 | Done | Retain the last server-backed group snapshot for honest disconnected viewing. |
 | Done | Edit group identity and permissions; add, promote, demote, or remove real participants; and leave through acknowledged, exact-target workflows. |
 | Done | Review pending group join requests while connected, then approve or decline one person at a time through cancel-first confirmations. |
+| Done | Get or reset a group invite link from details when you are a group admin. The URL is fetched live while connected, copied to the clipboard, and revoked through a cancel-first confirmation that names the group. |
 | Done | Render unavailable or privacy-restricted data as unavailable instead of fabricating rows. |
 
 ## Desktop integration and settings

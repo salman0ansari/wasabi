@@ -31,7 +31,7 @@ pub use conversation::{
 pub use error::{ErrorKind, ServiceError};
 pub use group::{
     CreateGroupRequest, GROUP_DESCRIPTION_MAX_CHARS, GROUP_INVITEE_MAX, GROUP_SUBJECT_MAX_CHARS,
-    GroupChange, GroupPatch, GroupPatchResult,
+    GroupChange, GroupInviteLinkRequest, GroupPatch, GroupPatchResult,
 };
 pub use ids::{AccountId, ChatId, LocalCursor, MediaId, MessageId, TransferId};
 pub use media::{

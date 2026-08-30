@@ -959,6 +959,9 @@ pub fn message_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> g
         crate::views::root::MessageOverlay::ConfirmJoinRequest(action) => {
             join_request_confirmation(action, cx)
         }
+        crate::views::root::MessageOverlay::ConfirmResetInviteLink(target) => {
+            invite_link_reset_confirmation(target, cx)
+        }
         crate::views::root::MessageOverlay::ConfirmContact(action) => {
             contact_action_confirmation(this, action, cx)
         }
@@ -1113,6 +1116,63 @@ fn group_member_confirmation(
                     cx.listener(|this, _, _, cx| this.run_confirmed_group_member_action(cx)),
                 )),
         )
+}
+
+fn invite_link_reset_confirmation(
+    target: crate::views::root::InviteLinkResetTarget,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Div {
+    let (title, detail, confirm, confirm_id) = invite_link_reset_confirmation_copy(&target);
+    action_card()
+        .child(
+            gpui::div()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme::text_primary())
+                .child(title),
+        )
+        .child(
+            gpui::div()
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .text_color(theme::text_secondary())
+                .child(detail),
+        )
+        .child(
+            gpui::div()
+                .flex()
+                .justify_end()
+                .gap(px(8.0))
+                .child(
+                    sheet_button("cancel-reset-invite-link", "Cancel", false)
+                        .on_click(cx.listener(|this, _, _, cx| this.close_message_overlay(cx))),
+                )
+                .child(sheet_button(confirm_id, confirm, true).on_click(
+                    cx.listener(|this, _, _, cx| this.run_confirmed_reset_invite_link(cx)),
+                )),
+        )
+}
+
+fn invite_link_reset_confirmation_copy(
+    target: &crate::views::root::InviteLinkResetTarget,
+) -> (String, &'static str, &'static str, &'static str) {
+    (
+        format!("Reset the invite link for “{}”?", target.group_name),
+        "Anyone with the old link can no longer join.",
+        "Reset link",
+        "confirm-reset-invite-link",
+    )
+}
+
+pub(crate) fn invite_link_error_copy(error: &wasabi_domain::ServiceError) -> &'static str {
+    match error.kind {
+        wasabi_domain::ErrorKind::NotConnected => "Connect to load the invite link",
+        wasabi_domain::ErrorKind::RateLimited => {
+            "Too many invite-link requests. Try again shortly."
+        }
+        wasabi_domain::ErrorKind::Timeout => "The invite link request timed out. Try again.",
+        wasabi_domain::ErrorKind::InvalidRequest => "This group cannot provide an invite link.",
+        wasabi_domain::ErrorKind::Protocol => "WhatsApp refused this invite-link request.",
+        _ => error.ui_message(),
+    }
 }
 
 fn join_request_confirmation(
@@ -1675,7 +1735,8 @@ fn sheet_button(id: &'static str, label: &'static str, danger: bool) -> gpui::St
 mod tests {
     use super::{
         chat_confirmation_copy, contact_confirmation_copy, format_bytes,
-        group_member_confirmation_copy, join_request_confirmation_copy,
+        group_member_confirmation_copy, invite_link_error_copy,
+        invite_link_reset_confirmation_copy, join_request_confirmation_copy,
         leave_group_confirmation_copy, paints_downloaded_image_thumbnail,
     };
 
@@ -1833,5 +1894,54 @@ mod tests {
         assert!(decline_copy.0.contains("Weekend hiking crew"));
         assert_eq!(decline_copy.2, "Decline");
         assert!(decline_copy.4);
+    }
+
+    #[test]
+    fn invite_link_reset_confirmation_names_the_exact_group() {
+        let target = crate::views::root::InviteLinkResetTarget {
+            chat: wasabi_domain::ChatId::new("preview-group@g.us"),
+            group_name: "Weekend hiking crew".to_string(),
+        };
+
+        let copy = invite_link_reset_confirmation_copy(&target);
+
+        assert!(copy.0.contains("Weekend hiking crew"));
+        assert_eq!(copy.1, "Anyone with the old link can no longer join.");
+        assert_eq!(copy.2, "Reset link");
+        assert_eq!(copy.3, "confirm-reset-invite-link");
+    }
+
+    #[test]
+    fn invite_link_errors_are_actionable_and_omit_detail() {
+        use wasabi_domain::{ErrorKind, ServiceError};
+
+        let cases = [
+            (ErrorKind::NotConnected, "Connect to load the invite link"),
+            (
+                ErrorKind::RateLimited,
+                "Too many invite-link requests. Try again shortly.",
+            ),
+            (
+                ErrorKind::Timeout,
+                "The invite link request timed out. Try again.",
+            ),
+            (
+                ErrorKind::InvalidRequest,
+                "This group cannot provide an invite link.",
+            ),
+            (
+                ErrorKind::Protocol,
+                "WhatsApp refused this invite-link request.",
+            ),
+            (ErrorKind::Internal, "Internal error"),
+        ];
+        for (kind, expected) in cases {
+            let error = ServiceError::new(kind, "group operation failed");
+            let copy = invite_link_error_copy(&error);
+            assert_eq!(copy, expected);
+            assert!(!copy.contains("group operation failed"));
+            assert!(!copy.contains("https://"));
+            assert!(!copy.contains("@g.us"));
+        }
     }
 }

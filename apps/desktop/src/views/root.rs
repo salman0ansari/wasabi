@@ -62,6 +62,7 @@ pub(crate) enum MessageOverlay {
     ConfirmGroupMember(GroupMemberAction),
     ConfirmLeaveGroup(GroupLeaveTarget),
     ConfirmJoinRequest(JoinRequestAction),
+    ConfirmResetInviteLink(InviteLinkResetTarget),
     ConfirmContact(wasabi_domain::ContactAction),
 }
 
@@ -117,6 +118,12 @@ pub(crate) enum JoinRequestActionKind {
 pub(crate) struct JoinRequestAction {
     pub(crate) target: JoinRequestTarget,
     pub(crate) kind: JoinRequestActionKind,
+}
+
+#[derive(Clone)]
+pub(crate) struct InviteLinkResetTarget {
+    pub(crate) chat: wasabi_domain::ChatId,
+    pub(crate) group_name: String,
 }
 
 #[derive(Clone, Copy)]
@@ -240,6 +247,10 @@ pub struct MainWindow {
     pub(crate) membership_requests: Vec<PendingMembershipRequest>,
     pub(crate) membership_requests_loading: bool,
     pub(crate) membership_requests_error: Option<String>,
+    pub(crate) invite_link: Option<String>,
+    pub(crate) invite_link_loading: bool,
+    pub(crate) invite_link_error: Option<String>,
+    pub(crate) invite_link_resetting: bool,
     pub(crate) group_text_edit_error: Option<String>,
     pub(crate) settings: DeviceSettings,
     pub(crate) settings_section: SettingsSection,
@@ -305,6 +316,7 @@ pub struct MainWindow {
     details_gen: AtomicU64,
     group_mutation_gen: AtomicU64,
     membership_requests_gen: AtomicU64,
+    invite_link_gen: AtomicU64,
     contact_mutation_gen: AtomicU64,
     qr_ticker_gen: AtomicU64,
     phone_pair_ticker_gen: AtomicU64,
@@ -399,6 +411,10 @@ impl MainWindow {
             membership_requests: Vec::new(),
             membership_requests_loading: false,
             membership_requests_error: None,
+            invite_link: None,
+            invite_link_loading: false,
+            invite_link_error: None,
+            invite_link_resetting: false,
             group_text_edit_error: None,
             settings: DeviceSettings::load(),
             settings_section: SettingsSection::Chats,
@@ -461,6 +477,7 @@ impl MainWindow {
             details_gen: AtomicU64::new(0),
             group_mutation_gen: AtomicU64::new(0),
             membership_requests_gen: AtomicU64::new(0),
+            invite_link_gen: AtomicU64::new(0),
             contact_mutation_gen: AtomicU64::new(0),
             qr_ticker_gen: AtomicU64::new(0),
             phone_pair_ticker_gen: AtomicU64::new(0),
@@ -1484,6 +1501,7 @@ impl MainWindow {
         self.group_mutation_feedback = None;
         self.group_leave_uncertain = false;
         self.reset_membership_requests();
+        self.reset_invite_link();
         self.contact_mutation_in_progress = false;
         self.contact_mutation_error = None;
         self.refresh_chats(cx);
@@ -1561,6 +1579,7 @@ impl MainWindow {
         self.group_mutation_feedback = None;
         self.group_leave_uncertain = false;
         self.reset_membership_requests();
+        self.reset_invite_link();
         self.contact_mutation_in_progress = false;
         self.contact_mutation_error = None;
         self.first_visible = 0;
@@ -2292,6 +2311,7 @@ impl MainWindow {
         self.group_mutation_feedback = None;
         self.group_leave_uncertain = false;
         self.reset_membership_requests();
+        self.reset_invite_link();
         self.contact_mutation_in_progress = false;
         self.contact_mutation_error = None;
         cx.notify();
@@ -2318,6 +2338,7 @@ impl MainWindow {
         self.group_mutation_feedback = None;
         self.group_leave_uncertain = false;
         self.reset_membership_requests();
+        self.reset_invite_link();
         self.contact_mutation_error = None;
         let bridge = Arc::clone(&self.bridge);
         spawn_main(cx, async move |this, cx| {
@@ -2358,6 +2379,7 @@ impl MainWindow {
                         this.groups_in_common = groups;
                         this.request_avatar(avatar_jid, false, cx);
                         this.load_membership_requests(cx);
+                        this.load_invite_link(cx);
                     }
                     Err(error) => {
                         this.groups_in_common.clear();
@@ -2916,6 +2938,146 @@ impl MainWindow {
             })
             .ok();
         });
+    }
+
+    fn reset_invite_link(&mut self) {
+        self.invite_link_gen.fetch_add(1, Ordering::AcqRel);
+        self.invite_link = None;
+        self.invite_link_loading = false;
+        self.invite_link_error = None;
+        self.invite_link_resetting = false;
+    }
+
+    fn load_invite_link(&mut self, cx: &mut Context<Self>) {
+        let Some(ConversationDetails::Group(details)) = self.conversation_details.as_ref() else {
+            self.reset_invite_link();
+            return;
+        };
+        if !details.permissions.can_manage_members() || !self.show_right_panel {
+            self.reset_invite_link();
+            return;
+        }
+        if !self.session.state.is_connected() {
+            self.reset_invite_link();
+            return;
+        }
+        let request = wasabi_domain::GroupInviteLinkRequest::new(details.chat.clone(), false);
+        let generation = self.invite_link_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        self.invite_link = None;
+        self.invite_link_loading = true;
+        self.invite_link_error = None;
+        self.invite_link_resetting = false;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge
+                .group_invite_link(request.chat().clone(), request.reset())
+                .await;
+            this.update(cx, |this, cx| {
+                if this.invite_link_gen.load(Ordering::Acquire) != generation
+                    || !this.show_right_panel
+                {
+                    return;
+                }
+                this.invite_link_loading = false;
+                match result {
+                    Ok(url) => {
+                        this.invite_link = Some(url);
+                        this.invite_link_error = None;
+                    }
+                    Err(error) => {
+                        this.invite_link = None;
+                        this.invite_link_error =
+                            Some(conversation::invite_link_error_copy(&error).to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+    }
+
+    pub(crate) fn copy_invite_link(&mut self, cx: &mut Context<Self>) {
+        let Some(url) = self.invite_link.as_ref().filter(|url| !url.is_empty()) else {
+            return;
+        };
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(url.clone()));
+        cx.notify();
+    }
+
+    pub(crate) fn confirm_reset_invite_link(
+        &mut self,
+        target: InviteLinkResetTarget,
+        cx: &mut Context<Self>,
+    ) {
+        if self.invite_link_resetting
+            || self.invite_link_loading
+            || self.group_mutation_in_progress
+            || self.group_leave_uncertain
+            || !self.invite_link_target_is_current(&target)
+        {
+            return;
+        }
+        self.invite_link_error = None;
+        self.message_overlay = Some(MessageOverlay::ConfirmResetInviteLink(target));
+        cx.notify();
+    }
+
+    pub(crate) fn run_confirmed_reset_invite_link(&mut self, cx: &mut Context<Self>) {
+        let Some(MessageOverlay::ConfirmResetInviteLink(target)) = self.message_overlay.take()
+        else {
+            return;
+        };
+        if !self.invite_link_target_is_current(&target) {
+            self.invite_link_error = Some(
+                "This invite link can no longer be reset from the current group state.".to_string(),
+            );
+            cx.notify();
+            return;
+        }
+        let request = wasabi_domain::GroupInviteLinkRequest::new(target.chat, true);
+        let generation = self.invite_link_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        self.invite_link_resetting = true;
+        self.invite_link_error = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge
+                .group_invite_link(request.chat().clone(), request.reset())
+                .await;
+            this.update(cx, |this, cx| {
+                if this.invite_link_gen.load(Ordering::Acquire) != generation
+                    || !this.show_right_panel
+                {
+                    return;
+                }
+                this.invite_link_resetting = false;
+                match result {
+                    Ok(url) => {
+                        this.invite_link = Some(url);
+                        this.invite_link_error = None;
+                    }
+                    Err(error) => {
+                        this.invite_link_error =
+                            Some(conversation::invite_link_error_copy(&error).to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    fn invite_link_target_is_current(&self, target: &InviteLinkResetTarget) -> bool {
+        let Some(ConversationDetails::Group(details)) = self.conversation_details.as_ref() else {
+            return false;
+        };
+        details.chat == target.chat
+            && details.subject == target.group_name
+            && self.chats.selected.as_deref() == Some(target.chat.as_str())
+            && self.session.state.is_connected()
+            && !self.group_leave_uncertain
+            && details.permissions.can_manage_members()
+            && self.invite_link.as_ref().is_some_and(|url| !url.is_empty())
     }
 
     pub(crate) fn confirm_message_action(
@@ -4810,8 +4972,10 @@ fn apply_state(
         this.session.state = state;
         if this.session.state.is_connected() && this.show_right_panel {
             this.load_membership_requests(cx);
+            this.load_invite_link(cx);
         } else if !this.session.state.is_connected() {
             this.reset_membership_requests();
+            this.reset_invite_link();
         }
         cx.notify();
     })
