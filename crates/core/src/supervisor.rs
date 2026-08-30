@@ -49,6 +49,23 @@ struct Inner {
     active_tasks: AtomicU64,
 }
 
+struct ActiveTaskGuard {
+    inner: Arc<Inner>,
+}
+
+impl ActiveTaskGuard {
+    fn new(inner: Arc<Inner>) -> Self {
+        inner.active_tasks.fetch_add(1, Ordering::AcqRel);
+        Self { inner }
+    }
+}
+
+impl Drop for ActiveTaskGuard {
+    fn drop(&mut self) {
+        self.inner.active_tasks.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// The single execution-domain owner for runtime tasks and shutdown.
 pub struct CoreSupervisor {
     runtime: Option<CoreRuntime>,
@@ -132,15 +149,14 @@ impl CoreSupervisor {
         let token = token.clone();
         let _ = name; // surfaced via tracing spans once tracing-util lands
         let inner = Arc::clone(&self.inner);
-        inner.active_tasks.fetch_add(1, Ordering::AcqRel);
+        let active_task = ActiveTaskGuard::new(inner);
         self.handle().spawn(async move {
-            let out = tokio::select! {
+            let _active_task = active_task;
+            tokio::select! {
                 biased;
                 _ = token.cancelled() => None,
                 out = fut => Some(out),
-            };
-            inner.active_tasks.fetch_sub(1, Ordering::AcqRel);
-            out
+            }
         })
     }
 

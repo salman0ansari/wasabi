@@ -5,8 +5,28 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use wasabi_core::{CoreSupervisor, SessionState, SupervisorConfig};
+
+const LEAK_PROBE_TIMEOUT: Duration = Duration::from_millis(400);
+const FAST_SHUTDOWN_LIMIT: Duration = Duration::from_millis(200);
+
+fn leak_probe_supervisor(name: &str) -> CoreSupervisor {
+    let mut config = SupervisorConfig::new(format!("/tmp/wasabi-test-{name}"));
+    config.runtime.shutdown_timeout = LEAK_PROBE_TIMEOUT;
+    CoreSupervisor::start(config).expect("start")
+}
+
+fn assert_shutdown_did_not_wait_for_drain_timeout(supervisor: CoreSupervisor) {
+    let started = Instant::now();
+    supervisor.shutdown();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < FAST_SHUTDOWN_LIMIT,
+        "shutdown took {elapsed:?}; expected completed owned task to release active count before {LEAK_PROBE_TIMEOUT:?} drain timeout"
+    );
+}
 
 fn thread_count() -> usize {
     // Linux-only environment per repo policy; portable fallback returns 0.
@@ -82,6 +102,53 @@ fn shutdown_closes_command_gate_and_cancels_children() {
     assert_eq!(completed.load(Ordering::SeqCst), 0);
     // Supervisor dropped without explicit shutdown path exercised above via
     // shutdown(); a second drop must be a no-op (Drop safety net).
+}
+
+#[test]
+fn panicked_owned_task_releases_active_count() {
+    let supervisor = leak_probe_supervisor("panic-count");
+    let token = supervisor.child_token("panic-count");
+    let handle = supervisor.spawn_owned(&token, "panic", async move {
+        panic!("intentional owned-task panic");
+    });
+
+    let join_error = supervisor
+        .handle()
+        .block_on(handle)
+        .expect_err("owned task should report its panic through JoinHandle");
+    assert!(
+        join_error.is_panic(),
+        "expected panic JoinError: {join_error}"
+    );
+
+    assert_shutdown_did_not_wait_for_drain_timeout(supervisor);
+}
+
+#[test]
+fn aborted_owned_task_releases_active_count() {
+    let supervisor = leak_probe_supervisor("abort-count");
+    let token = supervisor.child_token("abort-count");
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let handle = supervisor.spawn_owned(&token, "abort", async move {
+        let _ = started_tx.send(());
+        std::future::pending::<()>().await;
+    });
+
+    supervisor
+        .handle()
+        .block_on(started_rx)
+        .expect("owned task should start before abort");
+    handle.abort();
+    let join_error = supervisor
+        .handle()
+        .block_on(handle)
+        .expect_err("aborted owned task should report cancellation");
+    assert!(
+        join_error.is_cancelled(),
+        "expected cancelled JoinError: {join_error}"
+    );
+
+    assert_shutdown_did_not_wait_for_drain_timeout(supervisor);
 }
 
 #[test]
