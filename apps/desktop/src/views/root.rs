@@ -27,7 +27,9 @@ use crate::theme;
 use crate::views::{
     chat_list, composer, conversation, new_chat, new_group, pairing, right_panel, settings,
 };
-use wasabi_domain::{ChatKind, ChatScope, ConversationDetails, PendingMembershipRequest};
+use wasabi_domain::{
+    ChatKind, ChatScope, ConversationDetails, PendingMembershipRequest, SharedGroup,
+};
 
 gpui::actions!(wasabi_desktop, [FocusSearch, OpenSettings, CloseInfo]);
 
@@ -226,6 +228,7 @@ pub struct MainWindow {
     nav_destination: NavDestination,
     pub(crate) show_right_panel: bool,
     pub(crate) conversation_details: Option<ConversationDetails>,
+    pub(crate) groups_in_common: Vec<SharedGroup>,
     pub(crate) details_loading: bool,
     pub(crate) details_error: Option<String>,
     pub(crate) group_mutation_in_progress: bool,
@@ -384,6 +387,7 @@ impl MainWindow {
             nav_destination: NavDestination::Chats,
             show_right_panel: false,
             conversation_details: None,
+            groups_in_common: Vec::new(),
             details_loading: false,
             details_error: None,
             group_mutation_in_progress: false,
@@ -1472,6 +1476,7 @@ impl MainWindow {
         self.message_overlay = None;
         self.active_draft = wasabi_domain::Draft::default();
         self.conversation_details = None;
+        self.groups_in_common.clear();
         self.details_loading = false;
         self.details_error = None;
         self.group_mutation_in_progress = false;
@@ -1548,6 +1553,7 @@ impl MainWindow {
         self.show_right_panel = false;
         self.message_overlay = None;
         self.conversation_details = None;
+        self.groups_in_common.clear();
         self.details_loading = false;
         self.details_error = None;
         self.group_mutation_in_progress = false;
@@ -2279,6 +2285,7 @@ impl MainWindow {
         self.group_mutation_gen.fetch_add(1, Ordering::AcqRel);
         self.contact_mutation_gen.fetch_add(1, Ordering::AcqRel);
         self.show_right_panel = false;
+        self.groups_in_common.clear();
         self.details_loading = false;
         self.group_mutation_in_progress = false;
         self.group_mutation_error = None;
@@ -2304,6 +2311,7 @@ impl MainWindow {
         };
         let generation = self.details_gen.fetch_add(1, Ordering::AcqRel) + 1;
         self.conversation_details = None;
+        self.groups_in_common.clear();
         self.details_loading = true;
         self.details_error = None;
         self.group_mutation_error = None;
@@ -2313,18 +2321,26 @@ impl MainWindow {
         self.contact_mutation_error = None;
         let bridge = Arc::clone(&self.bridge);
         spawn_main(cx, async move |this, cx| {
-            let result = match kind {
-                ChatKind::Group => bridge
-                    .group_details(chat)
-                    .await
-                    .map(ConversationDetails::Group),
-                ChatKind::Direct => bridge
-                    .direct_contact_details(chat)
-                    .await
-                    .map(ConversationDetails::Direct),
-                ChatKind::Newsletter | ChatKind::System => {
-                    Err("Information is not available for this conversation type".to_string())
+            let (result, groups) = match kind {
+                ChatKind::Group => (
+                    bridge
+                        .group_details(chat)
+                        .await
+                        .map(ConversationDetails::Group),
+                    Vec::new(),
+                ),
+                ChatKind::Direct => {
+                    let details = bridge.direct_contact_details(chat.clone()).await;
+                    let groups = match &details {
+                        Ok(_) => bridge.groups_in_common(chat).await.unwrap_or_default(),
+                        Err(_) => Vec::new(),
+                    };
+                    (details.map(ConversationDetails::Direct), groups)
                 }
+                ChatKind::Newsletter | ChatKind::System => (
+                    Err("Information is not available for this conversation type".to_string()),
+                    Vec::new(),
+                ),
             };
             this.update(cx, |this, cx| {
                 if this.details_gen.load(Ordering::Acquire) != generation || !this.show_right_panel
@@ -2339,10 +2355,14 @@ impl MainWindow {
                             ConversationDetails::Group(group) => group.chat.as_str().to_string(),
                         };
                         this.conversation_details = Some(details);
+                        this.groups_in_common = groups;
                         this.request_avatar(avatar_jid, false, cx);
                         this.load_membership_requests(cx);
                     }
-                    Err(error) => this.details_error = Some(error),
+                    Err(error) => {
+                        this.groups_in_common.clear();
+                        this.details_error = Some(error);
+                    }
                 }
                 cx.notify();
             })
@@ -3509,6 +3529,7 @@ impl MainWindow {
                         this.active_draft = wasabi_domain::Draft::default();
                         this.show_right_panel = false;
                         this.conversation_details = None;
+                        this.groups_in_common.clear();
                         this.details_loading = false;
                         this.details_error = None;
                         this.pending_new_messages = 0;

@@ -208,6 +208,118 @@ async fn group_details_cache_reopens_and_replaces_participants_atomically() {
     );
 }
 
+fn cached_group(chat: &str, subject: &str, participants: &[&str]) -> domain::GroupDetails {
+    domain::GroupDetails {
+        chat: domain::ChatId::new(chat),
+        subject: subject.to_string(),
+        description: None,
+        avatar: None,
+        participant_count: participants.len(),
+        participants: participants
+            .iter()
+            .map(|jid| domain::Participant {
+                jid: (*jid).to_string(),
+                display_name: (*jid).to_string(),
+                avatar: None,
+                role: domain::ParticipantRole::Member,
+                is_self: false,
+            })
+            .collect(),
+        permissions: domain::GroupPermissions {
+            only_admins_edit: false,
+            only_admins_send: false,
+            membership_approval: false,
+            current_user_role: Some(domain::ParticipantRole::Member),
+        },
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn groups_in_common_returns_only_cached_groups_containing_the_contact() {
+    let dir = TestDir::new("groups-in-common");
+    let store = open(&dir).await;
+    let shared = domain::ChatId::new("120363000000000010@g.us");
+    let other = domain::ChatId::new("120363000000000011@g.us");
+    store
+        .save_group_details(
+            cached_group(shared.as_str(), "Weekend plans", &[PEER1, PEER2]),
+            1_800_000_000_000,
+        )
+        .await
+        .unwrap();
+    store
+        .save_group_details(
+            cached_group(other.as_str(), "Book club", &[PEER2]),
+            1_800_000_000_100,
+        )
+        .await
+        .unwrap();
+
+    let common = store.groups_in_common(PEER1).await.unwrap();
+    assert_eq!(common.len(), 1);
+    assert_eq!(common[0].chat, shared);
+    assert_eq!(common[0].subject, "Weekend plans");
+
+    let none = store
+        .groups_in_common("559900000099@s.whatsapp.net")
+        .await
+        .unwrap();
+    assert!(none.is_empty());
+    assert!(
+        store
+            .groups_in_common("120363000000000010@g.us")
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn groups_in_common_matches_known_lid_pn_mapping_only() {
+    let dir = TestDir::new("groups-in-common-lid");
+    let store = open(&dir).await;
+    store.sqlite().create_new_device().await.unwrap();
+    let group = domain::ChatId::new("120363000000000012@g.us");
+    store
+        .save_group_details(
+            cached_group(group.as_str(), "Trail crew", &["222@lid"]),
+            1_800_000_000_000,
+        )
+        .await
+        .unwrap();
+
+    let unmapped = store.groups_in_common(PEER1).await.unwrap();
+    assert!(
+        unmapped.is_empty(),
+        "PN must not match a LID participant without a mapping"
+    );
+
+    let device_id = store.device_id();
+    store
+        .shared_db()
+        .run(move |connection| {
+            diesel::sql_query(
+                "INSERT INTO lid_pn_mapping
+                 (lid, phone_number, created_at, learning_source, updated_at, device_id)
+                 VALUES ('222', '559900000001', 1, 'test', 1, ?)",
+            )
+            .bind::<diesel::sql_types::Integer, _>(device_id)
+            .execute(connection)
+            .map_err(|error| wacore::store::error::StoreError::Database(Box::new(error)))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let mapped = store.groups_in_common(PEER1).await.unwrap();
+    assert_eq!(mapped.len(), 1);
+    assert_eq!(mapped[0].chat, group);
+    assert_eq!(mapped[0].subject, "Trail crew");
+
+    let from_lid = store.groups_in_common("222@lid").await.unwrap();
+    assert_eq!(from_lid.len(), 1);
+    assert_eq!(from_lid[0].subject, "Trail crew");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn contact_pages_are_stable_searchable_and_direct_only() {
     let dir = TestDir::new("contact-pagination");

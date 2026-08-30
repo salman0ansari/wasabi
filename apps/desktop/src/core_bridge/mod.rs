@@ -26,7 +26,8 @@ use wasabi_domain::{
     GroupPatchResult, GroupPermissions, MediaDownloadRequest, MessageAction, MessageContext,
     MessageId, MessagePage, NotificationCandidate, PageCursor, PairingPhoneNumber, Participant,
     ParticipantRole, PendingMembershipRequest, PhonePairCode, ProfilePictureRequest, SearchPage,
-    SendContent, SendReceipt, SendRequest, ServiceError, StagedAttachment, TransferId, TransferJob,
+    SendContent, SendReceipt, SendRequest, ServiceError, SharedGroup, StagedAttachment, TransferId,
+    TransferJob,
 };
 use wasabi_repository::AccountStore;
 use wasabi_whatsapp::lifecycle::QrState;
@@ -100,6 +101,7 @@ pub trait DesktopBackend: Send + Sync {
         page: usize,
     ) -> Result<SearchPage, String>;
     async fn direct_contact_details(&self, jid: String) -> Result<DirectContactDetails, String>;
+    async fn groups_in_common(&self, jid: String) -> Result<Vec<SharedGroup>, ServiceError>;
     async fn group_details(&self, chat: String) -> Result<GroupDetails, String>;
     async fn create_group(&self, request: CreateGroupRequest)
     -> Result<GroupDetails, ServiceError>;
@@ -628,6 +630,15 @@ impl CoreBridge {
             Ok(details)
         })
         .await
+    }
+
+    /// Cached groups that include this direct contact. Local snapshots only.
+    pub async fn groups_in_common(&self, jid: String) -> Result<Vec<SharedGroup>, ServiceError> {
+        let store = self
+            .store_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::NotPaired, detail))?;
+        self.run_on_core_service(async move { store.groups_in_common(&jid).await })
+            .await
     }
 
     /// Fetch complete group metadata, preferring the live client and falling
@@ -2728,6 +2739,10 @@ impl DesktopBackend for CoreBridge {
 
     async fn direct_contact_details(&self, jid: String) -> Result<DirectContactDetails, String> {
         CoreBridge::direct_contact_details(self, jid).await
+    }
+
+    async fn groups_in_common(&self, jid: String) -> Result<Vec<SharedGroup>, ServiceError> {
+        CoreBridge::groups_in_common(self, jid).await
     }
 
     async fn group_details(&self, chat: String) -> Result<GroupDetails, String> {

@@ -26,7 +26,7 @@ pub use contact::{
 };
 pub use conversation::{
     AvatarRef, ChatKind, ConversationDetails, DirectContactDetails, GroupDetails, GroupPermissions,
-    Participant, ParticipantRole, PendingMembershipRequest,
+    Participant, ParticipantRole, PendingMembershipRequest, SharedGroup,
 };
 pub use error::{ErrorKind, ServiceError};
 pub use group::{

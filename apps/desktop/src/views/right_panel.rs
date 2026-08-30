@@ -1,6 +1,7 @@
 //! On-demand direct-contact and group information. Direct conversations never
-//! render a participants section; group metadata remains honest until the
-//! backend projection has populated real participants.
+//! render a participants section; groups in common come from the local cache
+//! only. Group metadata remains honest until the backend projection has
+//! populated real participants.
 
 use gpui::prelude::*;
 use gpui::{Context, px};
@@ -139,6 +140,9 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
                 }
             }),
         ))
+        .when(!is_group && !this.groups_in_common.is_empty(), |panel| {
+            panel.child(groups_in_common_section(this, cx))
+        })
         .child(chat_sync_action(this, cx, ChatSyncAction::Pin))
         .child(chat_sync_action(this, cx, ChatSyncAction::Mute))
         .child(chat_sync_action(this, cx, ChatSyncAction::Archive))
@@ -625,6 +629,60 @@ fn join_request_action_button(
                 )
         })
         .child(label)
+}
+
+fn groups_in_common_section(this: &MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
+    let mut body = gpui::div()
+        .mx(px(16.0))
+        .py(px(14.0))
+        .border_t_1()
+        .border_color(theme::border())
+        .child(
+            gpui::div()
+                .mb(px(8.0))
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme::accent_text())
+                .child("GROUPS IN COMMON"),
+        );
+    for (index, group) in this.groups_in_common.iter().enumerate() {
+        body = body.child(groups_in_common_row(group, index, cx));
+    }
+    body
+}
+
+fn groups_in_common_row(
+    group: &wasabi_domain::SharedGroup,
+    index: usize,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Stateful<gpui::Div> {
+    let chat = group.chat.as_str().to_string();
+    let subject = group.subject.clone();
+    gpui::div()
+        .id(("groups-in-common", index))
+        .min_h(px(48.0))
+        .flex()
+        .items_center()
+        .cursor_pointer()
+        .aria_label(format!("Open {subject}"))
+        .hover(|style| style.bg(theme::row_hover()))
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.select_chat(chat.clone(), window, cx);
+        }))
+        .child(
+            gpui::div()
+                .flex_1()
+                .min_w(px(0.0))
+                .truncate()
+                .text_size(px(theme::TEXT_SIZE))
+                .text_color(theme::text_primary())
+                .child(subject),
+        )
+        .child(
+            Icon::new(IconName::ChevronRight)
+                .size(px(15.0))
+                .text_color(theme::text_secondary()),
+        )
 }
 
 fn section(label: &'static str, body: impl Into<String>) -> gpui::Div {

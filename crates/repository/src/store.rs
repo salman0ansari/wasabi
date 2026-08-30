@@ -217,6 +217,20 @@ impl AccountStore {
         crate::group_cache::remove(self.sqlite.shared(), self.device_id(), chat.to_string()).await
     }
 
+    /// Cached groups whose participant snapshot includes this direct contact.
+    /// PN and known LID aliases are matched; missing mappings are not invented.
+    pub async fn groups_in_common(
+        &self,
+        jid: &str,
+    ) -> Result<Vec<domain::SharedGroup>, domain::ServiceError> {
+        crate::group_cache::groups_in_common(
+            self.sqlite.shared(),
+            self.device_id(),
+            jid.to_string(),
+        )
+        .await
+    }
+
     // ---- Query facade -------------------------------------------------
 
     /// One keyset page of the chat list.

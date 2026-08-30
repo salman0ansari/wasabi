@@ -4,7 +4,12 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
-_No changes yet._
+### Added
+
+- Direct contact details now list groups in common from the local group cache.
+  The section appears only when a cached group snapshot includes this contact,
+  shows each group's real subject, and opens that chat on tap. Incomplete
+  history never claims there are none.
 
 ## [0.2.0-alpha.8] - 2026-08-30
 

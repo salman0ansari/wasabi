@@ -11,7 +11,7 @@ use diesel::sql_types::{BigInt, Integer, Nullable, Text};
 use wacore::store::error::StoreError;
 use wasabi_domain::{
     AvatarRef, ChatId, ErrorKind, GroupDetails, GroupPermissions, Participant, ParticipantRole,
-    ServiceError,
+    ServiceError, SharedGroup,
 };
 use whatsapp_rust::wacore_binary::JidExt as _;
 use whatsapp_rust_sqlite_storage::SharedSqlite;
@@ -52,6 +52,14 @@ struct ParticipantRow {
     role: i32,
     #[diesel(sql_type = Integer)]
     is_self: i32,
+}
+
+#[derive(QueryableByName)]
+struct SharedGroupRow {
+    #[diesel(sql_type = Text)]
+    chat_jid: String,
+    #[diesel(sql_type = Text)]
+    subject: String,
 }
 
 #[derive(Queryable, Selectable)]
@@ -279,6 +287,72 @@ pub async fn remove(
         })
         .await
         .map_err(store_error)
+}
+
+/// Groups whose cached participant snapshot includes this direct contact.
+///
+/// Matching uses the contact JID as stored and, when `lid_pn_mapping` already
+/// has a row, the mapped PN or LID. Missing mappings are never invented.
+pub async fn groups_in_common(
+    shared: SharedSqlite,
+    device_id: i32,
+    jid: String,
+) -> Result<Vec<SharedGroup>, ServiceError> {
+    let jid = validate_direct_identity(&jid)?;
+    let rows = shared
+        .read(move |connection| {
+            diesel::sql_query(
+                "WITH identities AS (
+                     SELECT ? AS jid
+                     UNION
+                     SELECT phone_number || '@s.whatsapp.net'
+                     FROM lid_pn_mapping
+                     WHERE device_id = ? AND lid || '@lid' = ?
+                     UNION
+                     SELECT lid || '@lid'
+                     FROM lid_pn_mapping
+                     WHERE device_id = ? AND phone_number || '@s.whatsapp.net' = ?
+                 )
+                 SELECT DISTINCT c.chat_jid, c.subject
+                 FROM wasabi_group_cache c
+                 INNER JOIN wasabi_group_participants p
+                   ON p.device_id = c.device_id AND p.chat_jid = c.chat_jid
+                 INNER JOIN identities i
+                   ON p.participant_jid = i.jid
+                 WHERE c.device_id = ?
+                 ORDER BY LOWER(c.subject) ASC, c.chat_jid ASC",
+            )
+            .bind::<Text, _>(&jid)
+            .bind::<Integer, _>(device_id)
+            .bind::<Text, _>(&jid)
+            .bind::<Integer, _>(device_id)
+            .bind::<Text, _>(&jid)
+            .bind::<Integer, _>(device_id)
+            .load::<SharedGroupRow>(connection)
+            .map_err(database_store_error)
+        })
+        .await
+        .map_err(store_error)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| SharedGroup {
+            chat: ChatId::new(row.chat_jid),
+            subject: row.subject,
+        })
+        .collect())
+}
+
+fn validate_direct_identity(value: &str) -> Result<String, ServiceError> {
+    let jid = value
+        .parse::<whatsapp_rust::Jid>()
+        .map_err(|_| ServiceError::new(ErrorKind::InvalidRequest, "invalid contact identity"))?;
+    if !jid.is_pn() && !jid.is_lid() {
+        return Err(ServiceError::new(
+            ErrorKind::InvalidRequest,
+            "conversation is not a direct contact",
+        ));
+    }
+    Ok(jid.to_non_ad().to_string())
 }
 
 fn validate_group_identity(value: &str) -> Result<(), ServiceError> {

@@ -76,6 +76,13 @@ pub struct GroupDetails {
     pub permissions: GroupPermissions,
 }
 
+/// A cached group whose participant snapshot includes a given direct contact.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedGroup {
+    pub chat: ChatId,
+    pub subject: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConversationDetails {
     Direct(DirectContactDetails),
