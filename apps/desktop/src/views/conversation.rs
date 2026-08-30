@@ -455,6 +455,8 @@ fn bubble(
         content = content.child(media);
     } else if let Some(card) = location_contact_card(&row, row_index, text_scale, cx) {
         content = content.child(card);
+    } else if let Some(card) = poll_card(&row, text_scale) {
+        content = content.child(card);
     } else {
         content = content.child(
             gpui::div()
@@ -1155,6 +1157,32 @@ fn location_contact_card(
     }
 }
 
+fn poll_card(row: &wasabi_domain::MessageRow, text_scale: u16) -> Option<gpui::AnyElement> {
+    let wasabi_domain::MessageKind::Poll {
+        name,
+        options,
+        selectable_count,
+        quiz,
+    } = &row.kind
+    else {
+        return None;
+    };
+    let title = messages::poll_body_text(name, *quiz);
+    let mut details = Vec::new();
+    if *quiz && title != "Quiz" {
+        details.push(messages::poll_kind_label(true).to_string());
+    }
+    if *selectable_count > 1 {
+        details.push(format!("Select up to {selectable_count}"));
+    }
+    if options.is_empty() {
+        details.push("Options unavailable".to_string());
+    } else {
+        details.extend(options.iter().map(|option| format!("· {option}")));
+    }
+    Some(shared_info_card(IconName::Check, title, text_scale, details).into_any_element())
+}
+
 fn shared_info_card(
     icon: IconName,
     title: String,
@@ -1709,6 +1737,7 @@ fn message_action_sheet(
             | wasabi_domain::MessageKind::System { .. }
             | wasabi_domain::MessageKind::Location { .. }
             | wasabi_domain::MessageKind::Contact { .. }
+            | wasabi_domain::MessageKind::Poll { .. }
     );
     let starred = row.starred;
     let star_action = wasabi_domain::MessageAction::Star {

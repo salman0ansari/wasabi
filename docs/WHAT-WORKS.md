@@ -46,6 +46,7 @@ This page describes the shipped behavior in wasabi `0.3.5`. It is a capability i
 | Done | Copy, star, react to, delete locally, or revoke eligible sent messages through real protocol actions. |
 | Done | Render reaction aggregates with counts and the linked account's own selection. |
 | Done | Render received location and contact cards with a place name, address, and coordinates or a contact display name. Live locations are labeled without tracking; sharing those kinds from the composer is not available yet. |
+| Done | Render received poll and quiz cards with the stored question and option names. Quizzes are labeled without revealing the answer. Voting and poll creation are not available. |
 
 ## Media
 

@@ -73,6 +73,17 @@ pub(crate) fn media_preview() -> MediaPreview {
             // Repository page order is newest to oldest.
             rows: vec![
                 row(
+                    "PREVIEW-POLL",
+                    10,
+                    MessageDirection::Incoming,
+                    MessageKind::Poll {
+                        name: "Weekend plans?".to_string(),
+                        options: vec!["Park".to_string(), "Cinema".to_string()],
+                        selectable_count: 1,
+                        quiz: false,
+                    },
+                ),
+                row(
                     "PREVIEW-STICKER",
                     9,
                     MessageDirection::Incoming,

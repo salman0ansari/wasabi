@@ -318,6 +318,7 @@ pub fn body_text(row: &MessageRow) -> String {
             }
         },
         MessageKind::Contact { display_name, .. } => display_name.clone(),
+        MessageKind::Poll { name, quiz, .. } => poll_body_text(name, *quiz),
         MessageKind::Reaction { emoji } => emoji.clone(),
         MessageKind::System { text } => text.clone(),
         MessageKind::Unavailable { reason } => unavailable_text(*reason).to_string(),
@@ -330,6 +331,19 @@ pub fn contact_count_label(contacts: usize) -> String {
         "Contact".to_string()
     } else {
         format!("{contacts} contacts")
+    }
+}
+
+pub fn poll_kind_label(quiz: bool) -> &'static str {
+    if quiz { "Quiz" } else { "Poll" }
+}
+
+pub fn poll_body_text(name: &str, quiz: bool) -> String {
+    let name = name.trim();
+    if name.is_empty() {
+        poll_kind_label(quiz).to_string()
+    } else {
+        name.to_string()
     }
 }
 
@@ -469,6 +483,22 @@ mod tests {
         assert!(!body_text(&location).contains("VCARD"));
         assert_eq!(contact_count_label(1), "Contact");
         assert_eq!(contact_count_label(3), "3 contacts");
+
+        location.kind = MessageKind::Poll {
+            name: "Weekend plans?".to_string(),
+            options: vec!["Park".to_string(), "Cinema".to_string()],
+            selectable_count: 1,
+            quiz: false,
+        };
+        assert_eq!(body_text(&location), "Weekend plans?");
+        location.kind = MessageKind::Poll {
+            name: String::new(),
+            options: Vec::new(),
+            selectable_count: 1,
+            quiz: true,
+        };
+        assert_eq!(body_text(&location), "Quiz");
+        assert_eq!(poll_kind_label(false), "Poll");
     }
 
     fn row(id: &str, order: i64) -> MessageRow {

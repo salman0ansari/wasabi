@@ -4,7 +4,11 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
-_No changes yet._
+### Added
+
+- Received polls and quizzes now render as cards with the real question and
+  option names. Quizzes are labeled without revealing the correct answer.
+  Voting and poll creation are not available yet.
 
 ## [0.3.5] - 2026-08-31
 

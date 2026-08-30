@@ -190,6 +190,15 @@ pub enum MessageKind {
         display_name: String,
         contacts: usize,
     },
+    /// Received poll or quiz creation. Option names are proto labels; vote
+    /// ciphertext, option hashes, encryption keys, and the quiz answer never
+    /// cross this boundary. Voting is not part of this kind.
+    Poll {
+        name: String,
+        options: Vec<String>,
+        selectable_count: u32,
+        quiz: bool,
+    },
     Reaction {
         emoji: String,
     },

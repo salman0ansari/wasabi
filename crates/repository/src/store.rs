@@ -816,6 +816,7 @@ fn chat_list_preview(kind: Option<&str>, stored: Option<String>) -> Option<Strin
     match kind {
         Some("location") => Some("Location".to_string()),
         Some("contact") => Some("Contact".to_string()),
+        Some("poll") => Some("Poll".to_string()),
         _ => stored,
     }
 }
@@ -1160,6 +1161,21 @@ mod projection_tests {
             )),
             "Contacts"
         );
+        assert_eq!(
+            quoted_preview(&poll_message(
+                Some("Weekend plans?"),
+                &["Park", "Cinema"],
+                Some(1),
+                false,
+                Some(vec![0xAA, 0xBB]),
+                Some("Park"),
+            )),
+            "Weekend plans?"
+        );
+        assert_eq!(
+            quoted_preview(&poll_message(None, &["A", "B"], Some(1), true, None, None)),
+            "Quiz"
+        );
 
         let reply = wa::Message::text_with_context(
             "on my way",
@@ -1188,7 +1204,137 @@ mod projection_tests {
             chat_list_preview(Some("location"), Some("Harbor Park".to_string())).as_deref(),
             Some("Harbor Park")
         );
+        assert_eq!(
+            chat_list_preview(Some("poll"), None).as_deref(),
+            Some("Poll")
+        );
+        assert_eq!(
+            chat_list_preview(Some("poll"), Some("Weekend plans?".to_string())).as_deref(),
+            Some("Weekend plans?")
+        );
         assert_eq!(chat_list_preview(Some("image"), None), None);
+    }
+
+    #[test]
+    fn poll_kind_projects_names_without_keys_hashes_or_answers() {
+        let message = poll_message(
+            Some("Weekend plans?"),
+            &["Park", "  ", "Cinema"],
+            Some(2),
+            false,
+            Some(vec![0xDE, 0xAD]),
+            Some("Park"),
+        );
+        let kind = map_kind_fields("M", "poll", None, Some(&message));
+        assert_eq!(
+            kind,
+            MessageKind::Poll {
+                name: "Weekend plans?".to_string(),
+                options: vec!["Park".to_string(), "Cinema".to_string()],
+                selectable_count: 2,
+                quiz: false,
+            }
+        );
+        assert_eq!(
+            notification_preview(&kind),
+            ("Weekend plans?".to_string(), true)
+        );
+        let debug = format!("{kind:?}");
+        assert!(!debug.contains("DEAD"));
+        assert!(!debug.contains("dead"));
+        assert!(!debug.to_lowercase().contains("enc_key"));
+        assert!(!debug.contains("option_hash"));
+
+        let quiz = poll_message(None, &["Alpha", "Beta"], Some(0), true, None, Some("Alpha"));
+        let quiz_kind = map_kind_fields("M", "poll", None, Some(&quiz));
+        assert_eq!(
+            quiz_kind,
+            MessageKind::Poll {
+                name: "Quiz".to_string(),
+                options: vec!["Alpha".to_string(), "Beta".to_string()],
+                selectable_count: 1,
+                quiz: true,
+            }
+        );
+        assert_eq!(notification_preview(&quiz_kind), ("Quiz".to_string(), true));
+
+        assert_eq!(
+            map_kind_fields("M", "poll", None, None),
+            MessageKind::Poll {
+                name: "Poll".to_string(),
+                options: Vec::new(),
+                selectable_count: 1,
+                quiz: false,
+            }
+        );
+
+        let v3 = wa::Message {
+            poll_creation_message_v3: MessageField::some(wa::message::PollCreationMessage {
+                name: Some("v3 question".to_string()),
+                options: vec![
+                    wa::message::poll_creation_message::Option {
+                        option_name: Some("One".to_string()),
+                        option_hash: Some("ffff".to_string()),
+                    },
+                    wa::message::poll_creation_message::Option {
+                        option_name: Some("Two".to_string()),
+                        option_hash: Some("eeee".to_string()),
+                    },
+                ],
+                selectable_options_count: Some(1),
+                ..Default::default()
+            }),
+            poll_creation_message: MessageField::some(wa::message::PollCreationMessage {
+                name: Some("v1 should not win".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            map_kind_fields("M", "poll", None, Some(&v3)),
+            MessageKind::Poll {
+                name: "v3 question".to_string(),
+                options: vec!["One".to_string(), "Two".to_string()],
+                selectable_count: 1,
+                quiz: false,
+            }
+        );
+    }
+
+    fn poll_message(
+        name: Option<&str>,
+        options: &[&str],
+        selectable: Option<u32>,
+        quiz: bool,
+        enc_key: Option<Vec<u8>>,
+        correct: Option<&str>,
+    ) -> wa::Message {
+        wa::Message {
+            poll_creation_message: MessageField::some(wa::message::PollCreationMessage {
+                name: name.map(str::to_string),
+                options: options
+                    .iter()
+                    .map(|option| wa::message::poll_creation_message::Option {
+                        option_name: Some((*option).to_string()),
+                        option_hash: Some("deadbeef".to_string()),
+                    })
+                    .collect(),
+                selectable_options_count: selectable,
+                poll_type: quiz.then_some(wa::message::PollType::QUIZ),
+                enc_key,
+                correct_answer: match correct {
+                    Some(answer) => {
+                        MessageField::some(wa::message::poll_creation_message::Option {
+                            option_name: Some(answer.to_string()),
+                            option_hash: Some("cafebabe".to_string()),
+                        })
+                    }
+                    None => MessageField::none(),
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
     }
 }
 
@@ -1428,6 +1574,8 @@ fn quoted_preview(message: &wa::Message) -> String {
         preview
     } else if let Some(preview) = quoted_contact_preview(base) {
         preview
+    } else if let Some(preview) = quoted_poll_preview(base) {
+        preview
     } else {
         "Message".to_string()
     }
@@ -1505,6 +1653,7 @@ fn notification_preview(kind: &domain::MessageKind) -> (String, bool) {
         domain::MessageKind::Sticker { .. } => ("Sticker".to_string(), true),
         domain::MessageKind::Location { .. } => (location_kind_preview(kind), true),
         domain::MessageKind::Contact { .. } => (contact_kind_preview(kind), true),
+        domain::MessageKind::Poll { name, quiz, .. } => (poll_kind_preview(name, *quiz), true),
         domain::MessageKind::Unavailable { reason } => (
             match reason {
                 domain::UnavailableMessageReason::WaitingForDecryption => "Waiting for message",
@@ -1584,6 +1733,7 @@ fn map_kind_fields(
         }
         "location" => map_location_kind(base),
         "contact" => map_contact_kind(base),
+        "poll" => map_poll_kind(base),
         "undecryptable" => domain::MessageKind::Unavailable {
             reason: domain::UnavailableMessageReason::WaitingForDecryption,
         },
@@ -1671,6 +1821,64 @@ fn contact_display_name(name: Option<String>, contacts: usize) -> String {
             "Contacts".to_string()
         }
     })
+}
+
+fn map_poll_kind(base: Option<&wa::Message>) -> domain::MessageKind {
+    let Some(poll) = first_poll_creation(base) else {
+        return domain::MessageKind::Poll {
+            name: poll_fallback_name(false),
+            options: Vec::new(),
+            selectable_count: 1,
+            quiz: false,
+        };
+    };
+    let quiz = poll.poll_type == Some(wa::message::PollType::QUIZ);
+    let options = poll
+        .options
+        .iter()
+        .filter_map(|option| nonempty_text(option.option_name.as_deref()))
+        .collect();
+    let selectable_count = poll
+        .selectable_options_count
+        .filter(|count| *count > 0)
+        .unwrap_or(1);
+    domain::MessageKind::Poll {
+        name: nonempty_text(poll.name.as_deref()).unwrap_or_else(|| poll_fallback_name(quiz)),
+        options,
+        selectable_count,
+        quiz,
+    }
+}
+
+fn first_poll_creation(base: Option<&wa::Message>) -> Option<&wa::message::PollCreationMessage> {
+    let base = base?;
+    base.poll_creation_message_v3
+        .as_option()
+        .or_else(|| base.poll_creation_message_v2.as_option())
+        .or_else(|| base.poll_creation_message.as_option())
+}
+
+fn quoted_poll_preview(base: &wa::Message) -> Option<String> {
+    let poll = first_poll_creation(Some(base))?;
+    let quiz = poll.poll_type == Some(wa::message::PollType::QUIZ);
+    Some(nonempty_text(poll.name.as_deref()).unwrap_or_else(|| poll_fallback_name(quiz)))
+}
+
+fn poll_kind_preview(name: &str, quiz: bool) -> String {
+    let name = name.trim();
+    if name.is_empty() {
+        poll_fallback_name(quiz)
+    } else {
+        name.to_string()
+    }
+}
+
+fn poll_fallback_name(quiz: bool) -> String {
+    if quiz {
+        "Quiz".to_string()
+    } else {
+        "Poll".to_string()
+    }
 }
 
 fn nonempty_text(value: Option<&str>) -> Option<String> {
