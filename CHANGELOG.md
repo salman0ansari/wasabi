@@ -4,6 +4,10 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
+_No changes yet._
+
+## [0.3.5] - 2026-08-31
+
 ### Added
 
 - Downloaded stickers now paint a still image in the timeline from the local
