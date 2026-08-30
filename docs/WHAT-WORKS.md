@@ -1,6 +1,6 @@
 # What works today
 
-This page describes the shipped behavior in wasabi `0.2.0-alpha.6`. It is a capability inventory, not a promise about unfinished controls. Features without a complete data source, failure state, and usable workflow stay hidden.
+This page describes the shipped behavior in wasabi `0.2.0-alpha.7`. It is a capability inventory, not a promise about unfinished controls. Features without a complete data source, failure state, and usable workflow stay hidden.
 
 ## Account and startup
 
@@ -65,6 +65,7 @@ This page describes the shipped behavior in wasabi `0.2.0-alpha.6`. It is a capa
 | Done | Load real group subject, description, participant count, identities, and admin roles. |
 | Done | Retain the last server-backed group snapshot for honest disconnected viewing. |
 | Done | Edit group identity and permissions; add, promote, demote, or remove real participants; and leave through acknowledged, exact-target workflows. |
+| Done | Review pending group join requests while connected, then approve or decline one person at a time through cancel-first confirmations. |
 | Done | Render unavailable or privacy-restricted data as unavailable instead of fabricating rows. |
 
 ## Desktop integration and settings
