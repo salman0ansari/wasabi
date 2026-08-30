@@ -26,7 +26,8 @@ wasabi is being built in public toward a dependable Linux-first replacement for 
 | --- | --- |
 | Done | Active/archived pagination, filters, pin/mute/archive/read actions, drafts/favorites, FTS search, anchored navigation, and measured rows. |
 | Done | Viewport-preserving prepends, non-jumping incoming messages, reply navigation, reactions, edits, starring, deletes, revoke, and clear. |
-| In progress | Complete content projection/rendering for contacts, locations, polls, events, invites, stickers, voice/video notes, system, view-once, and unsupported messages. |
+| Done | Render received location and contact cards in the timeline, quotes, chat-list previews, and notifications. Composer sharing and live-location tracking stay planned. |
+| In progress | Complete content projection/rendering for polls, events, invites, stickers, voice/video notes, system, view-once, and unsupported messages. |
 | Planned | Grouped global search, in-chat next/previous, forwarding selection, receipt/reaction detail, typing transmission, and expiring presence. |
 
 ## Contacts and groups

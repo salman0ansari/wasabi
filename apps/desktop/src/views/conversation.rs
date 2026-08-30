@@ -451,6 +451,8 @@ fn bubble(
         );
     } else if let Some(media) = media_content(&row, text_scale, media_state, thumb_state, cx) {
         content = content.child(media);
+    } else if let Some(card) = location_contact_card(&row, row_index, text_scale, cx) {
+        content = content.child(card);
     } else {
         content = content.child(
             gpui::div()
@@ -896,6 +898,152 @@ fn visual_media_placeholder(
                 .text_color(theme::text_secondary())
                 .child(transfer_label),
         )
+}
+
+fn location_contact_card(
+    row: &wasabi_domain::MessageRow,
+    row_index: usize,
+    text_scale: u16,
+    cx: &mut Context<MainWindow>,
+) -> Option<gpui::AnyElement> {
+    match &row.kind {
+        wasabi_domain::MessageKind::Location {
+            name,
+            address,
+            latitude,
+            longitude,
+            live,
+        } => {
+            let title = match name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            {
+                Some(name) => name.to_string(),
+                None => {
+                    if *live {
+                        "Live location".to_string()
+                    } else {
+                        "Location".to_string()
+                    }
+                }
+            };
+            let kind_label = if *live { "Live location" } else { "Location" };
+            let coords = match (latitude.as_deref(), longitude.as_deref()) {
+                (Some(latitude), Some(longitude)) => Some(format!("{latitude}, {longitude}")),
+                _ => None,
+            };
+            let map_url = maps_url(latitude.as_deref(), longitude.as_deref());
+            let mut card = shared_info_card(
+                IconName::Map,
+                title,
+                text_scale,
+                [
+                    (*live && name.as_ref().is_some_and(|name| !name.trim().is_empty()))
+                        .then(|| kind_label.to_string()),
+                    address
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                    coords,
+                ]
+                .into_iter()
+                .flatten(),
+            );
+            if let Some(url) = map_url {
+                card = card.child(
+                    gpui::div()
+                        .id(("open-map", row_index))
+                        .cursor_pointer()
+                        .pt(px(2.0))
+                        .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme::accent_text())
+                        .hover(|style| style.text_color(theme::accent()))
+                        .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url)))
+                        .child("Open map"),
+                );
+            }
+            Some(card.into_any_element())
+        }
+        wasabi_domain::MessageKind::Contact {
+            display_name,
+            contacts,
+        } => Some(
+            shared_info_card(
+                IconName::User,
+                display_name.clone(),
+                text_scale,
+                [Some(messages::contact_count_label(*contacts))]
+                    .into_iter()
+                    .flatten(),
+            )
+            .into_any_element(),
+        ),
+        _ => None,
+    }
+}
+
+fn shared_info_card(
+    icon: IconName,
+    title: String,
+    text_scale: u16,
+    details: impl IntoIterator<Item = String>,
+) -> gpui::Div {
+    let details = details.into_iter().collect::<Vec<_>>();
+    gpui::div()
+        .min_h(px(54.0))
+        .w_full()
+        .min_w(px(240.0))
+        .rounded(px(theme::RADIUS_SM))
+        .flex()
+        .items_start()
+        .gap(px(10.0))
+        .px(px(10.0))
+        .py(px(8.0))
+        .bg(theme::canvas())
+        .child(
+            gpui::div()
+                .size(px(34.0))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(theme::row_selected())
+                .text_color(theme::accent_text())
+                .child(Icon::new(icon).size(px(18.0))),
+        )
+        .child(
+            gpui::div()
+                .flex_1()
+                .min_w(px(0.0))
+                .flex()
+                .flex_col()
+                .gap(px(1.0))
+                .child(
+                    gpui::div()
+                        .text_size(px(theme::scaled_text(theme::TEXT_SIZE, text_scale)))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(theme::text_primary())
+                        .child(title),
+                )
+                .children(details.into_iter().map(|detail| {
+                    gpui::div()
+                        .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+                        .text_color(theme::text_secondary())
+                        .child(detail)
+                })),
+        )
+}
+
+fn maps_url(latitude: Option<&str>, longitude: Option<&str>) -> Option<String> {
+    let latitude = latitude?.trim();
+    let longitude = longitude?.trim();
+    if latitude.is_empty() || longitude.is_empty() {
+        return None;
+    }
+    Some(format!("https://maps.google.com/?q={latitude},{longitude}"))
 }
 
 fn media_descriptor(kind: &wasabi_domain::MessageKind) -> Option<&wasabi_domain::MediaDescriptor> {
@@ -1387,7 +1535,10 @@ fn message_action_sheet(
     let preview = messages::body_text(&row);
     let can_copy = matches!(
         row.kind,
-        wasabi_domain::MessageKind::Text { .. } | wasabi_domain::MessageKind::System { .. }
+        wasabi_domain::MessageKind::Text { .. }
+            | wasabi_domain::MessageKind::System { .. }
+            | wasabi_domain::MessageKind::Location { .. }
+            | wasabi_domain::MessageKind::Contact { .. }
     );
     let starred = row.starred;
     let star_action = wasabi_domain::MessageAction::Star {
@@ -1763,7 +1914,7 @@ mod tests {
         chat_confirmation_copy, contact_confirmation_copy, format_bytes,
         group_member_confirmation_copy, invite_link_error_copy,
         invite_link_reset_confirmation_copy, join_request_confirmation_copy,
-        leave_group_confirmation_copy, paints_downloaded_image_thumbnail,
+        leave_group_confirmation_copy, maps_url, paints_downloaded_image_thumbnail,
     };
 
     fn test_media() -> wasabi_domain::MediaDescriptor {
@@ -1803,6 +1954,27 @@ mod tests {
             animated: false,
             media,
         }));
+        assert!(!paints_downloaded_image_thumbnail(&MessageKind::Location {
+            name: None,
+            address: None,
+            latitude: Some("1.0".to_string()),
+            longitude: Some("2.0".to_string()),
+            live: false,
+        }));
+        assert!(!paints_downloaded_image_thumbnail(&MessageKind::Contact {
+            display_name: "Jordan Blake".to_string(),
+            contacts: 1,
+        }));
+    }
+
+    #[test]
+    fn maps_url_requires_both_coordinates() {
+        assert_eq!(
+            maps_url(Some("37.808"), Some("-122.4095")).as_deref(),
+            Some("https://maps.google.com/?q=37.808,-122.4095")
+        );
+        assert_eq!(maps_url(Some("37.808"), None), None);
+        assert_eq!(maps_url(Some(" "), Some("-122.4095")), None);
     }
 
     #[test]

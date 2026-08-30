@@ -45,6 +45,7 @@ This page describes the shipped behavior in wasabi `0.3.2`. It is a capability i
 | Done | Edit acknowledged outgoing text inside the protocol window with optimistic rollback. |
 | Done | Copy, star, react to, delete locally, or revoke eligible sent messages through real protocol actions. |
 | Done | Render reaction aggregates with counts and the linked account's own selection. |
+| Done | Render received location and contact cards with a place name, address, and coordinates or a contact display name. Live locations are labeled without tracking; sharing those kinds from the composer is not available yet. |
 
 ## Media
 

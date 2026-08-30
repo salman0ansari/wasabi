@@ -174,6 +174,22 @@ pub enum MessageKind {
         animated: bool,
         media: MediaDescriptor,
     },
+    /// Received place pin. Coordinates are display-formatted strings so this
+    /// kind can stay `Eq`; vCard/proto blobs never appear here.
+    Location {
+        name: Option<String>,
+        address: Option<String>,
+        latitude: Option<String>,
+        longitude: Option<String>,
+        live: bool,
+    },
+    /// Received contact card or contact array. `contacts` is the shared count
+    /// (1 for a single card); display names are proto labels, never parsed from
+    /// vCard text.
+    Contact {
+        display_name: String,
+        contacts: usize,
+    },
     Reaction {
         emoji: String,
     },

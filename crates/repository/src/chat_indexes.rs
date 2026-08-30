@@ -29,7 +29,7 @@ const ARCHIVED_CHAT_PINNED_INDEX: &str = "CREATE INDEX IF NOT EXISTS wasabi_chat
     WHERE archived = 1 AND pinned_at IS NOT NULL";
 
 const CHAT_LIST_COLUMNS: &str = "jid, name, last_message_ts, last_message_preview,
-    unread_count, pinned_at, muted_until";
+    last_message_kind, unread_count, pinned_at, muted_until";
 
 #[derive(QueryableByName)]
 pub(crate) struct ChatListRow {
@@ -41,6 +41,8 @@ pub(crate) struct ChatListRow {
     pub(crate) last_message_ts: i64,
     #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
     pub(crate) last_message_preview: Option<String>,
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+    pub(crate) last_message_kind: Option<String>,
     #[diesel(sql_type = diesel::sql_types::Integer)]
     pub(crate) unread_count: i32,
     #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::BigInt>)]

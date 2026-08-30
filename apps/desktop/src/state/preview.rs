@@ -40,7 +40,7 @@ pub(crate) fn media_preview() -> MediaPreview {
                 bare: "preview@s.whatsapp.net".to_string(),
                 push_name: Some("Avery Chen".to_string()),
             },
-            timestamp_ms: now - (6 - seq) * 60_000,
+            timestamp_ms: now - (8 - seq) * 60_000,
             seq: LocalCursor(seq),
             kind,
             quoted: None,
@@ -72,6 +72,27 @@ pub(crate) fn media_preview() -> MediaPreview {
         page: MessagePage {
             // Repository page order is newest to oldest.
             rows: vec![
+                row(
+                    "PREVIEW-LOCATION",
+                    8,
+                    MessageDirection::Incoming,
+                    MessageKind::Location {
+                        name: Some("Harbor Park".to_string()),
+                        address: Some("12 Waterfront Way".to_string()),
+                        latitude: Some("37.808".to_string()),
+                        longitude: Some("-122.4095".to_string()),
+                        live: false,
+                    },
+                ),
+                row(
+                    "PREVIEW-CONTACT",
+                    7,
+                    MessageDirection::Outgoing,
+                    MessageKind::Contact {
+                        display_name: "Jordan Blake".to_string(),
+                        contacts: 1,
+                    },
+                ),
                 row(
                     "PREVIEW-MULTILINGUAL",
                     6,

@@ -4,7 +4,14 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
-_No changes yet._
+### Added
+
+- Received location and contact messages now render as dedicated cards instead
+  of “Unsupported message”. Location cards show a name, address, and coordinates
+  when present, and live locations are labeled without tracking or map tiles.
+  Contact cards show the shared display name or an honest Contact/Contacts
+  label. Quotes, chat-list previews, and notifications use the same labels.
+  Sharing location or contacts from the composer is not available yet.
 
 ## [0.3.2] - 2026-08-31
 

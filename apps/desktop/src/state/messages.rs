@@ -299,10 +299,37 @@ pub fn body_text(row: &MessageRow) -> String {
             .clone()
             .unwrap_or_else(|| "Document".to_string()),
         MessageKind::Sticker { .. } => "Sticker".to_string(),
+        MessageKind::Location { name, live, .. } => match name.as_deref().map(str::trim) {
+            Some(name) if !name.is_empty() => {
+                if *live && name != "Live location" {
+                    format!("Live location · {name}")
+                } else if !*live && name != "Location" {
+                    format!("Location · {name}")
+                } else {
+                    name.to_string()
+                }
+            }
+            _ => {
+                if *live {
+                    "Live location".to_string()
+                } else {
+                    "Location".to_string()
+                }
+            }
+        },
+        MessageKind::Contact { display_name, .. } => display_name.clone(),
         MessageKind::Reaction { emoji } => emoji.clone(),
         MessageKind::System { text } => text.clone(),
         MessageKind::Unavailable { reason } => unavailable_text(*reason).to_string(),
         MessageKind::Unknown => "Unsupported message".to_string(),
+    }
+}
+
+pub fn contact_count_label(contacts: usize) -> String {
+    if contacts <= 1 {
+        "Contact".to_string()
+    } else {
+        format!("{contacts} contacts")
     }
 }
 
@@ -394,6 +421,10 @@ pub fn avatar_initials(chat: &ChatSummary) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wasabi_domain::{
+        ChatId, LocalCursor, MessageContext, MessageDirection, MessageId, MessageKind,
+        MessageStatus, SenderJid,
+    };
 
     #[test]
     fn unavailable_messages_explain_the_correct_recovery_path() {
@@ -408,10 +439,37 @@ mod tests {
         );
         assert!(unavailable_text(UnavailableMessageReason::BotContent).contains("automated"));
     }
-    use wasabi_domain::{
-        ChatId, LocalCursor, MessageContext, MessageDirection, MessageId, MessageKind,
-        MessageStatus, SenderJid,
-    };
+
+    #[test]
+    fn location_and_contact_body_text_uses_honest_labels() {
+        let mut location = row("LOC", 1);
+        location.kind = MessageKind::Location {
+            name: Some("Harbor Park".to_string()),
+            address: Some("12 Waterfront Way".to_string()),
+            latitude: Some("37.808".to_string()),
+            longitude: Some("-122.4095".to_string()),
+            live: false,
+        };
+        assert_eq!(body_text(&location), "Location · Harbor Park");
+
+        location.kind = MessageKind::Location {
+            name: None,
+            address: None,
+            latitude: None,
+            longitude: None,
+            live: true,
+        };
+        assert_eq!(body_text(&location), "Live location");
+
+        location.kind = MessageKind::Contact {
+            display_name: "Jordan Blake".to_string(),
+            contacts: 1,
+        };
+        assert_eq!(body_text(&location), "Jordan Blake");
+        assert!(!body_text(&location).contains("VCARD"));
+        assert_eq!(contact_count_label(1), "Contact");
+        assert_eq!(contact_count_label(3), "3 contacts");
+    }
 
     fn row(id: &str, order: i64) -> MessageRow {
         MessageRow {

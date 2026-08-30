@@ -276,7 +276,7 @@ async fn assert_archived_pinned_query_plan_uses_wasabi_index(
                 Some(after) => diesel::sql_query(
                     "EXPLAIN QUERY PLAN
                      SELECT jid, name, last_message_ts, last_message_preview,
-                            unread_count, pinned_at, muted_until
+                            last_message_kind, unread_count, pinned_at, muted_until
                      FROM chats
                      WHERE device_id = ? AND archived = 1 AND pinned_at IS NOT NULL
                        AND (pinned_at, last_message_ts, jid) < (?, ?, ?)
@@ -291,7 +291,7 @@ async fn assert_archived_pinned_query_plan_uses_wasabi_index(
                 None => diesel::sql_query(
                     "EXPLAIN QUERY PLAN
                      SELECT jid, name, last_message_ts, last_message_preview,
-                            unread_count, pinned_at, muted_until
+                            last_message_kind, unread_count, pinned_at, muted_until
                      FROM chats
                      WHERE device_id = ? AND archived = 1 AND pinned_at IS NOT NULL
                      ORDER BY pinned_at DESC, last_message_ts DESC, jid DESC LIMIT ?",
@@ -321,7 +321,7 @@ async fn assert_archived_activity_query_plan_uses_wasabi_index(
                 Some(after) => diesel::sql_query(
                     "EXPLAIN QUERY PLAN
                      SELECT jid, name, last_message_ts, last_message_preview,
-                            unread_count, pinned_at, muted_until
+                            last_message_kind, unread_count, pinned_at, muted_until
                      FROM chats
                      WHERE device_id = ? AND archived = 1 AND pinned_at IS NULL
                        AND (last_message_ts, jid) < (?, ?)
@@ -335,7 +335,7 @@ async fn assert_archived_activity_query_plan_uses_wasabi_index(
                 None => diesel::sql_query(
                     "EXPLAIN QUERY PLAN
                      SELECT jid, name, last_message_ts, last_message_preview,
-                            unread_count, pinned_at, muted_until
+                            last_message_kind, unread_count, pinned_at, muted_until
                      FROM chats
                      WHERE device_id = ? AND archived = 1 AND pinned_at IS NULL
                      ORDER BY last_message_ts DESC, jid DESC LIMIT ?",

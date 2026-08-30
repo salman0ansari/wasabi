@@ -769,7 +769,10 @@ fn chat_entry_to_summary(e: whatsapp_rust_chat_store::types::ChatEntry) -> domai
         id: domain::ChatId::new(jid),
         display_name: e.name,
         last_activity_ms: e.last_message_at.map_or(0, |t| t.timestamp_millis()),
-        last_message_preview: e.last_message_preview,
+        last_message_preview: chat_list_preview(
+            e.last_message_kind.as_ref().map(|kind| kind.as_str()),
+            e.last_message_preview,
+        ),
         unread_count: e.unread_count as i64,
         pinned_at_ms: e.pinned_at.map(|t| t.timestamp_millis()),
         muted_until_ms: e.muted_until.map(|t| t.timestamp_millis()),
@@ -788,7 +791,10 @@ fn archived_chat_row_to_summary(row: crate::chat_indexes::ChatListRow) -> domain
         kind,
         display_name: row.name,
         last_activity_ms: row.last_message_ts,
-        last_message_preview: row.last_message_preview,
+        last_message_preview: chat_list_preview(
+            row.last_message_kind.as_deref(),
+            row.last_message_preview,
+        ),
         unread_count: row.unread_count as i64,
         pinned_at_ms: row.pinned_at,
         muted_until_ms: row.muted_until,
@@ -797,6 +803,20 @@ fn archived_chat_row_to_summary(row: crate::chat_indexes::ChatListRow) -> domain
         draft_preview: None,
         draft: None,
         avatar: None,
+    }
+}
+
+fn chat_list_preview(kind: Option<&str>, stored: Option<String>) -> Option<String> {
+    if stored
+        .as_ref()
+        .is_some_and(|preview| !preview.trim().is_empty())
+    {
+        return stored;
+    }
+    match kind {
+        Some("location") => Some("Location".to_string()),
+        Some("contact") => Some("Contact".to_string()),
+        _ => stored,
     }
 }
 
@@ -816,10 +836,14 @@ fn chat_kind(jid: &str) -> domain::ChatKind {
 mod projection_tests {
     use std::collections::HashSet;
 
-    use super::{aggregate_reactions, chat_kind, map_kind_fields, map_quoted_message};
+    use super::{
+        aggregate_reactions, chat_kind, chat_list_preview, format_coord, map_kind_fields,
+        map_quoted_message, notification_preview, quoted_preview,
+    };
     use wasabi_domain::{ChatKind, MessageKind, UnavailableMessageReason};
     use whatsapp_rust::chrono::Utc;
     use whatsapp_rust::wacore::proto_helpers::{MessageBuilderExt, build_quote_context};
+    use whatsapp_rust::waproto::buffa::MessageField;
     use whatsapp_rust::waproto::whatsapp as wa;
 
     #[test]
@@ -892,6 +916,279 @@ mod projection_tests {
         assert!(!summaries[0].reacted_by_me);
         assert_eq!(summaries[1].emoji, "❤️");
         assert!(summaries[1].reacted_by_me);
+    }
+
+    fn location_message(
+        name: Option<&str>,
+        address: Option<&str>,
+        latitude: Option<f64>,
+        longitude: Option<f64>,
+        live: bool,
+    ) -> wa::Message {
+        wa::Message {
+            location_message: MessageField::some(wa::message::LocationMessage {
+                degrees_latitude: latitude,
+                degrees_longitude: longitude,
+                name: name.map(str::to_string),
+                address: address.map(str::to_string),
+                is_live: live.then_some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn live_location_message(
+        caption: Option<&str>,
+        latitude: Option<f64>,
+        longitude: Option<f64>,
+    ) -> wa::Message {
+        wa::Message {
+            live_location_message: MessageField::some(wa::message::LiveLocationMessage {
+                degrees_latitude: latitude,
+                degrees_longitude: longitude,
+                caption: caption.map(str::to_string),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn contact_message(display_name: Option<&str>, vcard: Option<&str>) -> wa::Message {
+        wa::Message {
+            contact_message: MessageField::some(wa::message::ContactMessage {
+                display_name: display_name.map(str::to_string),
+                vcard: vcard.map(str::to_string),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn contacts_array_message(
+        display_name: Option<&str>,
+        contacts: Vec<(Option<&str>, Option<&str>)>,
+    ) -> wa::Message {
+        wa::Message {
+            contacts_array_message: MessageField::some(wa::message::ContactsArrayMessage {
+                display_name: display_name.map(str::to_string),
+                contacts: contacts
+                    .into_iter()
+                    .map(|(name, vcard)| wa::message::ContactMessage {
+                        display_name: name.map(str::to_string),
+                        vcard: vcard.map(str::to_string),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    const PRIVATE_VCARD: &str =
+        "BEGIN:VCARD\nVERSION:3.0\nFN:Secret Name\nTEL:+15555550100\nEND:VCARD";
+
+    #[test]
+    fn location_kind_projects_display_fields_without_raw_floats() {
+        let message = location_message(
+            Some("Harbor Park"),
+            Some("12 Waterfront Way"),
+            Some(37.808_000),
+            Some(-122.409_500),
+            false,
+        );
+        let kind = map_kind_fields("M", "location", None, Some(&message));
+        assert_eq!(
+            kind,
+            MessageKind::Location {
+                name: Some("Harbor Park".to_string()),
+                address: Some("12 Waterfront Way".to_string()),
+                latitude: Some("37.808".to_string()),
+                longitude: Some("-122.4095".to_string()),
+                live: false,
+            }
+        );
+        assert_eq!(
+            notification_preview(&kind),
+            ("Location · Harbor Park".to_string(), true)
+        );
+        let debug = format!("{kind:?}");
+        assert!(debug.contains("37.808"));
+        assert!(!debug.contains("NaN"));
+        assert_eq!(format_coord(Some(f64::NAN)), None);
+        assert_eq!(format_coord(Some(f64::INFINITY)), None);
+    }
+
+    #[test]
+    fn live_location_kind_is_labeled_without_claiming_a_moving_pin() {
+        let message = live_location_message(Some("On the way"), Some(1.23), Some(4.56));
+        let kind = map_kind_fields("M", "location", None, Some(&message));
+        assert_eq!(
+            kind,
+            MessageKind::Location {
+                name: None,
+                address: Some("On the way".to_string()),
+                latitude: Some("1.23".to_string()),
+                longitude: Some("4.56".to_string()),
+                live: true,
+            }
+        );
+        assert_eq!(
+            notification_preview(&kind),
+            ("Live location".to_string(), true)
+        );
+
+        let flagged = location_message(None, None, Some(0.0), Some(0.0), true);
+        let flagged_kind = map_kind_fields("M", "location", None, Some(&flagged));
+        assert!(matches!(
+            flagged_kind,
+            MessageKind::Location { live: true, .. }
+        ));
+        assert_eq!(
+            map_kind_fields("M", "location", None, None),
+            MessageKind::Location {
+                name: None,
+                address: None,
+                latitude: None,
+                longitude: None,
+                live: false,
+            }
+        );
+    }
+
+    #[test]
+    fn contact_kind_uses_honest_fallbacks_and_strips_vcard() {
+        let named = contact_message(Some("Jordan Blake"), Some(PRIVATE_VCARD));
+        let kind = map_kind_fields("M", "contact", None, Some(&named));
+        assert_eq!(
+            kind,
+            MessageKind::Contact {
+                display_name: "Jordan Blake".to_string(),
+                contacts: 1,
+            }
+        );
+        let debug = format!("{kind:?}");
+        assert!(!debug.contains("VCARD"));
+        assert!(!debug.contains("15555550100"));
+        assert!(!debug.contains("Secret Name"));
+        assert_eq!(
+            notification_preview(&kind),
+            ("Jordan Blake".to_string(), true)
+        );
+
+        let unnamed = contact_message(Some("  "), Some(PRIVATE_VCARD));
+        let fallback = map_kind_fields("M", "contact", None, Some(&unnamed));
+        assert_eq!(
+            fallback,
+            MessageKind::Contact {
+                display_name: "Contact".to_string(),
+                contacts: 1,
+            }
+        );
+        let fallback_debug = format!("{fallback:?}");
+        assert!(!fallback_debug.contains("VCARD"));
+        assert!(!fallback_debug.contains("15555550100"));
+        assert_eq!(
+            map_kind_fields("M", "contact", None, None),
+            MessageKind::Contact {
+                display_name: "Contact".to_string(),
+                contacts: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn contacts_array_kind_counts_entries_and_keeps_vcard_off_the_boundary() {
+        let message = contacts_array_message(
+            Some("Weekend plans"),
+            vec![
+                (Some("Avery Chen"), Some(PRIVATE_VCARD)),
+                (Some("Jordan Blake"), None),
+            ],
+        );
+        let kind = map_kind_fields("M", "contact", None, Some(&message));
+        assert_eq!(
+            kind,
+            MessageKind::Contact {
+                display_name: "Weekend plans".to_string(),
+                contacts: 2,
+            }
+        );
+        assert!(!format!("{kind:?}").contains("VCARD"));
+        assert!(!format!("{kind:?}").contains("15555550100"));
+
+        let unnamed = contacts_array_message(None, vec![(None, Some(PRIVATE_VCARD))]);
+        assert_eq!(
+            map_kind_fields("M", "contact", None, Some(&unnamed)),
+            MessageKind::Contact {
+                display_name: "Contact".to_string(),
+                contacts: 1,
+            }
+        );
+
+        let empty_names = contacts_array_message(Some("   "), vec![(None, None), (None, None)]);
+        assert_eq!(
+            map_kind_fields("M", "contact", None, Some(&empty_names)),
+            MessageKind::Contact {
+                display_name: "Contacts".to_string(),
+                contacts: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn quoted_preview_labels_location_and_contact_instead_of_generic_message() {
+        let location = location_message(Some("Harbor Park"), None, Some(1.0), Some(2.0), false);
+        assert_eq!(quoted_preview(&location), "Location · Harbor Park");
+        assert_eq!(
+            quoted_preview(&live_location_message(None, Some(1.0), Some(2.0))),
+            "Live location"
+        );
+        assert_eq!(
+            quoted_preview(&contact_message(Some("Jordan Blake"), Some(PRIVATE_VCARD))),
+            "Jordan Blake"
+        );
+        assert!(
+            !quoted_preview(&contact_message(Some("Jordan Blake"), Some(PRIVATE_VCARD)))
+                .contains("VCARD")
+        );
+        assert_eq!(
+            quoted_preview(&contacts_array_message(
+                None,
+                vec![(None, None), (None, None)]
+            )),
+            "Contacts"
+        );
+
+        let reply = wa::Message::text_with_context(
+            "on my way",
+            build_quote_context(
+                "LOC-ID",
+                "15550000000@s.whatsapp.net",
+                &location_message(Some("Harbor Park"), None, Some(1.0), Some(2.0), false),
+            ),
+        );
+        let quoted = map_quoted_message(&reply).expect("quoted location");
+        assert_eq!(quoted.id.as_str(), "LOC-ID");
+        assert_eq!(quoted.preview, "Location · Harbor Park");
+    }
+
+    #[test]
+    fn chat_list_preview_uses_kind_labels_when_store_text_is_empty() {
+        assert_eq!(
+            chat_list_preview(Some("location"), None).as_deref(),
+            Some("Location")
+        );
+        assert_eq!(
+            chat_list_preview(Some("contact"), Some(String::new())).as_deref(),
+            Some("Contact")
+        );
+        assert_eq!(
+            chat_list_preview(Some("location"), Some("Harbor Park".to_string())).as_deref(),
+            Some("Harbor Park")
+        );
+        assert_eq!(chat_list_preview(Some("image"), None), None);
     }
 }
 
@@ -1081,6 +1378,26 @@ fn first_context_info(message: &wa::Message) -> Option<&wa::ContextInfo> {
                 .as_option()
                 .and_then(|message| message.context_info.as_option())
         })
+        .or_else(|| {
+            base.location_message
+                .as_option()
+                .and_then(|message| message.context_info.as_option())
+        })
+        .or_else(|| {
+            base.live_location_message
+                .as_option()
+                .and_then(|message| message.context_info.as_option())
+        })
+        .or_else(|| {
+            base.contact_message
+                .as_option()
+                .and_then(|message| message.context_info.as_option())
+        })
+        .or_else(|| {
+            base.contacts_array_message
+                .as_option()
+                .and_then(|message| message.context_info.as_option())
+        })
 }
 
 fn quoted_preview(message: &wa::Message) -> String {
@@ -1107,8 +1424,64 @@ fn quoted_preview(message: &wa::Message) -> String {
         "Document".to_string()
     } else if base.sticker_message.is_set() {
         "Sticker".to_string()
+    } else if let Some(preview) = quoted_location_preview(base) {
+        preview
+    } else if let Some(preview) = quoted_contact_preview(base) {
+        preview
     } else {
         "Message".to_string()
+    }
+}
+
+fn quoted_location_preview(base: &wa::Message) -> Option<String> {
+    if let Some(live) = base.live_location_message.as_option() {
+        return Some(location_preview_label(
+            nonempty_text(live.caption.as_deref()).as_deref(),
+            true,
+        ));
+    }
+    let location = base.location_message.as_option()?;
+    Some(location_preview_label(
+        nonempty_text(location.name.as_deref()).as_deref(),
+        location.is_live.unwrap_or(false),
+    ))
+}
+
+fn quoted_contact_preview(base: &wa::Message) -> Option<String> {
+    if let Some(array) = base.contacts_array_message.as_option() {
+        return Some(contact_display_name(
+            nonempty_text(array.display_name.as_deref()),
+            array.contacts.len(),
+        ));
+    }
+    let contact = base.contact_message.as_option()?;
+    Some(contact_display_name(
+        nonempty_text(contact.display_name.as_deref()),
+        1,
+    ))
+}
+
+fn location_preview_label(name: Option<&str>, live: bool) -> String {
+    let kind = if live { "Live location" } else { "Location" };
+    match name {
+        Some(name) if name != kind => format!("{kind} · {name}"),
+        _ => kind.to_string(),
+    }
+}
+
+fn location_kind_preview(kind: &domain::MessageKind) -> String {
+    match kind {
+        domain::MessageKind::Location { name, live, .. } => {
+            location_preview_label(name.as_deref(), *live)
+        }
+        _ => "Location".to_string(),
+    }
+}
+
+fn contact_kind_preview(kind: &domain::MessageKind) -> String {
+    match kind {
+        domain::MessageKind::Contact { display_name, .. } => display_name.clone(),
+        _ => "Contact".to_string(),
     }
 }
 
@@ -1130,6 +1503,8 @@ fn notification_preview(kind: &domain::MessageKind) -> (String, bool) {
             true,
         ),
         domain::MessageKind::Sticker { .. } => ("Sticker".to_string(), true),
+        domain::MessageKind::Location { .. } => (location_kind_preview(kind), true),
+        domain::MessageKind::Contact { .. } => (contact_kind_preview(kind), true),
         domain::MessageKind::Unavailable { reason } => (
             match reason {
                 domain::UnavailableMessageReason::WaitingForDecryption => "Waiting for message",
@@ -1207,6 +1582,8 @@ fn map_kind_fields(
                 media: sticker_descriptor(message_id, wire),
             }
         }
+        "location" => map_location_kind(base),
+        "contact" => map_contact_kind(base),
         "undecryptable" => domain::MessageKind::Unavailable {
             reason: domain::UnavailableMessageReason::WaitingForDecryption,
         },
@@ -1224,6 +1601,96 @@ fn map_kind_fields(
             domain::MessageKind::System { text }
         }),
     }
+}
+
+fn map_location_kind(base: Option<&wa::Message>) -> domain::MessageKind {
+    let live_wire = base.and_then(|message| message.live_location_message.as_option());
+    let static_wire = base.and_then(|message| message.location_message.as_option());
+    let live =
+        live_wire.is_some() || static_wire.is_some_and(|location| location.is_live == Some(true));
+    let (latitude, longitude, name, address) = if let Some(live) = live_wire {
+        (
+            live.degrees_latitude,
+            live.degrees_longitude,
+            None,
+            nonempty_text(live.caption.as_deref()),
+        )
+    } else if let Some(location) = static_wire {
+        (
+            location.degrees_latitude,
+            location.degrees_longitude,
+            nonempty_text(location.name.as_deref()),
+            nonempty_text(location.address.as_deref())
+                .or_else(|| nonempty_text(location.comment.as_deref())),
+        )
+    } else {
+        (None, None, None, None)
+    };
+    domain::MessageKind::Location {
+        name,
+        address,
+        latitude: format_coord(latitude),
+        longitude: format_coord(longitude),
+        live,
+    }
+}
+
+fn map_contact_kind(base: Option<&wa::Message>) -> domain::MessageKind {
+    if let Some(array) = base.and_then(|message| message.contacts_array_message.as_option()) {
+        let contacts = array.contacts.len().max(1);
+        return domain::MessageKind::Contact {
+            display_name: contact_display_name(
+                nonempty_text(array.display_name.as_deref()).or_else(|| {
+                    (array.contacts.len() == 1)
+                        .then(|| array.contacts.first())
+                        .flatten()
+                        .and_then(|contact| nonempty_text(contact.display_name.as_deref()))
+                }),
+                array.contacts.len(),
+            ),
+            contacts,
+        };
+    }
+    if let Some(contact) = base.and_then(|message| message.contact_message.as_option()) {
+        return domain::MessageKind::Contact {
+            display_name: contact_display_name(nonempty_text(contact.display_name.as_deref()), 1),
+            contacts: 1,
+        };
+    }
+    domain::MessageKind::Contact {
+        display_name: "Contact".to_string(),
+        contacts: 1,
+    }
+}
+
+fn contact_display_name(name: Option<String>, contacts: usize) -> String {
+    name.unwrap_or_else(|| {
+        if contacts <= 1 {
+            "Contact".to_string()
+        } else {
+            "Contacts".to_string()
+        }
+    })
+}
+
+fn nonempty_text(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn format_coord(value: Option<f64>) -> Option<String> {
+    let value = value?;
+    if !value.is_finite() {
+        return None;
+    }
+    let mut text = format!("{value:.6}");
+    if let Some(dot) = text.find('.') {
+        let keep = text[dot + 1..].trim_end_matches('0').len().max(1);
+        text.truncate(dot + 1 + keep);
+    }
+    Some(text)
 }
 
 fn media_availability(
