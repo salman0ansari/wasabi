@@ -54,7 +54,7 @@ This page describes the shipped behavior in wasabi `0.3.4`. It is a capability i
 | Done | Stage outgoing files durably, recover interrupted attachments after restart, and cancel safely. |
 | Done | Stream encryption and upload without buffering an entire file in memory. |
 | Done | Download received media into a bounded, content-addressed, SHA-256-verified cache. |
-| Done | Paint a still-image thumbnail for downloaded photos in the timeline; video, audio, and documents keep their existing cards. |
+| Done | Paint a still-image thumbnail for downloaded photos and stickers in the timeline; animated stickers stay labeled and show a still frame. Video, audio, and documents keep their existing cards. |
 | Done | Save a cached download to a chosen path and reveal it in the file manager. A missing cache file drops back to download instead of claiming the file is still present. |
 | Done | Configure the download location and actively enforced cache quota. |
 | Done | Inspect cache usage and clear downloaded media through an explicit confirmation flow. |

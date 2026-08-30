@@ -73,6 +73,23 @@ pub(crate) fn media_preview() -> MediaPreview {
             // Repository page order is newest to oldest.
             rows: vec![
                 row(
+                    "PREVIEW-STICKER",
+                    9,
+                    MessageDirection::Incoming,
+                    MessageKind::Sticker {
+                        animated: false,
+                        media: descriptor(
+                            "PREVIEW-STICKER",
+                            "image/webp",
+                            None,
+                            48_000,
+                            None,
+                            Some(512),
+                            Some(512),
+                        ),
+                    },
+                ),
+                row(
                     "PREVIEW-LOCATION",
                     8,
                     MessageDirection::Incoming,

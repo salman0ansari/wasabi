@@ -4,7 +4,11 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
-_No changes yet._
+### Added
+
+- Downloaded stickers now paint a still image in the timeline from the local
+  cache, using the same verified thumbnail path as photos. Animated stickers
+  keep the Animated sticker label and show a still frame rather than playing.
 
 ## [0.3.4] - 2026-08-31
 

@@ -860,7 +860,10 @@ fn media_content(
 }
 
 fn paints_downloaded_image_thumbnail(kind: &wasabi_domain::MessageKind) -> bool {
-    matches!(kind, wasabi_domain::MessageKind::Image { .. })
+    matches!(
+        kind,
+        wasabi_domain::MessageKind::Image { .. } | wasabi_domain::MessageKind::Sticker { .. }
+    )
 }
 
 fn cached_media_actions(
@@ -2247,11 +2250,19 @@ mod tests {
     }
 
     #[test]
-    fn only_image_kind_paints_a_downloaded_thumbnail() {
+    fn image_and_sticker_kinds_paint_downloaded_thumbnails() {
         use wasabi_domain::MessageKind;
         let media = test_media();
         assert!(paints_downloaded_image_thumbnail(&MessageKind::Image {
             caption: None,
+            media: media.clone(),
+        }));
+        assert!(paints_downloaded_image_thumbnail(&MessageKind::Sticker {
+            animated: false,
+            media: media.clone(),
+        }));
+        assert!(paints_downloaded_image_thumbnail(&MessageKind::Sticker {
+            animated: true,
             media: media.clone(),
         }));
         assert!(!paints_downloaded_image_thumbnail(&MessageKind::Video {
@@ -2265,10 +2276,6 @@ mod tests {
         }));
         assert!(!paints_downloaded_image_thumbnail(&MessageKind::Document {
             media: media.clone(),
-        }));
-        assert!(!paints_downloaded_image_thumbnail(&MessageKind::Sticker {
-            animated: false,
-            media,
         }));
         assert!(!paints_downloaded_image_thumbnail(&MessageKind::Location {
             name: None,
