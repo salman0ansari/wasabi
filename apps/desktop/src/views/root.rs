@@ -27,7 +27,7 @@ use crate::theme;
 use crate::views::{
     chat_list, composer, conversation, new_chat, new_group, pairing, right_panel, settings,
 };
-use wasabi_domain::{ChatKind, ChatScope, ConversationDetails};
+use wasabi_domain::{ChatKind, ChatScope, ConversationDetails, PendingMembershipRequest};
 
 gpui::actions!(wasabi_desktop, [FocusSearch, OpenSettings, CloseInfo]);
 
@@ -59,6 +59,7 @@ pub(crate) enum MessageOverlay {
     GroupMemberActions(GroupMemberTarget),
     ConfirmGroupMember(GroupMemberAction),
     ConfirmLeaveGroup(GroupLeaveTarget),
+    ConfirmJoinRequest(JoinRequestAction),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -93,6 +94,26 @@ pub(crate) struct GroupMemberAction {
 pub(crate) struct GroupLeaveTarget {
     pub(crate) chat: wasabi_domain::ChatId,
     pub(crate) group_name: String,
+}
+
+#[derive(Clone)]
+pub(crate) struct JoinRequestTarget {
+    pub(crate) chat: wasabi_domain::ChatId,
+    pub(crate) group_name: String,
+    pub(crate) participant: wasabi_domain::ChatId,
+    pub(crate) participant_name: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JoinRequestActionKind {
+    Approve,
+    Decline,
+}
+
+#[derive(Clone)]
+pub(crate) struct JoinRequestAction {
+    pub(crate) target: JoinRequestTarget,
+    pub(crate) kind: JoinRequestActionKind,
 }
 
 #[derive(Clone, Copy)]
@@ -210,6 +231,9 @@ pub struct MainWindow {
     pub(crate) group_mutation_error: Option<String>,
     pub(crate) group_mutation_feedback: Option<String>,
     pub(crate) group_leave_uncertain: bool,
+    pub(crate) membership_requests: Vec<PendingMembershipRequest>,
+    pub(crate) membership_requests_loading: bool,
+    pub(crate) membership_requests_error: Option<String>,
     pub(crate) group_text_edit_error: Option<String>,
     pub(crate) settings: DeviceSettings,
     pub(crate) settings_section: SettingsSection,
@@ -274,6 +298,7 @@ pub struct MainWindow {
     messages_gen: AtomicU64,
     details_gen: AtomicU64,
     group_mutation_gen: AtomicU64,
+    membership_requests_gen: AtomicU64,
     qr_ticker_gen: AtomicU64,
     phone_pair_ticker_gen: AtomicU64,
     pairing_request_gen: AtomicU64,
@@ -361,6 +386,9 @@ impl MainWindow {
             group_mutation_error: None,
             group_mutation_feedback: None,
             group_leave_uncertain: false,
+            membership_requests: Vec::new(),
+            membership_requests_loading: false,
+            membership_requests_error: None,
             group_text_edit_error: None,
             settings: DeviceSettings::load(),
             settings_section: SettingsSection::Chats,
@@ -422,6 +450,7 @@ impl MainWindow {
             messages_gen: AtomicU64::new(0),
             details_gen: AtomicU64::new(0),
             group_mutation_gen: AtomicU64::new(0),
+            membership_requests_gen: AtomicU64::new(0),
             qr_ticker_gen: AtomicU64::new(0),
             phone_pair_ticker_gen: AtomicU64::new(0),
             pairing_request_gen: AtomicU64::new(0),
@@ -1440,6 +1469,7 @@ impl MainWindow {
         self.group_mutation_error = None;
         self.group_mutation_feedback = None;
         self.group_leave_uncertain = false;
+        self.reset_membership_requests();
         self.refresh_chats(cx);
     }
 
@@ -1512,6 +1542,7 @@ impl MainWindow {
         self.group_mutation_error = None;
         self.group_mutation_feedback = None;
         self.group_leave_uncertain = false;
+        self.reset_membership_requests();
         self.first_visible = 0;
         self.pending_new_messages = 0;
         // An anchored search result starts in the middle of its context; do
@@ -2238,6 +2269,7 @@ impl MainWindow {
         self.group_mutation_error = None;
         self.group_mutation_feedback = None;
         self.group_leave_uncertain = false;
+        self.reset_membership_requests();
         cx.notify();
     }
 
@@ -2260,6 +2292,7 @@ impl MainWindow {
         self.group_mutation_error = None;
         self.group_mutation_feedback = None;
         self.group_leave_uncertain = false;
+        self.reset_membership_requests();
         let bridge = Arc::clone(&self.bridge);
         spawn_main(cx, async move |this, cx| {
             let result = match kind {
@@ -2289,6 +2322,7 @@ impl MainWindow {
                         };
                         this.conversation_details = Some(details);
                         this.request_avatar(avatar_jid, false, cx);
+                        this.load_membership_requests(cx);
                     }
                     Err(error) => this.details_error = Some(error),
                 }
@@ -2318,6 +2352,17 @@ impl MainWindow {
             wasabi_domain::GroupChange::RemoveParticipant(_) => {
                 Some("Participant was removed from the group.".to_string())
             }
+            wasabi_domain::GroupChange::ApproveMembershipRequest(_) => {
+                Some("Join request approved.".to_string())
+            }
+            wasabi_domain::GroupChange::RejectMembershipRequest(_) => {
+                Some("Join request declined.".to_string())
+            }
+            _ => None,
+        };
+        let reviewed_request = match patch.change() {
+            wasabi_domain::GroupChange::ApproveMembershipRequest(jid)
+            | wasabi_domain::GroupChange::RejectMembershipRequest(jid) => Some(jid.clone()),
             _ => None,
         };
         let leaving = matches!(patch.change(), wasabi_domain::GroupChange::Leave);
@@ -2350,6 +2395,12 @@ impl MainWindow {
                         } else {
                             success_feedback
                         };
+                        if result.applied_participants > 0
+                            && let Some(jid) = reviewed_request
+                        {
+                            this.membership_requests
+                                .retain(|request| request.jid != jid);
+                        }
                         if let Some(details) = result.details {
                             this.conversation_details = Some(ConversationDetails::Group(details));
                         } else {
@@ -2717,6 +2768,116 @@ impl MainWindow {
                 .participants
                 .iter()
                 .any(|participant| participant.is_self)
+    }
+
+    pub(crate) fn confirm_join_request(
+        &mut self,
+        action: JoinRequestAction,
+        cx: &mut Context<Self>,
+    ) {
+        if self.group_mutation_in_progress
+            || self.group_leave_uncertain
+            || !self.join_request_target_is_current(&action.target)
+        {
+            return;
+        }
+        self.group_mutation_error = None;
+        self.group_mutation_feedback = None;
+        self.message_overlay = Some(MessageOverlay::ConfirmJoinRequest(action));
+        cx.notify();
+    }
+
+    pub(crate) fn run_confirmed_join_request(&mut self, cx: &mut Context<Self>) {
+        let Some(MessageOverlay::ConfirmJoinRequest(action)) = self.message_overlay.take() else {
+            return;
+        };
+        if !self.join_request_target_is_current(&action.target) {
+            self.group_mutation_error = Some(
+                "This join request can no longer be reviewed from the current group state."
+                    .to_string(),
+            );
+            cx.notify();
+            return;
+        }
+        let patch = match action.kind {
+            JoinRequestActionKind::Approve => {
+                wasabi_domain::GroupPatch::approve_membership_request(
+                    action.target.chat,
+                    action.target.participant,
+                )
+            }
+            JoinRequestActionKind::Decline => wasabi_domain::GroupPatch::reject_membership_request(
+                action.target.chat,
+                action.target.participant,
+            ),
+        };
+        self.apply_group_patch(patch, cx);
+    }
+
+    fn join_request_target_is_current(&self, target: &JoinRequestTarget) -> bool {
+        let Some(ConversationDetails::Group(details)) = self.conversation_details.as_ref() else {
+            return false;
+        };
+        details.chat == target.chat
+            && details.subject == target.group_name
+            && self.chats.selected.as_deref() == Some(target.chat.as_str())
+            && self.session.state.is_connected()
+            && !self.group_leave_uncertain
+            && details.permissions.can_manage_members()
+            && self.membership_requests.iter().any(|request| {
+                request.jid == target.participant && request.display_name == target.participant_name
+            })
+    }
+
+    fn reset_membership_requests(&mut self) {
+        self.membership_requests_gen.fetch_add(1, Ordering::AcqRel);
+        self.membership_requests.clear();
+        self.membership_requests_loading = false;
+        self.membership_requests_error = None;
+    }
+
+    fn load_membership_requests(&mut self, cx: &mut Context<Self>) {
+        let Some(ConversationDetails::Group(details)) = self.conversation_details.as_ref() else {
+            self.reset_membership_requests();
+            return;
+        };
+        if !details.permissions.can_manage_members() || !self.show_right_panel {
+            self.reset_membership_requests();
+            return;
+        }
+        if !self.session.state.is_connected() {
+            self.reset_membership_requests();
+            return;
+        }
+        let chat = details.chat.clone();
+        let generation = self.membership_requests_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        self.membership_requests.clear();
+        self.membership_requests_loading = true;
+        self.membership_requests_error = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.membership_requests(chat).await;
+            this.update(cx, |this, cx| {
+                if this.membership_requests_gen.load(Ordering::Acquire) != generation
+                    || !this.show_right_panel
+                {
+                    return;
+                }
+                this.membership_requests_loading = false;
+                match result {
+                    Ok(requests) => {
+                        this.membership_requests = requests;
+                        this.membership_requests_error = None;
+                    }
+                    Err(error) => {
+                        this.membership_requests.clear();
+                        this.membership_requests_error = Some(error.ui_message().to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
     }
 
     pub(crate) fn confirm_message_action(
@@ -4522,6 +4683,11 @@ fn apply_state(
             this.session.pairing_error = None;
         }
         this.session.state = state;
+        if this.session.state.is_connected() && this.show_right_panel {
+            this.load_membership_requests(cx);
+        } else if !this.session.state.is_connected() {
+            this.reset_membership_requests();
+        }
         cx.notify();
     })
 }

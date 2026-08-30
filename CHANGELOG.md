@@ -4,7 +4,12 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
-_No changes yet._
+### Added
+
+- Group admins can now review pending join requests from group details.
+  Requests are queried live while connected, approved or declined one at a
+  time through cancel-first confirmations that name the exact person and
+  group, and dropped from the pending list after a successful change.
 
 ## [0.2.0-alpha.6] - 2026-08-30
 

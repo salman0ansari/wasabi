@@ -956,6 +956,9 @@ pub fn message_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> g
         crate::views::root::MessageOverlay::ConfirmLeaveGroup(target) => {
             leave_group_confirmation(target, cx)
         }
+        crate::views::root::MessageOverlay::ConfirmJoinRequest(action) => {
+            join_request_confirmation(action, cx)
+        }
     };
     gpui::div()
         .absolute()
@@ -1107,6 +1110,68 @@ fn group_member_confirmation(
                     cx.listener(|this, _, _, cx| this.run_confirmed_group_member_action(cx)),
                 )),
         )
+}
+
+fn join_request_confirmation(
+    action: crate::views::root::JoinRequestAction,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Div {
+    let (title, detail, confirm, confirm_id, danger) = join_request_confirmation_copy(&action);
+    action_card()
+        .child(
+            gpui::div()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme::text_primary())
+                .child(title),
+        )
+        .child(
+            gpui::div()
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .text_color(theme::text_secondary())
+                .child(detail),
+        )
+        .child(
+            gpui::div()
+                .flex()
+                .justify_end()
+                .gap(px(8.0))
+                .child(
+                    sheet_button("cancel-join-request-action", "Cancel", false)
+                        .on_click(cx.listener(|this, _, _, cx| this.close_message_overlay(cx))),
+                )
+                .child(
+                    sheet_button(confirm_id, confirm, danger).on_click(
+                        cx.listener(|this, _, _, cx| this.run_confirmed_join_request(cx)),
+                    ),
+                ),
+        )
+}
+
+fn join_request_confirmation_copy(
+    action: &crate::views::root::JoinRequestAction,
+) -> (String, &'static str, &'static str, &'static str, bool) {
+    match action.kind {
+        crate::views::root::JoinRequestActionKind::Approve => (
+            format!(
+                "Approve “{}” to join “{}”?",
+                action.target.participant_name, action.target.group_name
+            ),
+            "They will be added only after the linked account accepts the request.",
+            "Approve",
+            "confirm-approve-join-request",
+            false,
+        ),
+        crate::views::root::JoinRequestActionKind::Decline => (
+            format!(
+                "Decline “{}” from joining “{}”?",
+                action.target.participant_name, action.target.group_name
+            ),
+            "They will not be added to the group.",
+            "Decline",
+            "confirm-decline-join-request",
+            true,
+        ),
+    }
 }
 
 fn group_member_confirmation_copy(
@@ -1528,7 +1593,8 @@ fn sheet_button(id: &'static str, label: &'static str, danger: bool) -> gpui::St
 mod tests {
     use super::{
         chat_confirmation_copy, format_bytes, group_member_confirmation_copy,
-        leave_group_confirmation_copy, paints_downloaded_image_thumbnail,
+        join_request_confirmation_copy, leave_group_confirmation_copy,
+        paints_downloaded_image_thumbnail,
     };
 
     fn test_media() -> wasabi_domain::MediaDescriptor {
@@ -1633,5 +1699,35 @@ mod tests {
         assert!(copy.0.contains("Weekend hiking crew"));
         assert!(copy.1.contains("Existing history"));
         assert!(copy.1.contains("linked account accepts"));
+    }
+
+    #[test]
+    fn join_request_confirmations_name_the_exact_person_and_group() {
+        let target = crate::views::root::JoinRequestTarget {
+            chat: wasabi_domain::ChatId::new("preview-group@g.us"),
+            group_name: "Weekend hiking crew".to_string(),
+            participant: wasabi_domain::ChatId::new("preview-avery@s.whatsapp.net"),
+            participant_name: "Avery Chen".to_string(),
+        };
+        let approve = crate::views::root::JoinRequestAction {
+            target: target.clone(),
+            kind: crate::views::root::JoinRequestActionKind::Approve,
+        };
+        let decline = crate::views::root::JoinRequestAction {
+            target,
+            kind: crate::views::root::JoinRequestActionKind::Decline,
+        };
+
+        let approve_copy = join_request_confirmation_copy(&approve);
+        let decline_copy = join_request_confirmation_copy(&decline);
+
+        assert!(approve_copy.0.contains("Avery Chen"));
+        assert!(approve_copy.0.contains("Weekend hiking crew"));
+        assert_eq!(approve_copy.2, "Approve");
+        assert!(!approve_copy.4);
+        assert!(decline_copy.0.contains("Avery Chen"));
+        assert!(decline_copy.0.contains("Weekend hiking crew"));
+        assert_eq!(decline_copy.2, "Decline");
+        assert!(decline_copy.4);
     }
 }

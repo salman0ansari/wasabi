@@ -58,6 +58,12 @@ impl GroupPermissions {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingMembershipRequest {
+    pub jid: ChatId,
+    pub display_name: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupDetails {
     pub chat: ChatId,
@@ -73,4 +79,26 @@ pub struct GroupDetails {
 pub enum ConversationDetails {
     Direct(DirectContactDetails),
     Group(GroupDetails),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn permissions(role: Option<ParticipantRole>) -> GroupPermissions {
+        GroupPermissions {
+            only_admins_edit: false,
+            only_admins_send: false,
+            membership_approval: false,
+            current_user_role: role,
+        }
+    }
+
+    #[test]
+    fn can_manage_members_is_admin_or_super_admin() {
+        assert!(permissions(Some(ParticipantRole::Admin)).can_manage_members());
+        assert!(permissions(Some(ParticipantRole::SuperAdmin)).can_manage_members());
+        assert!(!permissions(Some(ParticipantRole::Member)).can_manage_members());
+        assert!(!permissions(None).can_manage_members());
+    }
 }
