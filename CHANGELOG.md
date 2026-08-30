@@ -4,7 +4,12 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
-_No changes yet._
+### Added
+
+- Conversation headers and contact/group information now render the real
+  profile photo when the linked account provides one. Photos are fetched as
+  previews, stored in the existing media cache, and fall back to initials when
+  the picture is unavailable, privacy-restricted, or the session is offline.
 
 ## [0.2.0-alpha.4] - 2026-08-30
 

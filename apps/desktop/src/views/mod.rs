@@ -1,6 +1,7 @@
 //! Desktop shell views. All rendering reads prepared model fields; no IO or
 //! queries happen inside render paths.
 
+mod avatar;
 mod chat_list;
 mod composer;
 mod conversation;

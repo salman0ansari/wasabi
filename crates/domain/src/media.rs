@@ -22,6 +22,24 @@ pub struct CachedMedia {
     pub path: PathBuf,
 }
 
+/// One immutable request to recover a contact or group profile photo. The
+/// identity is captured before asynchronous work begins so switching chats
+/// cannot redirect the transfer. `refresh` bypasses a warm disk hit so a
+/// PictureUpdate can replace or clear bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfilePictureRequest {
+    pub jid: ChatId,
+    pub refresh: bool,
+}
+
+/// A profile photo committed to Wasabi's media cache. The path is a local
+/// cache file; remote CDN URLs never cross this boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CachedAvatar {
+    pub jid: ChatId,
+    pub path: PathBuf,
+}
+
 /// Whether a durable job moves bytes into or out of the account.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransferDirection {
@@ -138,6 +156,16 @@ mod tests {
         assert_eq!(request.chat.as_str(), "chat-a@s.whatsapp.net");
         assert_eq!(request.media.as_str(), "MESSAGE-A");
         assert_eq!(format!("{:?}", request.media), "MediaId(<opaque>)");
+    }
+
+    #[test]
+    fn profile_picture_request_captures_chat_identity() {
+        let request = ProfilePictureRequest {
+            jid: ChatId::new("15550000001@s.whatsapp.net"),
+            refresh: true,
+        };
+        assert_eq!(request.jid.as_str(), "15550000001@s.whatsapp.net");
+        assert!(request.refresh);
     }
 
     #[test]

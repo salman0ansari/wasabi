@@ -35,8 +35,8 @@ pub use group::{
 };
 pub use ids::{AccountId, ChatId, LocalCursor, MediaId, MessageId, TransferId};
 pub use media::{
-    AttachmentKind, CachedMedia, MediaDownloadRequest, StagedAttachment, TransferDirection,
-    TransferJob, TransferPayload, TransferState,
+    AttachmentKind, CachedAvatar, CachedMedia, MediaDownloadRequest, ProfilePictureRequest,
+    StagedAttachment, TransferDirection, TransferJob, TransferPayload, TransferState,
 };
 pub use message::{
     ChatSummary, MESSAGE_EDIT_WINDOW_MS, MediaAvailability, MediaDescriptor, MessageContext,

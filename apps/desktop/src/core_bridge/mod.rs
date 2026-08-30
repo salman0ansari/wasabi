@@ -20,13 +20,13 @@ use tokio_util::sync::CancellationToken;
 use wasabi_core::events::{Invalidation, InvalidationPublisher};
 use wasabi_core::state::SessionState;
 use wasabi_domain::{
-    CachedMedia, ChatAction, ChatId, ChatPage, ChatScope, ContactLookupResult, ContactPage,
-    ContactPageCursor, ContactPhoneNumber, ContactSummary, CreateGroupRequest,
-    DirectContactDetails, ErrorKind, GroupChange, GroupDetails, GroupPatch, GroupPatchResult,
-    GroupPermissions, MediaDownloadRequest, MessageAction, MessageContext, MessageId, MessagePage,
-    NotificationCandidate, PageCursor, PairingPhoneNumber, Participant, ParticipantRole,
-    PhonePairCode, SearchPage, SendContent, SendReceipt, SendRequest, ServiceError,
-    StagedAttachment, TransferId, TransferJob,
+    AvatarRef, CachedAvatar, CachedMedia, ChatAction, ChatId, ChatPage, ChatScope,
+    ContactLookupResult, ContactPage, ContactPageCursor, ContactPhoneNumber, ContactSummary,
+    CreateGroupRequest, DirectContactDetails, ErrorKind, GroupChange, GroupDetails, GroupPatch,
+    GroupPatchResult, GroupPermissions, MediaDownloadRequest, MessageAction, MessageContext,
+    MessageId, MessagePage, NotificationCandidate, PageCursor, PairingPhoneNumber, Participant,
+    ParticipantRole, PhonePairCode, ProfilePictureRequest, SearchPage, SendContent, SendReceipt,
+    SendRequest, ServiceError, StagedAttachment, TransferId, TransferJob,
 };
 use wasabi_repository::AccountStore;
 use wasabi_whatsapp::lifecycle::QrState;
@@ -114,6 +114,10 @@ pub trait DesktopBackend: Send + Sync {
         &self,
         request: MediaDownloadRequest,
     ) -> Result<CachedMedia, ServiceError>;
+    async fn profile_picture(
+        &self,
+        request: ProfilePictureRequest,
+    ) -> Result<Option<CachedAvatar>, ServiceError>;
     // Kept hidden from navigation/composer until media sending is wired; the
     // service itself is complete and testable without exposing an inert icon.
     #[allow(dead_code)]
@@ -586,18 +590,8 @@ impl CoreBridge {
                 tracing::warn!("live contact metadata response omitted requested contact; using cache");
                 return Ok(cached);
             };
-            let about = info
-                .status
-                .as_deref()
-                .map(str::trim)
-                .filter(|status| !status.is_empty())
-                .map(str::to_string);
-            let avatar = info
-                .picture_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|picture| !picture.is_empty())
-                .map(|picture| wasabi_domain::AvatarRef(picture.to_string()));
+            let about = optional_profile_text(info.status.as_deref());
+            let avatar = avatar_ref_from_picture_id(info.picture_id.as_deref());
             let details = DirectContactDetails {
                 about,
                 avatar,
@@ -656,7 +650,13 @@ impl CoreBridge {
                 }
             };
             left_groups.write().expect("left group lock").remove(&chat);
+            let cached_avatar = cached
+                .as_ref()
+                .ok()
+                .and_then(|cached| cached.as_ref())
+                .and_then(|cached| cached.avatar.clone());
             let details = project_group_metadata(&session, metadata, false).await;
+            let details = attach_group_avatar(client.as_ref(), &jid, details, cached_avatar).await;
             if let Err(error) = store
                 .save_group_details(
                     details.clone(),
@@ -915,7 +915,15 @@ impl CoreBridge {
                     .get_metadata(&chat)
                     .await
                     .map_err(group_service_error)?;
+                let cached_avatar = store
+                    .cached_group_details(patch.chat().as_str())
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|cached| cached.avatar);
                 let details = project_group_metadata(&session, metadata, false).await;
+                let details =
+                    attach_group_avatar(client.as_ref(), &chat, details, cached_avatar).await;
                 if let Err(error) = store
                     .save_group_details(details.clone(), chrono::Utc::now().timestamp_millis())
                     .await
@@ -1024,6 +1032,113 @@ impl CoreBridge {
                 media: request.media,
                 path,
             })
+        })
+        .await
+    }
+
+    pub async fn profile_picture(
+        &self,
+        request: ProfilePictureRequest,
+    ) -> Result<Option<CachedAvatar>, ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let session = self
+            .session_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
+        let cache = self.media_cache.clone();
+        self.run_on_core_service(async move {
+            let jid: whatsapp_rust::Jid = request.jid.as_str().parse().map_err(|_| {
+                ServiceError::new(
+                    ErrorKind::InvalidRequest,
+                    "invalid profile picture identity",
+                )
+            })?;
+            if !jid.is_pn() && !jid.is_lid() && !jid.is_group() {
+                return Err(ServiceError::new(
+                    ErrorKind::InvalidRequest,
+                    "profile pictures are only available for contacts and groups",
+                ));
+            }
+            let store = Arc::clone(&session.store);
+            let known = cached_avatar_ref(&store, &jid).await;
+            if !request.refresh
+                && let Some(picture) = known.as_ref()
+                && let Some(path) = cache.open_path(&wasabi_media::avatar_cache_key(
+                    request.jid.as_str(),
+                    &picture.0,
+                ))
+            {
+                return Ok(Some(CachedAvatar {
+                    jid: request.jid,
+                    path,
+                }));
+            }
+            if !session.state().is_connected() {
+                return cached_avatar_from_disk(&cache, request.jid, known.as_ref());
+            }
+            let Some(client) = session.client().await else {
+                return cached_avatar_from_disk(&cache, request.jid, known.as_ref());
+            };
+            let picture = match client.contacts().get_profile_picture(&jid, true).await {
+                Ok(picture) => picture,
+                Err(error) => {
+                    tracing::warn!(
+                        kind = %contact_error_kind(&error),
+                        "live profile picture request failed"
+                    );
+                    return cached_avatar_from_disk(&cache, request.jid, known.as_ref());
+                }
+            };
+            let Some(picture) = picture else {
+                if let Some(previous) = known.as_ref() {
+                    let _ = cache
+                        .remove(&wasabi_media::avatar_cache_key(
+                            request.jid.as_str(),
+                            &previous.0,
+                        ))
+                        .await;
+                }
+                persist_avatar_ref(&store, &jid, None).await;
+                return Ok(None);
+            };
+            let Some(avatar) = avatar_ref_from_picture_id(Some(picture.id.as_str())) else {
+                if let Some(previous) = known.as_ref() {
+                    let _ = cache
+                        .remove(&wasabi_media::avatar_cache_key(
+                            request.jid.as_str(),
+                            &previous.0,
+                        ))
+                        .await;
+                }
+                persist_avatar_ref(&store, &jid, None).await;
+                return Ok(None);
+            };
+            let cache_key = wasabi_media::avatar_cache_key(request.jid.as_str(), &avatar.0);
+            if let Some(path) = cache.open_path(&cache_key) {
+                persist_avatar_ref(&store, &jid, Some(avatar)).await;
+                return Ok(Some(CachedAvatar {
+                    jid: request.jid,
+                    path,
+                }));
+            }
+            let url = picture.url;
+            if !profile_picture_url_is_safe(&url) {
+                tracing::warn!("profile picture URL rejected");
+                return cached_avatar_from_disk(&cache, request.jid, known.as_ref());
+            }
+            let bytes = tokio::task::spawn_blocking(move || download_profile_picture_bytes(url))
+                .await
+                .map_err(|error| ServiceError::new(ErrorKind::Internal, error.to_string()))??;
+            let path = cache
+                .store_bytes(&cache_key, &bytes)
+                .await
+                .map_err(|error| ServiceError::new(ErrorKind::Internal, error.to_string()))?;
+            persist_avatar_ref(&store, &jid, Some(avatar)).await;
+            Ok(Some(CachedAvatar {
+                jid: request.jid,
+                path,
+            }))
         })
         .await
     }
@@ -1973,11 +2088,145 @@ fn service_message(e: ServiceError) -> String {
     e.ui_message().to_string()
 }
 
-fn contact_lookup_error(error: whatsapp_rust::ContactError) -> ServiceError {
+fn optional_profile_text(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+fn avatar_ref_from_picture_id(picture_id: Option<&str>) -> Option<AvatarRef> {
+    optional_profile_text(picture_id).map(AvatarRef)
+}
+
+fn profile_picture_url_is_safe(url: &str) -> bool {
+    let url = url.trim();
+    url.starts_with("https://") && !url.chars().any(char::is_whitespace)
+}
+
+fn cached_avatar_from_disk(
+    cache: &wasabi_media::DiskCache,
+    jid: ChatId,
+    picture: Option<&AvatarRef>,
+) -> Result<Option<CachedAvatar>, ServiceError> {
+    let Some(picture) = picture else {
+        return Ok(None);
+    };
+    Ok(cache
+        .open_path(&wasabi_media::avatar_cache_key(jid.as_str(), &picture.0))
+        .map(|path| CachedAvatar { jid, path }))
+}
+
+async fn cached_avatar_ref(
+    store: &wasabi_repository::AccountStore,
+    jid: &whatsapp_rust::Jid,
+) -> Option<AvatarRef> {
+    let identity = jid.to_string();
+    if jid.is_group() {
+        store
+            .cached_group_details(&identity)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|details| details.avatar)
+    } else {
+        store
+            .direct_contact_details(&identity)
+            .await
+            .ok()
+            .and_then(|details| details.avatar)
+    }
+}
+
+async fn persist_avatar_ref(
+    store: &wasabi_repository::AccountStore,
+    jid: &whatsapp_rust::Jid,
+    avatar: Option<AvatarRef>,
+) {
+    let identity = jid.to_string();
+    if jid.is_group() {
+        let Ok(Some(mut details)) = store.cached_group_details(&identity).await else {
+            return;
+        };
+        details.avatar = avatar;
+        if let Err(error) = store
+            .save_group_details(details, chrono::Utc::now().timestamp_millis())
+            .await
+        {
+            tracing::warn!(kind = %error.kind, "failed to persist group avatar metadata");
+        }
+        return;
+    }
+    let Ok(mut details) = store.direct_contact_details(&identity).await else {
+        return;
+    };
+    details.avatar = avatar;
+    if let Err(error) = store.save_direct_contact_metadata(&details).await {
+        tracing::warn!(kind = %error.kind, "failed to persist contact avatar metadata");
+    }
+}
+
+async fn attach_group_avatar(
+    client: &whatsapp_rust::client::Client,
+    jid: &whatsapp_rust::Jid,
+    mut details: GroupDetails,
+    cached_avatar: Option<AvatarRef>,
+) -> GroupDetails {
+    details.avatar = cached_avatar;
+    match client.contacts().get_profile_picture(jid, true).await {
+        Ok(Some(picture)) => {
+            details.avatar = avatar_ref_from_picture_id(Some(picture.id.as_str()));
+        }
+        Ok(None) => details.avatar = None,
+        Err(error) => {
+            tracing::warn!(
+                kind = %contact_error_kind(&error),
+                "live group avatar refresh failed; using cache"
+            );
+        }
+    }
+    details
+}
+
+fn download_profile_picture_bytes(url: String) -> Result<Vec<u8>, ServiceError> {
+    use std::io::Read;
+
+    let unavailable = || {
+        ServiceError::new(
+            ErrorKind::MediaUnavailable,
+            "profile picture download failed",
+        )
+    };
+    if !profile_picture_url_is_safe(&url) {
+        return Err(unavailable());
+    }
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(15)))
+        .build()
+        .into();
+    let mut response = agent.get(&url).call().map_err(|_| unavailable())?;
+    if !response.status().is_success() {
+        return Err(unavailable());
+    }
+    let limit = wasabi_media::MAX_PROFILE_PICTURE_BYTES;
+    let mut bytes = Vec::new();
+    response
+        .body_mut()
+        .as_reader()
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| unavailable())?;
+    if bytes.is_empty() || bytes.len() as u64 > limit {
+        return Err(unavailable());
+    }
+    Ok(bytes)
+}
+
+fn contact_error_kind(error: &whatsapp_rust::ContactError) -> ErrorKind {
     use whatsapp_rust::ContactError;
     use whatsapp_rust::request::IqError;
 
-    let kind = match &error {
+    match error {
         ContactError::InvalidJid(_) => ErrorKind::InvalidRequest,
         ContactError::Iq(IqError::Timeout) => ErrorKind::Timeout,
         ContactError::Iq(IqError::NotConnected)
@@ -1989,10 +2238,13 @@ fn contact_lookup_error(error: whatsapp_rust::ContactError) -> ServiceError {
         ContactError::Iq(IqError::ServerError { code: 429, .. }) => ErrorKind::RateLimited,
         ContactError::Iq(_) => ErrorKind::Protocol,
         _ => ErrorKind::Protocol,
-    };
+    }
+}
+
+fn contact_lookup_error(error: whatsapp_rust::ContactError) -> ServiceError {
     // Do not retain the upstream string: future variants may include the
     // queried JID. Phone numbers must stay out of normal diagnostics.
-    ServiceError::new(kind, "registration lookup failed")
+    ServiceError::new(contact_error_kind(&error), "registration lookup failed")
 }
 
 fn group_service_error(error: whatsapp_rust::GroupError) -> ServiceError {
@@ -2295,6 +2547,13 @@ impl DesktopBackend for CoreBridge {
         CoreBridge::download_media(self, request).await
     }
 
+    async fn profile_picture(
+        &self,
+        request: ProfilePictureRequest,
+    ) -> Result<Option<CachedAvatar>, ServiceError> {
+        CoreBridge::profile_picture(self, request).await
+    }
+
     async fn stage_attachment(
         &self,
         chat: ChatId,
@@ -2494,6 +2753,27 @@ mod tests {
             transfer_failure_state(ErrorKind::NotConnected),
             wasabi_domain::TransferState::FailedRetryable
         );
+    }
+
+    #[test]
+    fn profile_metadata_mappers_treat_empty_and_unsafe_as_absent() {
+        assert_eq!(
+            optional_profile_text(Some("  hello  ")).as_deref(),
+            Some("hello")
+        );
+        assert_eq!(optional_profile_text(Some("   ")), None);
+        assert_eq!(optional_profile_text(None), None);
+        assert_eq!(
+            avatar_ref_from_picture_id(Some(" picture-1 ")),
+            Some(AvatarRef("picture-1".to_string()))
+        );
+        assert_eq!(avatar_ref_from_picture_id(Some("")), None);
+        assert!(profile_picture_url_is_safe("https://mmg.whatsapp.net/pic"));
+        assert!(!profile_picture_url_is_safe("http://mmg.whatsapp.net/pic"));
+        assert!(!profile_picture_url_is_safe(
+            "https://example.com/pic with space"
+        ));
+        assert!(!profile_picture_url_is_safe("file:///tmp/pic"));
     }
 
     #[test]

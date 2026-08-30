@@ -9,6 +9,7 @@ use wasabi_domain::{ConversationDetails, Participant, ParticipantRole};
 
 use crate::state::chats;
 use crate::theme;
+use crate::views::avatar;
 use crate::views::root::MainWindow;
 
 pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl IntoElement {
@@ -46,7 +47,9 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
             None,
         ),
     };
-    let initial = name.chars().next().unwrap_or('#').to_string();
+    let initial = avatar::first_initial(&name);
+    let selected_chat = this.chats.selected.clone();
+    let photo = selected_chat.as_deref().and_then(|id| this.avatar_path(id));
 
     let mut panel = gpui::div()
         .id("conversation-info")
@@ -102,19 +105,14 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
                 .gap(px(7.0))
                 .px(px(20.0))
                 .py(px(22.0))
-                .child(
-                    gpui::div()
-                        .size(px(82.0))
-                        .rounded_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .bg(theme::row_selected())
-                        .text_color(theme::accent_text())
-                        .text_size(px(30.0))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(initial),
-                )
+                .child(avatar::avatar_face(
+                    82.0,
+                    photo,
+                    initial,
+                    theme::row_selected(),
+                    theme::accent_text(),
+                    Some(30.0),
+                ))
                 .child(
                     gpui::div()
                         .text_size(px(18.0))

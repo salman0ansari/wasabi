@@ -9,6 +9,7 @@ use gpui_component::{Icon, IconName};
 use crate::state::chats;
 use crate::state::messages::{self, TimelineItem};
 use crate::theme;
+use crate::views::avatar;
 use crate::views::root::MainWindow;
 
 const LOAD_OLDER_THRESHOLD: usize = 8;
@@ -123,6 +124,8 @@ fn header(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
             ),
         },
     };
+    let selected_chat = this.chats.selected.clone();
+    let photo = selected_chat.as_deref().and_then(|id| this.avatar_path(id));
 
     let panel_open = this.show_right_panel;
     gpui::div()
@@ -134,19 +137,14 @@ fn header(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
         .bg(theme::surface())
         .border_b_1()
         .border_color(theme::border())
-        .child(
-            gpui::div()
-                .size(px(38.0))
-                .rounded_full()
-                .flex_shrink(0.0)
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(avatar_bg)
-                .text_color(theme::text_on_accent())
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(initials),
-        )
+        .child(avatar::avatar_face(
+            38.0,
+            photo,
+            initials,
+            avatar_bg,
+            theme::text_on_accent(),
+            None,
+        ))
         .child(
             gpui::div()
                 .flex_1()

@@ -7,7 +7,7 @@ mod cache;
 mod manager;
 mod thumb;
 
-pub use cache::DiskCache;
+pub use cache::{DiskCache, avatar_cache_key};
 pub use manager::{ClientProvider, MediaManager, StagedUpload, media_downloadable};
 pub use thumb::ThumbnailService;
 pub use tokio_util::sync::CancellationToken;
@@ -32,6 +32,8 @@ pub const MEDIA_QUEUE_CAPACITY: usize = 32;
 pub const DECODED_IMAGE_CACHE_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 /// Default disk cache quota (configurable at runtime).
 pub const DEFAULT_DISK_CACHE_QUOTA_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Preview profile photos are small; larger bodies are rejected as unavailable.
+pub const MAX_PROFILE_PICTURE_BYTES: u64 = 512 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MediaError {

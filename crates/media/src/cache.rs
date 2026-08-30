@@ -123,6 +123,13 @@ impl DiskCache {
 
     /// Convenience writer used by tests and small blobs: stores bytes under
     /// their hash with the same fsync+rename discipline as streamed writes.
+    pub async fn remove(&self, sha_hex: &str) -> std::io::Result<()> {
+        let Some(path) = self.open_path(sha_hex) else {
+            return Ok(());
+        };
+        tokio::fs::remove_file(path).await
+    }
+
     pub async fn store_bytes(&self, sha_hex: &str, data: &[u8]) -> std::io::Result<PathBuf> {
         use std::io::Write;
 
@@ -260,6 +267,20 @@ fn file_name_of(path: &Path) -> String {
         .to_owned()
 }
 
+/// Stable DiskCache name for a contact or group profile photo. The key is
+/// identity-scoped so a later picture replaces the same file; it is not a
+/// content hash of the JPEG bytes.
+pub fn avatar_cache_key(jid: &str, picture_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"avatar\0");
+    hasher.update(jid.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(picture_id.as_bytes());
+    to_hex(&hasher.finalize())
+}
+
 pub(crate) fn is_sha_hex(s: &str) -> bool {
     s.len() == 64
         && s.bytes()
@@ -306,6 +327,37 @@ mod tests {
             .filter(|e| !is_sha_hex(&file_name_of(&e.path())))
             .collect();
         assert!(leftovers.is_empty());
+    }
+
+    #[test]
+    fn avatar_cache_key_is_stable_and_identity_scoped() {
+        let alice = avatar_cache_key("15550000001@s.whatsapp.net", "picture-1");
+        assert_eq!(alice.len(), 64);
+        assert!(is_sha_hex(&alice));
+        assert_eq!(
+            alice,
+            avatar_cache_key("15550000001@s.whatsapp.net", "picture-1")
+        );
+        assert_ne!(
+            alice,
+            avatar_cache_key("15550000001@s.whatsapp.net", "picture-2")
+        );
+        assert_ne!(
+            alice,
+            avatar_cache_key("15550000002@s.whatsapp.net", "picture-1")
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_deletes_committed_entry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache = DiskCache::open(dir.path()).await.expect("open");
+        let data = b"avatar";
+        let name = sha_hex(data);
+        cache.store_bytes(&name, data).await.expect("store");
+        cache.remove(&name).await.expect("remove");
+        assert!(cache.open_path(&name).is_none());
+        cache.remove(&name).await.expect("idempotent");
     }
 
     #[tokio::test]

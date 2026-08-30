@@ -115,6 +115,14 @@ pub(crate) enum MediaDownloadUi {
 }
 
 #[derive(Clone)]
+pub(crate) enum AvatarUi {
+    Loading,
+    Ready(std::path::PathBuf),
+    Missing,
+    Failed,
+}
+
+#[derive(Clone)]
 pub(crate) enum PhoneLookupUi {
     Idle,
     Checking,
@@ -209,6 +217,8 @@ pub struct MainWindow {
     pub(crate) message_overlay: Option<MessageOverlay>,
     pub(crate) media_downloads:
         HashMap<(wasabi_domain::ChatId, wasabi_domain::MediaId), MediaDownloadUi>,
+    pub(crate) avatars: HashMap<String, AvatarUi>,
+    avatar_gens: HashMap<String, u64>,
     pub(crate) staged_attachments: HashMap<String, wasabi_domain::StagedAttachment>,
     pub(crate) attachment_staging: HashSet<String>,
     pub(crate) attachment_sending: HashSet<String>,
@@ -356,6 +366,8 @@ impl MainWindow {
             active_draft: wasabi_domain::Draft::default(),
             message_overlay: None,
             media_downloads: HashMap::new(),
+            avatars: HashMap::new(),
+            avatar_gens: HashMap::new(),
             staged_attachments: HashMap::new(),
             attachment_staging: HashSet::new(),
             attachment_sending: HashSet::new(),
@@ -1510,6 +1522,15 @@ impl MainWindow {
         self.composer_input.update(cx, |input, cx| {
             composer::set_text_at_end(input, draft_body, window, cx)
         });
+        if self
+            .chats
+            .chats
+            .iter()
+            .find(|chat| chat.id.as_str() == chat_id)
+            .is_some_and(|chat| matches!(chat.kind, ChatKind::Direct | ChatKind::Group))
+        {
+            self.request_avatar(chat_id.clone(), false, cx);
+        }
         let should_mark_read = window.is_window_active()
             && self.session.can_send()
             && self
@@ -1970,6 +1991,65 @@ impl MainWindow {
         cx.notify();
     }
 
+    pub(crate) fn avatar_path(&self, jid: &str) -> Option<&std::path::Path> {
+        match self.avatars.get(jid) {
+            Some(AvatarUi::Ready(path)) => Some(path.as_path()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn request_avatar(&mut self, jid: String, refresh: bool, cx: &mut Context<Self>) {
+        if jid.is_empty() {
+            return;
+        }
+        if !refresh
+            && matches!(
+                self.avatars.get(&jid),
+                Some(AvatarUi::Loading | AvatarUi::Ready(_) | AvatarUi::Missing)
+            )
+        {
+            return;
+        }
+        if !matches!(self.avatars.get(&jid), Some(AvatarUi::Ready(_))) {
+            self.avatars.insert(jid.clone(), AvatarUi::Loading);
+        }
+        let generation = {
+            let generation = self.avatar_gens.entry(jid.clone()).or_insert(0);
+            *generation += 1;
+            *generation
+        };
+        let request = wasabi_domain::ProfilePictureRequest {
+            jid: wasabi_domain::ChatId::new(jid.clone()),
+            refresh,
+        };
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.profile_picture(request).await;
+            this.update(cx, |this, cx| {
+                if this.avatar_gens.get(&jid) != Some(&generation) {
+                    return;
+                }
+                match result {
+                    Ok(Some(cached)) => {
+                        this.avatars.insert(jid, AvatarUi::Ready(cached.path));
+                    }
+                    Ok(None) => {
+                        this.avatars.insert(jid, AvatarUi::Missing);
+                    }
+                    Err(error) => {
+                        tracing::warn!(kind = %error.kind, "profile picture download failed");
+                        if !matches!(this.avatars.get(&jid), Some(AvatarUi::Ready(_))) {
+                            this.avatars.insert(jid, AvatarUi::Failed);
+                        }
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
     pub(crate) fn request_pairing(&mut self, cx: &mut Context<Self>) {
         self.start_pairing_request(cx, false);
     }
@@ -2152,7 +2232,14 @@ impl MainWindow {
                 }
                 this.details_loading = false;
                 match result {
-                    Ok(details) => this.conversation_details = Some(details),
+                    Ok(details) => {
+                        let avatar_jid = match &details {
+                            ConversationDetails::Direct(contact) => contact.jid.clone(),
+                            ConversationDetails::Group(group) => group.chat.as_str().to_string(),
+                        };
+                        this.conversation_details = Some(details);
+                        this.request_avatar(avatar_jid, false, cx);
+                    }
                     Err(error) => this.details_error = Some(error),
                 }
                 cx.notify();
@@ -3621,10 +3708,25 @@ impl MainWindow {
                             if this.new_chat_open {
                                 this.load_contact_query(false, cx);
                             }
+                            if let Some(selected) = this.chats.selected.clone()
+                                && this
+                                    .chats
+                                    .chats
+                                    .iter()
+                                    .find(|chat| chat.id.as_str() == selected)
+                                    .is_some_and(|chat| {
+                                        matches!(chat.kind, ChatKind::Direct | ChatKind::Group)
+                                    })
+                            {
+                                this.request_avatar(selected, true, cx);
+                            }
                             if this.show_right_panel
                                 && matches!(
                                     this.conversation_details.as_ref(),
-                                    Some(ConversationDetails::Direct(_))
+                                    Some(
+                                        ConversationDetails::Direct(_)
+                                            | ConversationDetails::Group(_)
+                                    )
                                 )
                             {
                                 this.load_conversation_details(cx);

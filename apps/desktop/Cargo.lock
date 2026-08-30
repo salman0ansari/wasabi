@@ -8041,6 +8041,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "ureq",
  "wasabi-core",
  "wasabi-domain",
  "wasabi-media",

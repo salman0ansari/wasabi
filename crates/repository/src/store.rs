@@ -499,8 +499,8 @@ impl AccountStore {
     }
 
     /// Cached identity fields for a direct contact. Privacy-controlled About
-    /// and profile-photo data remain `None` until their dedicated cache is
-    /// populated; the projection never invents values for them.
+    /// and profile-photo identifiers remain `None` until an authoritative
+    /// refresh writes them; the projection never invents values for them.
     pub async fn direct_contact_details(
         &self,
         jid: &str,

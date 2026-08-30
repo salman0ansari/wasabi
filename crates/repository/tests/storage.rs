@@ -155,6 +155,10 @@ async fn group_details_cache_reopens_and_replaces_participants_atomically() {
         .expect("cached group details");
     assert_eq!(cached.subject, "Weekend plans");
     assert_eq!(cached.description.as_deref(), Some("Bring water"));
+    assert_eq!(
+        cached.avatar,
+        Some(domain::AvatarRef("group-avatar".to_string()))
+    );
     assert_eq!(cached.participant_count, 3);
     assert_eq!(cached.participants.len(), 2);
     assert!(cached.participants[0].is_self, "self is sorted first");
