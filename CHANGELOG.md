@@ -4,6 +4,10 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
+_No changes yet._
+
+## [0.3.2] - 2026-08-31
+
 ### Added
 
 - Composer now has a local categorized Unicode emoji picker next to attach.
@@ -11,6 +15,7 @@ All notable user-visible changes to wasabi are recorded here. The format follows
   Escape, click-outside, or the toggle closes the picker.
 
 ## [0.3.1] - 2026-08-31
+
 ### Added
 
 - Session recovery now names forced logout, a normal unlink, a client WhatsApp
