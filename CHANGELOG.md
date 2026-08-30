@@ -4,6 +4,10 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
+_No changes yet._
+
+## [0.3.4] - 2026-08-31
+
 ### Added
 
 - Downloaded photos, videos, audio, documents, and stickers can be saved to a
