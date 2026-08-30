@@ -4,6 +4,10 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
+_No changes yet._
+
+## [0.2.0-alpha.9] - 2026-08-30
+
 ### Added
 
 - Direct contact details now list groups in common from the local group cache.
@@ -306,7 +310,8 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 - Selecting a different chat now closes the information drawer.
 - Narrow windows use a dismissible overlay drawer instead of permanently crushing the conversation.
 
-[Unreleased]: https://github.com/salman0ansari/wasabi/compare/v0.2.0-alpha.8...HEAD
+[Unreleased]: https://github.com/salman0ansari/wasabi/compare/v0.2.0-alpha.9...HEAD
+[0.2.0-alpha.9]: https://github.com/salman0ansari/wasabi/compare/v0.2.0-alpha.8...v0.2.0-alpha.9
 [0.2.0-alpha.8]: https://github.com/salman0ansari/wasabi/compare/v0.2.0-alpha.7...v0.2.0-alpha.8
 [0.2.0-alpha.7]: https://github.com/salman0ansari/wasabi/compare/v0.2.0-alpha.6...v0.2.0-alpha.7
 [0.2.0-alpha.6]: https://github.com/salman0ansari/wasabi/compare/v0.2.0-alpha.5...v0.2.0-alpha.6
