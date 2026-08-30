@@ -1,6 +1,6 @@
 # What works today
 
-This page describes the shipped behavior in wasabi `0.2.0-alpha.9`. It is a capability inventory, not a promise about unfinished controls. Features without a complete data source, failure state, and usable workflow stay hidden.
+This page describes the shipped behavior in wasabi `0.3.0`. It is a capability inventory, not a promise about unfinished controls. Features without a complete data source, failure state, and usable workflow stay hidden.
 
 ## Account and startup
 

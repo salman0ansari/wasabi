@@ -4,6 +4,10 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
+_No changes yet._
+
+## [0.3.0] - 2026-08-30
+
 ### Added
 
 - Group admins can now copy or reset the live invite link from group details.

@@ -1,6 +1,6 @@
 # wasabi
 
-**Current release: 0.2.0-alpha.9 — developer preview**
+**Current release: 0.3.0 — developer preview**
 
 wasabi is a fast, native Linux desktop messenger for WhatsApp accounts. It is built in Rust with GPUI and is designed to feel at home on the desktop without shipping an Electron runtime.
 
