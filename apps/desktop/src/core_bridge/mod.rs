@@ -118,6 +118,7 @@ pub trait DesktopBackend: Send + Sync {
         &self,
         request: ProfilePictureRequest,
     ) -> Result<Option<CachedAvatar>, ServiceError>;
+    fn cached_avatar_path(&self, jid: &str, picture: &AvatarRef) -> Option<PathBuf>;
     // Kept hidden from navigation/composer until media sending is wired; the
     // service itself is complete and testable without exposing an inert icon.
     #[allow(dead_code)]
@@ -1034,6 +1035,11 @@ impl CoreBridge {
             })
         })
         .await
+    }
+
+    pub fn cached_avatar_path(&self, jid: &str, picture: &AvatarRef) -> Option<PathBuf> {
+        self.media_cache
+            .open_path(&wasabi_media::avatar_cache_key(jid, &picture.0))
     }
 
     pub async fn profile_picture(
@@ -2552,6 +2558,10 @@ impl DesktopBackend for CoreBridge {
         request: ProfilePictureRequest,
     ) -> Result<Option<CachedAvatar>, ServiceError> {
         CoreBridge::profile_picture(self, request).await
+    }
+
+    fn cached_avatar_path(&self, jid: &str, picture: &AvatarRef) -> Option<PathBuf> {
+        CoreBridge::cached_avatar_path(self, jid, picture)
     }
 
     async fn stage_attachment(

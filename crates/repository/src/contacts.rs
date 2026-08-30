@@ -1,5 +1,7 @@
 //! Deterministic, keyset-paginated contact queries over the shared account DB.
 
+use std::collections::HashMap;
+
 use diesel::prelude::*;
 use diesel::sql_types::{BigInt, Integer, Nullable, Text};
 use wacore::store::error::StoreError;
@@ -10,6 +12,14 @@ use whatsapp_rust::Jid;
 use whatsapp_rust_sqlite_storage::SharedSqlite;
 
 const MAX_CONTACT_PAGE: usize = 200;
+
+diesel::table! {
+    wasabi_contact_cache (device_id, jid) {
+        device_id -> Integer,
+        jid -> Text,
+        avatar_ref -> Nullable<Text>,
+    }
+}
 
 const CONTACT_PAGE_SQL: &str = r#"
 WITH canonical AS (
@@ -83,6 +93,42 @@ pub(crate) struct CachedContactMetadata {
     pub about: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
     pub avatar_ref: Option<String>,
+}
+
+#[derive(Queryable, Selectable)]
+#[diesel(table_name = wasabi_contact_cache)]
+struct AvatarRefRow {
+    jid: String,
+    avatar_ref: Option<String>,
+}
+
+pub(crate) async fn load_avatar_refs(
+    shared: SharedSqlite,
+    device_id: i32,
+    jids: Vec<String>,
+) -> Result<HashMap<String, AvatarRef>, ServiceError> {
+    if jids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows = shared
+        .read(move |connection| {
+            use self::wasabi_contact_cache::dsl;
+            dsl::wasabi_contact_cache
+                .filter(dsl::device_id.eq(device_id).and(dsl::jid.eq_any(jids)))
+                .select(AvatarRefRow::as_select())
+                .load(connection)
+                .map_err(|error| StoreError::Database(Box::new(error)))
+        })
+        .await
+        .map_err(database_error)?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            row.avatar_ref
+                .filter(|value| !value.is_empty())
+                .map(|avatar| (row.jid, AvatarRef(avatar)))
+        })
+        .collect())
 }
 
 pub(crate) async fn load_metadata(

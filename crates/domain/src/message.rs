@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{ChatId, LocalCursor, MediaId, MessageId};
-use crate::{ChatKind, Draft};
+use crate::{AvatarRef, ChatKind, Draft};
 
 /// One row of the virtualized chat list.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -28,6 +28,9 @@ pub struct ChatSummary {
     /// Full device-local composer state for restoring reply/edit context.
     #[serde(default)]
     pub draft: Option<Draft>,
+    /// Last known profile-photo identifier from contact or group cache.
+    #[serde(default)]
+    pub avatar: Option<AvatarRef>,
 }
 
 /// Direction of a message relative to this account.

@@ -259,6 +259,7 @@ impl AccountStore {
         let has_more = rows.len() > limit;
         rows.truncate(limit);
         self.hydrate_chat_preferences(&mut rows).await?;
+        self.hydrate_chat_avatars(&mut rows).await?;
         let next_after =
             has_more.then(|| chat_summary_cursor(rows.last().expect("non-empty page")));
         Ok(domain::ChatPage { rows, next_after })
@@ -284,6 +285,7 @@ impl AccountStore {
         let has_more = rows.len() > limit;
         rows.truncate(limit);
         self.hydrate_chat_preferences(&mut rows).await?;
+        self.hydrate_chat_avatars(&mut rows).await?;
         let next_after =
             has_more.then(|| chat_summary_cursor(rows.last().expect("non-empty page")));
         Ok(domain::ChatPage { rows, next_after })
@@ -674,6 +676,38 @@ impl AccountStore {
         }
         Ok(())
     }
+
+    async fn hydrate_chat_avatars(
+        &self,
+        chats: &mut [domain::ChatSummary],
+    ) -> Result<(), domain::ServiceError> {
+        let mut contact_ids = Vec::new();
+        let mut group_ids = Vec::new();
+        for chat in chats.iter() {
+            match chat.kind {
+                domain::ChatKind::Direct => contact_ids.push(chat.id.as_str().to_string()),
+                domain::ChatKind::Group => group_ids.push(chat.id.as_str().to_string()),
+                domain::ChatKind::Newsletter | domain::ChatKind::System => {}
+            }
+        }
+        let contacts =
+            crate::contacts::load_avatar_refs(self.shared_db(), self.device_id(), contact_ids)
+                .await?;
+        let groups =
+            crate::group_cache::load_avatar_refs(self.shared_db(), self.device_id(), group_ids)
+                .await?;
+        for chat in chats {
+            let avatar = match chat.kind {
+                domain::ChatKind::Direct => contacts.get(chat.id.as_str()),
+                domain::ChatKind::Group => groups.get(chat.id.as_str()),
+                domain::ChatKind::Newsletter | domain::ChatKind::System => None,
+            };
+            if let Some(avatar) = avatar {
+                chat.avatar = Some(avatar.clone());
+            }
+        }
+        Ok(())
+    }
 }
 
 fn domain_cursor_to_upstream(cursor: domain::ChatPageCursor) -> ChatCursor {
@@ -724,6 +758,7 @@ fn chat_entry_to_summary(e: whatsapp_rust_chat_store::types::ChatEntry) -> domai
         favorite: false,
         draft_preview: None,
         draft: None,
+        avatar: None,
     }
 }
 
@@ -742,6 +777,7 @@ fn archived_chat_row_to_summary(row: crate::chat_indexes::ChatListRow) -> domain
         favorite: false,
         draft_preview: None,
         draft: None,
+        avatar: None,
     }
 }
 

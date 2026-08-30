@@ -11,6 +11,7 @@ use gpui_component::{Icon, IconName};
 use crate::state::chats::{self, ChatFilter};
 use crate::state::messages;
 use crate::theme;
+use crate::views::avatar;
 use crate::views::root::MainWindow;
 
 pub fn pane_header(_this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
@@ -306,25 +307,21 @@ fn message_search_row(
 ) -> gpui::Stateful<gpui::Div> {
     let chat_id = hit.row.chat.as_str().to_string();
     let message_id = hit.row.id.clone();
-    let name = this
-        .chats
-        .chats
-        .iter()
-        .find(|chat| chat.id == hit.row.chat)
-        .map(chats::fallback_name)
-        .unwrap_or_else(|| {
-            chat_id
-                .split('@')
-                .next()
-                .unwrap_or(chat_id.as_str())
-                .to_string()
-        });
+    let matching_chat = this.chats.chats.iter().find(|chat| chat.id == hit.row.chat);
+    let name = matching_chat.map(chats::fallback_name).unwrap_or_else(|| {
+        chat_id
+            .split('@')
+            .next()
+            .unwrap_or(chat_id.as_str())
+            .to_string()
+    });
     let initial = name
         .chars()
         .next()
         .unwrap_or('?')
         .to_uppercase()
         .to_string();
+    let photo = matching_chat.and_then(|chat| this.list_avatar_path(chat));
     let time = messages::relative_time(hit.row.timestamp_ms);
     let text_scale = this.settings.text_scale;
     gpui::div()
@@ -339,19 +336,14 @@ fn message_search_row(
         .on_click(cx.listener(move |this, _, window, cx| {
             this.open_search_result(chat_id.clone(), message_id.clone(), window, cx)
         }))
-        .child(
-            gpui::div()
-                .size(px(42.0))
-                .rounded_full()
-                .flex_shrink(0.0)
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(theme::sender_color(&name))
-                .text_color(theme::text_on_accent())
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(initial),
-        )
+        .child(avatar::avatar_face(
+            42.0,
+            photo.as_deref(),
+            initial,
+            theme::sender_color(&name),
+            theme::text_on_accent(),
+            None,
+        ))
         .child(
             gpui::div()
                 .flex_1()
@@ -448,6 +440,7 @@ fn chat_row(
     let name = chats::fallback_name(chat);
     let initials = messages::avatar_initials(chat);
     let avatar_bg = theme::sender_color(&name);
+    let photo = this.list_avatar_path(chat);
     let time = messages::relative_time(chat.last_activity_ms);
 
     let typing_preview = this
@@ -503,20 +496,14 @@ fn chat_row(
         .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
             this.select_chat(id.clone(), window, cx);
         }))
-        .child(
-            gpui::div()
-                .size(px(46.0))
-                .rounded_full()
-                .flex_shrink(0.0)
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(avatar_bg)
-                .text_color(theme::text_on_accent())
-                .text_size(px(theme::scaled_text(theme::TEXT_NAME, text_scale)))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(initials),
-        )
+        .child(avatar::avatar_face(
+            46.0,
+            photo.as_deref(),
+            initials,
+            avatar_bg,
+            theme::text_on_accent(),
+            Some(theme::scaled_text(theme::TEXT_NAME, text_scale)),
+        ))
         .child(
             gpui::div()
                 .flex_1()

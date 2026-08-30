@@ -310,6 +310,91 @@ async fn contact_pages_are_stable_searchable_and_direct_only() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn chat_page_hydrates_contact_and_group_avatar_refs() {
+    let dir = TestDir::new("chat-page-avatars");
+    let store = open(&dir).await;
+    store
+        .chats()
+        .record_outgoing(
+            &jid(PEER1),
+            "MSG-AVATAR",
+            &wa::Message::text("hello"),
+            Utc::now(),
+        )
+        .unwrap();
+    store.flush().await.unwrap();
+
+    let group = domain::ChatId::new("120363000000000099@g.us");
+    store
+        .record_created_group(
+            group.clone(),
+            "Weekend plans".to_string(),
+            1_800_000_000_000,
+        )
+        .await
+        .unwrap();
+    store
+        .save_direct_contact_metadata(&domain::DirectContactDetails {
+            jid: PEER1.to_string(),
+            display_name: "Alice".to_string(),
+            phone_number: None,
+            about: None,
+            avatar: Some(domain::AvatarRef("contact-pic".to_string())),
+        })
+        .await
+        .unwrap();
+    store
+        .save_group_details(
+            domain::GroupDetails {
+                chat: group.clone(),
+                subject: "Weekend plans".to_string(),
+                description: None,
+                avatar: Some(domain::AvatarRef("group-pic".to_string())),
+                participant_count: 1,
+                participants: vec![domain::Participant {
+                    jid: PEER1.to_string(),
+                    display_name: "Alice".to_string(),
+                    avatar: None,
+                    role: domain::ParticipantRole::Member,
+                    is_self: false,
+                }],
+                permissions: domain::GroupPermissions {
+                    only_admins_edit: false,
+                    only_admins_send: false,
+                    membership_approval: false,
+                    current_user_role: Some(domain::ParticipantRole::Member),
+                },
+            },
+            1_800_000_000_000,
+        )
+        .await
+        .unwrap();
+
+    let page = store
+        .chat_page(domain::ChatScope::Active, None, 50)
+        .await
+        .unwrap();
+    let contact = page
+        .rows
+        .iter()
+        .find(|chat| chat.id.as_str() == PEER1)
+        .expect("contact chat");
+    assert_eq!(
+        contact.avatar,
+        Some(domain::AvatarRef("contact-pic".to_string()))
+    );
+    let group_chat = page
+        .rows
+        .iter()
+        .find(|chat| chat.id == group)
+        .expect("group chat");
+    assert_eq!(
+        group_chat.avatar,
+        Some(domain::AvatarRef("group-pic".to_string()))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn outgoing_roundtrip_via_flush_barrier() {
     let dir = TestDir::new("outgoing");
     let store = open(&dir).await;

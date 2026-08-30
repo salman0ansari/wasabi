@@ -3,6 +3,8 @@
 //! Live metadata remains authoritative. This cache exists so the information
 //! drawer can show the last truthful snapshot while the companion reconnects.
 
+use std::collections::HashMap;
+
 use diesel::connection::Connection as _;
 use diesel::prelude::*;
 use diesel::sql_types::{BigInt, Integer, Nullable, Text};
@@ -13,6 +15,14 @@ use wasabi_domain::{
 };
 use whatsapp_rust::wacore_binary::JidExt as _;
 use whatsapp_rust_sqlite_storage::SharedSqlite;
+
+diesel::table! {
+    wasabi_group_cache (device_id, chat_jid) {
+        device_id -> Integer,
+        chat_jid -> Text,
+        avatar_ref -> Nullable<Text>,
+    }
+}
 
 #[derive(QueryableByName)]
 struct GroupRow {
@@ -42,6 +52,46 @@ struct ParticipantRow {
     role: i32,
     #[diesel(sql_type = Integer)]
     is_self: i32,
+}
+
+#[derive(Queryable, Selectable)]
+#[diesel(table_name = wasabi_group_cache)]
+struct AvatarRefRow {
+    chat_jid: String,
+    avatar_ref: Option<String>,
+}
+
+pub(crate) async fn load_avatar_refs(
+    shared: SharedSqlite,
+    device_id: i32,
+    chats: Vec<String>,
+) -> Result<HashMap<String, AvatarRef>, ServiceError> {
+    if chats.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows = shared
+        .read(move |connection| {
+            use self::wasabi_group_cache::dsl;
+            dsl::wasabi_group_cache
+                .filter(
+                    dsl::device_id
+                        .eq(device_id)
+                        .and(dsl::chat_jid.eq_any(chats)),
+                )
+                .select(AvatarRefRow::as_select())
+                .load(connection)
+                .map_err(database_store_error)
+        })
+        .await
+        .map_err(store_error)?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            row.avatar_ref
+                .filter(|value| !value.is_empty())
+                .map(|avatar| (row.chat_jid, AvatarRef(avatar)))
+        })
+        .collect())
 }
 
 pub async fn save(

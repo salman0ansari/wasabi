@@ -10,6 +10,9 @@ All notable user-visible changes to wasabi are recorded here. The format follows
   profile photo when the linked account provides one. Photos are fetched as
   previews, stored in the existing media cache, and fall back to initials when
   the picture is unavailable, privacy-restricted, or the session is offline.
+- Chat list rows and message search hits now show a disk-cached profile photo
+  when one is already stored for that contact or group. Missing cache entries
+  keep initials; the list never fetches pictures itself.
 
 ## [0.2.0-alpha.4] - 2026-08-30
 

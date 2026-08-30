@@ -1998,6 +1998,14 @@ impl MainWindow {
         }
     }
 
+    pub(crate) fn list_avatar_path(
+        &self,
+        chat: &wasabi_domain::ChatSummary,
+    ) -> Option<std::path::PathBuf> {
+        self.bridge
+            .cached_avatar_path(chat.id.as_str(), chat.avatar.as_ref()?)
+    }
+
     pub(crate) fn request_avatar(&mut self, jid: String, refresh: bool, cx: &mut Context<Self>) {
         if jid.is_empty() {
             return;
@@ -4262,6 +4270,7 @@ fn notification_chat_summary(
         favorite: false,
         draft_preview: None,
         draft: None,
+        avatar: None,
     }
 }
 

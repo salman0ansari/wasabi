@@ -33,9 +33,9 @@ wasabi is being built in public toward a dependable Linux-first replacement for 
 
 | Status | Work |
 | --- | --- |
-| Done | Cached New Chat address book, verified unknown-number lookup, real group creation, distinct direct details with live/durable About metadata refresh, profile photos in the conversation header and information drawer, real group participants/admin roles, and offline snapshots. |
+| Done | Cached New Chat address book, verified unknown-number lookup, real group creation, distinct direct details with live/durable About metadata refresh, profile photos in the conversation header, information drawer, and chat list (disk-cached only), real group participants/admin roles, and offline snapshots. |
 | Done | Real group creation, subject/description editing, add-member search, admin promotion/demotion, participant removal, permission controls, leave confirmation, and truthful disconnected snapshots. |
-| Planned | Chat-list avatars, groups in common, contact controls, block/report/delete, invite links, join-request review, and deeper role explanations. |
+| Planned | Groups in common, contact controls, block/report/delete, invite links, join-request review, and deeper role explanations. |
 
 ## Composer and media
 

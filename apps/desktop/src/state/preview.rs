@@ -67,6 +67,7 @@ pub(crate) fn media_preview() -> MediaPreview {
             favorite: true,
             draft_preview: None,
             draft: None,
+            avatar: None,
         },
         page: MessagePage {
             // Repository page order is newest to oldest.
