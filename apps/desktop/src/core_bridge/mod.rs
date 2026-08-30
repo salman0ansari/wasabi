@@ -114,6 +114,11 @@ pub trait DesktopBackend: Send + Sync {
         &self,
         request: MediaDownloadRequest,
     ) -> Result<CachedMedia, ServiceError>;
+    async fn cache_thumb_bytes(
+        &self,
+        key: String,
+        source: PathBuf,
+    ) -> Result<PathBuf, ServiceError>;
     async fn profile_picture(
         &self,
         request: ProfilePictureRequest,
@@ -137,6 +142,10 @@ pub trait DesktopBackend: Send + Sync {
     async fn perform_chat_action(&self, action: ChatAction) -> Result<(), ServiceError>;
 }
 
+/// Longer-edge bound for still-image timeline thumbnails. The visual card is
+/// ~150px tall; 360 covers typical HiDPI without decoding the original.
+const IMAGE_THUMB_MAX_DIM: u32 = 360;
+
 /// Shared handle bundle handed to the UI.
 pub struct CoreBridge {
     runtime: tokio::runtime::Handle,
@@ -147,6 +156,7 @@ pub struct CoreBridge {
     session: Arc<RwLock<Option<Arc<AccountSession>>>>,
     outbox: Arc<RwLock<Option<Outbox>>>,
     media_cache: wasabi_media::DiskCache,
+    thumbs: wasabi_media::ThumbnailService,
     media: Arc<RwLock<Option<wasabi_media::MediaManager>>>,
     left_groups: Arc<RwLock<HashSet<String>>>,
 }
@@ -179,6 +189,7 @@ impl CoreBridge {
             session: Arc::new(RwLock::new(None)),
             outbox: Arc::new(RwLock::new(None)),
             media_cache,
+            thumbs: wasabi_media::ThumbnailService::new(),
             media: Arc::new(RwLock::new(None)),
             left_groups: Arc::new(RwLock::new(HashSet::new())),
         }
@@ -1040,6 +1051,29 @@ impl CoreBridge {
     pub fn cached_avatar_path(&self, jid: &str, picture: &AvatarRef) -> Option<PathBuf> {
         self.media_cache
             .open_path(&wasabi_media::avatar_cache_key(jid, &picture.0))
+    }
+
+    pub async fn cache_thumb_bytes(
+        &self,
+        key: String,
+        source: PathBuf,
+    ) -> Result<PathBuf, ServiceError> {
+        let thumbs = self.thumbs.clone();
+        let cache = self.media_cache.clone();
+        self.run_on_core_service(async move {
+            if let Some(path) = cache.open_path(&key) {
+                return Ok(path);
+            }
+            let bytes = thumbs
+                .thumb(&source, IMAGE_THUMB_MAX_DIM)
+                .await
+                .map_err(map_media_error)?;
+            cache
+                .store_bytes(&key, bytes.as_ref())
+                .await
+                .map_err(|error| ServiceError::new(ErrorKind::Internal, error.to_string()))
+        })
+        .await
     }
 
     pub async fn profile_picture(
@@ -2551,6 +2585,14 @@ impl DesktopBackend for CoreBridge {
         request: MediaDownloadRequest,
     ) -> Result<CachedMedia, ServiceError> {
         CoreBridge::download_media(self, request).await
+    }
+
+    async fn cache_thumb_bytes(
+        &self,
+        key: String,
+        source: PathBuf,
+    ) -> Result<PathBuf, ServiceError> {
+        CoreBridge::cache_thumb_bytes(self, key, source).await
     }
 
     async fn profile_picture(

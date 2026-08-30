@@ -4,7 +4,11 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
-_No changes yet._
+### Added
+
+- Downloaded photos in the conversation timeline now show a still-image
+  thumbnail instead of a generic downloaded placeholder. Video, audio, and
+  documents keep their existing cards.
 
 ## [0.2.0-alpha.5] - 2026-08-30
 

@@ -7,7 +7,7 @@ mod cache;
 mod manager;
 mod thumb;
 
-pub use cache::{DiskCache, avatar_cache_key};
+pub use cache::{DiskCache, avatar_cache_key, thumb_cache_key};
 pub use manager::{ClientProvider, MediaManager, StagedUpload, media_downloadable};
 pub use thumb::ThumbnailService;
 pub use tokio_util::sync::CancellationToken;

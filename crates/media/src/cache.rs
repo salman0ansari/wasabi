@@ -281,6 +281,17 @@ pub fn avatar_cache_key(jid: &str, picture_id: &str) -> String {
     to_hex(&hasher.finalize())
 }
 
+/// Stable DiskCache name for a still-image timeline thumbnail. Distinct from
+/// the original media blob so eviction can drop either independently.
+pub fn thumb_cache_key(media_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"thumb\0");
+    hasher.update(media_id.as_bytes());
+    to_hex(&hasher.finalize())
+}
+
 pub(crate) fn is_sha_hex(s: &str) -> bool {
     s.len() == 64
         && s.bytes()
@@ -346,6 +357,16 @@ mod tests {
             alice,
             avatar_cache_key("15550000002@s.whatsapp.net", "picture-1")
         );
+    }
+
+    #[test]
+    fn thumb_cache_key_is_stable_and_media_scoped() {
+        let first = thumb_cache_key("media-a");
+        assert_eq!(first.len(), 64);
+        assert!(is_sha_hex(&first));
+        assert_eq!(first, thumb_cache_key("media-a"));
+        assert_ne!(first, thumb_cache_key("media-b"));
+        assert_ne!(first, avatar_cache_key("media-a", "picture-1"));
     }
 
     #[tokio::test]
