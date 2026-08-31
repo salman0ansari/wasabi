@@ -1,7 +1,9 @@
 //! Local Unicode emoji catalog and composer picker.
 
+use std::time::Duration;
+
 use gpui::prelude::*;
-use gpui::{ClickEvent, Window, px};
+use gpui::{Animation, AnimationExt, ClickEvent, Window, ease_out_quint, px};
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::InputState;
 use gpui_component::popover::Popover;
@@ -10,9 +12,9 @@ use gpui_component::{Disableable as _, Selectable as _, tooltip::Tooltip};
 use crate::theme;
 use crate::views::root::MainWindow;
 
-const PICKER_W: f32 = 352.0;
-const PICKER_H: f32 = 308.0;
-const EMOJI_CELL: f32 = 34.0;
+const PICKER_W: f32 = 560.0;
+const PICKER_H: f32 = 549.0;
+const EMOJI_CELL: f32 = 40.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -237,33 +239,51 @@ pub fn picker_button(
     picker.into_any_element()
 }
 
-fn picker_panel(
-    this: &MainWindow,
-    cx: &mut gpui::Context<MainWindow>,
-) -> gpui::Stateful<gpui::Div> {
+fn picker_panel(this: &MainWindow, cx: &mut gpui::Context<MainWindow>) -> impl IntoElement {
     let active = this.emoji_category;
     gpui::div()
         .id("emoji-picker")
         .occlude()
         .w(px(PICKER_W))
         .h(px(PICKER_H))
-        .rounded(px(theme::RADIUS_MD))
+        .rounded(px(theme::RADIUS_LG))
+        .overflow_hidden()
         .border_1()
         .border_color(theme::border())
-        .bg(theme::surface())
-        .p(px(8.0))
+        .bg(theme::surface_elevated())
+        .shadow(theme::overlay_shadow())
         .flex()
         .flex_col()
-        .gap(px(8.0))
-        .child(category_tabs(active, cx))
         .child(
             gpui::div()
+                .px(px(8.0))
+                .pt(px(8.0))
+                .pb(px(4.0))
+                .child(category_tabs(active, cx)),
+        )
+        .child(
+            gpui::div()
+                .px(px(12.0))
+                .py(px(8.0))
                 .text_size(px(theme::TEXT_SIZE_SM))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(theme::text_secondary())
                 .child(active.label()),
         )
-        .child(emoji_grid(active, cx))
+        .child(
+            gpui::div()
+                .flex_1()
+                .min_h(px(0.0))
+                .px(px(8.0))
+                .pb(px(8.0))
+                .child(emoji_grid(active, cx)),
+        )
+        .with_animation(
+            "emoji-picker-entrance",
+            Animation::new(Duration::from_millis(theme::MOTION_STANDARD_MS))
+                .with_easing(ease_out_quint()),
+            |panel, progress| panel.opacity(0.55 + 0.45 * progress),
+        )
 }
 
 fn category_tabs(active: EmojiCategory, cx: &mut gpui::Context<MainWindow>) -> gpui::Div {
@@ -277,15 +297,15 @@ fn category_tabs(active: EmojiCategory, cx: &mut gpui::Context<MainWindow>) -> g
             gpui::div()
                 .id(("emoji-category", category as usize))
                 .flex_1()
-                .h(px(30.0))
-                .rounded(px(theme::RADIUS_SM))
+                .h(px(theme::ACTION_SIZE))
+                .rounded(px(theme::RADIUS_MD))
                 .flex()
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
                 .aria_label(category.label())
                 .tooltip(move |window, cx| Tooltip::new(category.label()).build(window, cx))
-                .when(selected, |tab| tab.bg(theme::chip_idle()))
+                .when(selected, |tab| tab.bg(theme::surface_emphasized()))
                 .hover(|tab| tab.bg(theme::row_hover()))
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                     this.emoji_category = category;
@@ -293,7 +313,7 @@ fn category_tabs(active: EmojiCategory, cx: &mut gpui::Context<MainWindow>) -> g
                         .update(cx, |input, cx| input.focus(window, cx));
                     cx.notify();
                 }))
-                .child(gpui::div().text_size(px(16.0)).child(category.tab_glyph()))
+                .child(gpui::div().text_size(px(18.0)).child(category.tab_glyph()))
         }))
 }
 
@@ -337,7 +357,7 @@ fn emoji_cell(
         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
             insert_into_composer(&this.composer_input, emoji, window, cx);
         }))
-        .child(gpui::div().text_size(px(20.0)).child(emoji))
+        .child(gpui::div().text_size(px(22.0)).child(emoji))
 }
 
 #[cfg(test)]

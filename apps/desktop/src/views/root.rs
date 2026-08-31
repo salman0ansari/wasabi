@@ -3747,10 +3747,9 @@ impl MainWindow {
                             wasabi_domain::ContactAction::Remove { .. } => {
                                 if let Some(ConversationDetails::Direct(details)) =
                                     this.conversation_details.as_mut()
+                                    && let Some(phone) = details.phone_number.clone()
                                 {
-                                    if let Some(phone) = details.phone_number.clone() {
-                                        details.display_name = phone;
-                                    }
+                                    details.display_name = phone;
                                 }
                                 this.contacts.retain(|contact| contact.jid.as_str() != jid);
                             }
@@ -4675,8 +4674,8 @@ fn nav_rail(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
         let active = this.nav_destination == destination;
         let mut item = div()
             .id(("nav-item", index))
-            .size(px(40.0))
-            .rounded(px(theme::RADIUS_LG))
+            .size(px(theme::ACTION_SIZE))
+            .rounded(px(theme::RADIUS_MD))
             .cursor_pointer()
             .flex()
             .items_center()
@@ -4710,8 +4709,8 @@ fn nav_rail(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
             .child(
                 div()
                     .id("nav-settings")
-                    .size(px(40.0))
-                    .rounded(px(theme::RADIUS_LG))
+                    .size(px(theme::ACTION_SIZE))
+                    .rounded(px(theme::RADIUS_MD))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -4735,7 +4734,7 @@ fn nav_rail(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
             .child(
                 div()
                     .id("nav-account")
-                    .size(px(38.0))
+                    .size(px(theme::ACTION_SIZE))
                     .rounded_full()
                     .flex()
                     .items_center()
@@ -4826,29 +4825,19 @@ fn center_area(
         return pairing::pairing_panel(this, cx).into_any_element();
     }
 
-    let conversation = conversation::conversation(this, window, cx);
-    let narrow_drawer = window.viewport_size().width < px(1180.0);
+    let narrow_takeover = window.viewport_size().width < px(1180.0);
     let mut row = div().flex_1().min_w(px(0.0)).flex().relative();
-    row = row.child(conversation);
-    if this.show_right_panel && narrow_drawer {
-        row = row.child(
-            div()
-                .absolute()
-                .size_full()
-                .flex()
-                .justify_end()
-                .child(
-                    div()
-                        .id("drawer-scrim")
-                        .absolute()
-                        .size_full()
-                        .bg(theme::scrim())
-                        .on_click(cx.listener(|this, _, _, cx| this.close_right_panel(cx))),
-                )
-                .child(div().relative().child(right_panel::info_panel(this, cx))),
-        );
+    if this.show_right_panel && narrow_takeover {
+        // At medium widths WhatsApp replaces the conversation region with
+        // contact/group info instead of squeezing three fixed panes or
+        // floating a narrow drawer over unreadable message content.
+        row = row.child(right_panel::info_panel(this, cx, true));
     } else if this.show_right_panel {
-        row = row.child(right_panel::info_panel(this, cx));
+        row = row
+            .child(conversation::conversation(this, window, cx))
+            .child(right_panel::info_panel(this, cx, false));
+    } else {
+        row = row.child(conversation::conversation(this, window, cx));
     }
     if this.message_overlay.is_some() {
         row = row.child(conversation::message_overlay(this, cx));

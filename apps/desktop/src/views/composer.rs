@@ -12,6 +12,10 @@ use crate::theme;
 use crate::views::root::MainWindow;
 
 pub const COMPOSER_H: f32 = 64.0;
+const COMPOSER_PILL_H: f32 = 52.0;
+const COMPOSER_PILL_INSET: f32 = 12.0;
+const COMPOSER_PILL_PADDING: f32 = 5.0;
+const COMPOSER_INPUT_ROW_H: f32 = COMPOSER_PILL_H - COMPOSER_PILL_PADDING * 2.0;
 const COMPOSER_MAX_ROWS: usize = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -147,9 +151,9 @@ pub fn composer_bar(
     } else if editing_in_flight {
         "Saving…"
     } else if editing.is_some() && can_compose {
-        "Save"
+        "Save edit"
     } else if can_compose {
-        "Send"
+        "Send message"
     } else if !session_can_send {
         "Connect to send"
     } else {
@@ -162,7 +166,14 @@ pub fn composer_bar(
             .icon(IconName::File)
             .ghost()
             .tooltip("Attach a file")
-            .disabled(!enabled);
+            .disabled(!enabled)
+            .size(px(theme::ACTION_SIZE))
+            .rounded_full()
+            .text_color(theme::text_secondary())
+            .when(enabled, |button| {
+                button.hover(|style| style.bg(theme::row_hover()))
+            })
+            .when(!enabled, |button| button.opacity(0.4));
         if enabled {
             button = button.on_click(
                 cx.listener(|this, _: &ClickEvent, _window, cx| this.choose_attachment(cx)),
@@ -172,54 +183,73 @@ pub fn composer_bar(
     };
 
     let send = {
-        let (bg, fg) = if can_submit {
-            (theme::accent(), theme::text_on_accent())
+        let busy = sending || editing_in_flight;
+        let show_action = has_payload || busy;
+        let actionable = can_submit && !busy;
+        let (bg, fg) = if actionable || busy {
+            (theme::action_surface(), theme::action_content())
         } else {
             (theme::chip_idle(), theme::text_secondary())
         };
-        let mut button = gpui::div()
-            .id("send-button")
-            .rounded(px(theme::RADIUS_MD))
-            .px(px(16.0))
-            .py(px(9.0))
-            .bg(bg)
-            .text_color(fg)
-            .text_size(px(theme::scaled_text(
-                theme::TEXT_SIZE,
-                this.settings.text_scale,
-            )))
-            .child(send_label);
-        if can_submit {
-            button = button.cursor_pointer().on_click(cx.listener(
-                |this, _: &ClickEvent, window, cx| {
+        if show_action {
+            let mut button = Button::new("send-button")
+                .icon(IconName::ArrowUp)
+                .ghost()
+                .tooltip(send_label)
+                .disabled(!actionable)
+                .size(px(theme::ACTION_SIZE))
+                .rounded_full()
+                .bg(bg)
+                .text_color(fg)
+                .when(actionable, |button| {
+                    button.hover(|style| style.opacity(0.88))
+                })
+                .when(busy, |button| button.opacity(0.68))
+                .when(!actionable && !busy, |button| button.opacity(0.45));
+            if actionable {
+                button = button.on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                     this.send_current(window, cx);
-                },
-            ));
+                }));
+            }
+            button.into_any_element()
+        } else {
+            // Voice notes are not implemented yet. Reserve the measured trailing
+            // action slot without advertising a control that cannot work.
+            gpui::div()
+                .size(px(theme::ACTION_SIZE))
+                .flex_shrink_0()
+                .into_any_element()
         }
-        button
     };
 
-    let mut bar = gpui::div()
+    let bar = gpui::div()
         .flex_shrink_0()
         .flex()
         .flex_col()
-        .gap(px(6.0))
-        .px(px(12.0))
-        .py(px(8.0))
         .min_h(px(COMPOSER_H))
-        .bg(theme::surface())
-        .border_t_1()
-        .border_color(theme::border());
+        .px(px(COMPOSER_PILL_INSET))
+        .pb(px(COMPOSER_PILL_INSET))
+        .bg(theme::surface_elevated());
+
+    let mut pill = gpui::div()
+        .flex()
+        .flex_col()
+        .gap(px(COMPOSER_PILL_PADDING))
+        .min_h(px(COMPOSER_PILL_H))
+        .p(px(COMPOSER_PILL_PADDING))
+        .rounded(px(theme::RADIUS_COMPOSER))
+        .bg(theme::composer_surface())
+        .shadow(theme::composer_shadow());
 
     if let Some((sender, preview)) = reply {
-        bar = bar.child(reply_preview(sender, preview, cx));
+        pill = pill.child(reply_preview(sender, preview, cx));
     }
     if let Some(preview) = editing {
-        bar = bar.child(edit_preview(preview, cx));
+        pill = pill.child(edit_preview(preview, cx));
     }
 
     if staging {
-        bar = bar.child(attachment_preview(
+        pill = pill.child(attachment_preview(
             "Preparing attachment…".to_string(),
             "Validating and copying into wasabi".to_string(),
             None,
@@ -231,7 +261,7 @@ pub fn composer_bar(
             attachment_kind_label(attachment.kind),
             format_bytes(attachment.bytes_total)
         );
-        bar = bar.child(attachment_preview(
+        pill = pill.child(attachment_preview(
             attachment.display_name,
             detail,
             (!sending).then_some(chat),
@@ -239,19 +269,36 @@ pub fn composer_bar(
         ));
     }
 
-    bar = bar.child(
+    pill = pill.child(
         gpui::div()
             .flex()
             .items_end()
-            .gap(px(8.0))
+            .gap(px(4.0))
+            .min_h(px(COMPOSER_INPUT_ROW_H))
             .child(attach)
-            .child(super::emoji::picker_button(this, can_compose, window, cx))
+            .child(
+                gpui::div()
+                    .size(px(theme::ACTION_SIZE))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(super::emoji::picker_button(this, can_compose, window, cx)),
+            )
             .child(
                 Input::new(&this.composer_input)
                     .cleanable(false)
                     .disabled(!can_compose)
+                    .appearance(false)
+                    .bordered(false)
+                    .focus_bordered(false)
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .min_h(px(COMPOSER_INPUT_ROW_H))
+                    .px(px(6.0))
+                    .py(px(10.0))
                     .text_size(px(theme::scaled_text(
-                        theme::TEXT_SIZE,
+                        theme::TEXT_COMPOSER,
                         this.settings.text_scale,
                     ))),
             )
@@ -259,24 +306,25 @@ pub fn composer_bar(
     );
 
     if let Some(err) = this.send_error.clone() {
-        bar = bar.child(
+        pill = pill.child(
             gpui::div()
+                .px(px(6.0))
                 .text_size(px(theme::TEXT_SIZE_SM))
                 .text_color(theme::danger())
                 .whitespace_nowrap()
                 .child(err),
         );
     }
-    bar
+    bar.child(pill)
 }
 
 fn edit_preview(preview: String, cx: &mut Context<MainWindow>) -> gpui::Div {
     gpui::div()
         .min_h(px(48.0))
-        .rounded(px(theme::RADIUS_MD))
+        .rounded(px(theme::RADIUS_SM))
         .border_l_2()
         .border_color(theme::accent())
-        .bg(theme::chip_idle())
+        .bg(theme::bubble_overlay())
         .px(px(10.0))
         .py(px(6.0))
         .flex()
@@ -323,10 +371,10 @@ fn edit_preview(preview: String, cx: &mut Context<MainWindow>) -> gpui::Div {
 fn reply_preview(sender: String, preview: String, cx: &mut Context<MainWindow>) -> gpui::Div {
     gpui::div()
         .min_h(px(48.0))
-        .rounded(px(theme::RADIUS_MD))
+        .rounded(px(theme::RADIUS_SM))
         .border_l_2()
         .border_color(theme::accent())
-        .bg(theme::chip_idle())
+        .bg(theme::bubble_overlay())
         .px(px(10.0))
         .py(px(6.0))
         .flex()
@@ -387,10 +435,8 @@ fn attachment_preview(
 ) -> gpui::Div {
     let mut row = gpui::div()
         .h(px(48.0))
-        .rounded(px(theme::RADIUS_MD))
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::chip_idle())
+        .rounded(px(theme::RADIUS_SM))
+        .bg(theme::bubble_overlay())
         .px(px(10.0))
         .flex()
         .items_center()

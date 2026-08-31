@@ -4,7 +4,14 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
-_No changes yet._
+### Changed
+
+- Refined the native desktop shell and messaging surfaces with a denser,
+  WhatsApp-inspired interaction system: neutral light/dark layers, 64 px pane
+  rhythm, inset chat rows, grouped directional message bubbles, compact inline
+  delivery metadata, a unified composer, elevated emoji tray and dialogs, and
+  medium-width contact-info takeover behavior. Wasabi branding and existing
+  messaging behavior remain unchanged.
 
 ## [0.3.6] - 2026-08-31
 

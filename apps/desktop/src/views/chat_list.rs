@@ -16,7 +16,7 @@ use crate::views::root::MainWindow;
 
 pub fn pane_header(_this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
     gpui::div()
-        .h(px(58.0))
+        .h(px(theme::HEADER_H))
         .flex_shrink_0()
         .flex()
         .items_center()
@@ -25,14 +25,14 @@ pub fn pane_header(_this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui
             gpui::div()
                 .flex_1()
                 .text_size(px(theme::TEXT_TITLE))
-                .font_weight(gpui::FontWeight::BOLD)
+                .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(theme::text_primary())
                 .child("wasabi"),
         )
         .child(
             gpui::div()
                 .id("open-new-chat")
-                .size(px(34.0))
+                .size(px(theme::ACTION_SIZE))
                 .rounded_full()
                 .flex()
                 .items_center()
@@ -48,8 +48,22 @@ pub fn pane_header(_this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui
 
 pub fn search_bar(this: &mut MainWindow) -> gpui::Div {
     gpui::div().px(px(12.0)).pb(px(8.0)).child(
-        gpui_component::input::Input::new(&this.search_input)
-            .prefix(Icon::new(IconName::Search).size(px(16.0))),
+        gpui::div()
+            .h(px(40.0))
+            .w_full()
+            .rounded(px(theme::RADIUS_MD))
+            .bg(theme::surface_elevated())
+            .px(px(4.0))
+            .flex()
+            .items_center()
+            .child(
+                gpui_component::input::Input::new(&this.search_input)
+                    .appearance(false)
+                    .bordered(false)
+                    .focus_bordered(false)
+                    .prefix(Icon::new(IconName::Search).size(px(16.0)))
+                    .text_size(px(theme::TEXT_PREVIEW)),
+            ),
     )
 }
 
@@ -85,17 +99,21 @@ pub fn filter_bar(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::
             .id(("filter-chip", filter as usize))
             .cursor_pointer()
             .rounded_full()
+            .h(px(32.0))
+            .flex()
+            .items_center()
             .px(px(12.0))
-            .py(px(5.0))
-            .text_size(px(theme::TEXT_SIZE_SM));
+            .border_1()
+            .border_color(theme::border())
+            .text_size(px(theme::TEXT_PREVIEW));
         if active {
             chip = chip
-                .bg(theme::accent())
-                .text_color(theme::text_on_accent())
+                .bg(theme::surface_emphasized())
+                .text_color(theme::text_primary())
                 .font_weight(gpui::FontWeight::MEDIUM);
         } else {
             chip = chip
-                .bg(theme::chip_idle())
+                .bg(gpui::transparent_black())
                 .text_color(theme::text_secondary())
                 .hover(|s| s.bg(theme::row_hover()));
         }
@@ -452,7 +470,7 @@ fn chat_row(
     let preview = if let Some(typing) = typing_preview {
         typing
     } else if let Some(draft) = chat.draft_preview.as_ref() {
-        format!("Draft: {draft}")
+        draft.clone()
     } else {
         chat.last_message_preview.clone().unwrap_or_default()
     };
@@ -481,15 +499,18 @@ fn chat_row(
     let pinned = chat.pinned_at_ms.is_some();
     let favorite = chat.favorite;
 
-    let row = gpui::div()
+    gpui::div()
         .id(("chat-row", ix))
         .cursor_pointer()
         .flex()
         .items_center()
         .gap(px(10.0))
-        .px(px(10.0))
-        .w(px(theme::CHAT_LIST_W))
-        .h(px(theme::CHAT_ROW_H))
+        .px(px(12.0))
+        .mx(px(10.0))
+        .my(px(2.0))
+        .w(px(theme::CHAT_LIST_W - 20.0))
+        .h(px(theme::CHAT_ROW_CARD_H))
+        .rounded(px(theme::RADIUS_MD))
         .overflow_hidden()
         .when(selected, |el| el.bg(theme::row_selected()))
         .hover(|s| s.bg(theme::row_hover()))
@@ -497,7 +518,7 @@ fn chat_row(
             this.select_chat(id.clone(), window, cx);
         }))
         .child(avatar::avatar_face(
-            46.0,
+            48.0,
             photo.as_deref(),
             initials,
             avatar_bg,
@@ -522,7 +543,7 @@ fn chat_row(
                                 .min_w(px(0.0))
                                 .truncate()
                                 .text_size(px(theme::scaled_text(theme::TEXT_NAME, text_scale)))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(theme::text_primary())
                                 .child(name),
                         )
@@ -565,21 +586,34 @@ fn chat_row(
                             gpui::div()
                                 .flex_1()
                                 .min_w(px(0.0))
-                                .truncate()
-                                .text_size(px(theme::scaled_text(theme::TEXT_SIZE, text_scale)))
-                                .when(typing_here || has_draft, |el| {
-                                    el.text_color(theme::accent_text())
+                                .flex()
+                                .items_center()
+                                .gap(px(4.0))
+                                .text_size(px(theme::scaled_text(theme::TEXT_PREVIEW, text_scale)))
+                                .when(has_draft, |el| {
+                                    el.child(
+                                        gpui::div()
+                                            .flex_shrink_0()
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                            .text_color(theme::accent_text())
+                                            .child("Draft:"),
+                                    )
                                 })
-                                .when(!typing_here && !has_draft, |el| {
-                                    el.text_color(theme::text_secondary())
-                                })
-                                .child(preview),
+                                .child(
+                                    gpui::div()
+                                        .min_w(px(0.0))
+                                        .truncate()
+                                        .text_color(if typing_here {
+                                            theme::accent_text()
+                                        } else {
+                                            theme::text_secondary()
+                                        })
+                                        .child(preview),
+                                ),
                         )
                         .children(unread_pill),
                 ),
-        );
-
-    row
+        )
 }
 
 fn centered_label(text: impl Into<String>) -> gpui::Div {

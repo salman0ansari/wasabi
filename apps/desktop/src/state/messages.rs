@@ -164,7 +164,7 @@ impl MessageWindowModel {
             return 0;
         }
         let mut rows = std::mem::take(&mut older);
-        rows.extend(self.rows.drain(..));
+        rows.append(&mut self.rows);
 
         let overflow = rows.len().saturating_sub(WINDOW_MAX);
         if overflow > 0 {
@@ -375,7 +375,7 @@ pub fn status_glyph(status: MessageStatus) -> &'static str {
 pub fn status_color(status: MessageStatus) -> gpui::Rgba {
     use crate::theme;
     match status {
-        MessageStatus::Read => theme::accent_text(),
+        MessageStatus::Read => theme::read_receipt(),
         MessageStatus::Failed => theme::danger(),
         _ => theme::text_secondary(),
     }

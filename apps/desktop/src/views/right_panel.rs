@@ -13,7 +13,11 @@ use crate::theme;
 use crate::views::avatar;
 use crate::views::root::MainWindow;
 
-pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl IntoElement {
+pub fn info_panel(
+    this: &mut MainWindow,
+    cx: &mut Context<MainWindow>,
+    takeover: bool,
+) -> impl IntoElement {
     let selected = this
         .chats
         .selected
@@ -54,18 +58,22 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
 
     let mut panel = gpui::div()
         .id("conversation-info")
-        .w(px(theme::RIGHT_PANEL_W))
         .h_full()
-        .flex_shrink_0()
         .flex()
         .flex_col()
         .overflow_y_scroll()
         .bg(theme::surface())
-        .border_l_1()
-        .border_color(theme::border())
+        .when(takeover, |panel| panel.flex_1().min_w(px(0.0)).w_full())
+        .when(!takeover, |panel| {
+            panel
+                .w(px(theme::RIGHT_PANEL_W))
+                .flex_shrink_0()
+                .border_l_1()
+                .border_color(theme::border())
+        })
         .child(
             gpui::div()
-                .h(px(58.0))
+                .h(px(theme::HEADER_H))
                 .flex_shrink_0()
                 .flex()
                 .items_center()
@@ -76,7 +84,7 @@ pub fn info_panel(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl I
                 .child(
                     gpui::div()
                         .id("close-info")
-                        .size(px(34.0))
+                        .size(px(theme::ACTION_SIZE))
                         .rounded_full()
                         .cursor_pointer()
                         .flex()

@@ -2,9 +2,13 @@
 //! bubbles, and the scroll/anchor plumbing for history paging.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use gpui::prelude::*;
-use gpui::{Context, ListSizingBehavior, ObjectFit, StyledImage, list, px};
+use gpui::{
+    Animation, AnimationExt, Context, ListSizingBehavior, ObjectFit, StyledImage, ease_out_quint,
+    list, px,
+};
 use gpui_component::input::Input;
 use gpui_component::{Icon, IconName};
 
@@ -15,6 +19,7 @@ use crate::views::avatar;
 use crate::views::root::MainWindow;
 
 const LOAD_OLDER_THRESHOLD: usize = 8;
+const MESSAGE_GROUP_WINDOW_MS: i64 = 5 * 60 * 1_000;
 
 pub fn conversation(
     this: &mut MainWindow,
@@ -26,7 +31,7 @@ pub fn conversation(
         .min_h(px(0.0))
         .flex()
         .flex_col()
-        .bg(theme::canvas());
+        .bg(theme::wallpaper());
 
     let Some(_) = this.chats.selected.clone() else {
         pane = pane.child(empty_conversation());
@@ -160,13 +165,12 @@ fn header(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
         .flex()
         .items_center()
         .gap(px(10.0))
-        .px(px(12.0))
-        .h(px(crate::views::composer::COMPOSER_H))
+        .px(px(16.0))
+        .h(px(theme::HEADER_H))
         .bg(theme::surface())
-        .border_b_1()
-        .border_color(theme::border())
+        .shadow(theme::header_shadow())
         .child(avatar::avatar_face(
-            38.0,
+            40.0,
             photo,
             initials,
             avatar_bg,
@@ -199,7 +203,7 @@ fn header(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
             gpui::div()
                 .id("toggle-info")
                 .cursor_pointer()
-                .size(px(34.0))
+                .size(px(theme::ACTION_SIZE))
                 .rounded_full()
                 .flex()
                 .items_center()
@@ -325,6 +329,16 @@ fn timeline_row(
             .into_any_element(),
         Some(TimelineItem::Message(row_ix)) => match this.messages.rows.get(*row_ix) {
             Some(row) => {
+                let previous_row = ix.checked_sub(1).and_then(|previous_ix| {
+                    match this.messages.items.get(previous_ix) {
+                        Some(TimelineItem::Message(previous_row_ix)) => {
+                            this.messages.rows.get(*previous_row_ix)
+                        }
+                        _ => None,
+                    }
+                });
+                let group_start =
+                    previous_row.is_none_or(|previous| !messages_share_visual_group(previous, row));
                 let highlighted = this.messages.highlighted.as_ref() == Some(&row.id);
                 let media_state = media_descriptor(&row.kind).and_then(|media| {
                     this.media_downloads
@@ -343,10 +357,13 @@ fn timeline_row(
                     row.clone(),
                     *row_ix,
                     this.settings.text_scale,
-                    highlighted,
-                    media_state,
-                    thumb_state,
-                    retrying,
+                    BubbleRenderState {
+                        group_start,
+                        highlighted,
+                        media_state,
+                        thumb_state,
+                        retrying,
+                    },
                     cx,
                 )
                 .into_any_element()
@@ -357,17 +374,30 @@ fn timeline_row(
     }
 }
 
-fn bubble(
-    row: wasabi_domain::MessageRow,
-    row_index: usize,
-    text_scale: u16,
+struct BubbleRenderState {
+    group_start: bool,
     highlighted: bool,
     media_state: Option<crate::views::root::MediaDownloadUi>,
     thumb_state: Option<crate::views::root::MediaThumbUi>,
     retrying: bool,
+}
+
+fn bubble(
+    row: wasabi_domain::MessageRow,
+    row_index: usize,
+    text_scale: u16,
+    state: BubbleRenderState,
     cx: &mut Context<MainWindow>,
 ) -> gpui::Div {
     use wasabi_domain::{MessageDirection, MessageKind};
+
+    let BubbleRenderState {
+        group_start,
+        highlighted,
+        media_state,
+        thumb_state,
+        retrying,
+    } = state;
 
     let outgoing = row.direction == MessageDirection::Outgoing;
 
@@ -391,24 +421,17 @@ fn bubble(
         (theme::bubble_in(), theme::text_primary())
     };
 
-    let show_sender = messages::sender_is_group_member(&row);
+    let show_sender = group_start && messages::sender_is_group_member(&row);
     let sender_label = messages::sender_display(&row);
     let sender_color = theme::sender_color(&sender_label);
 
-    let edited = row
-        .edited_at_ms
-        .is_some()
-        .then_some("edited · ")
-        .unwrap_or("");
-    let meta_ticks = if outgoing {
-        format!(
-            "{edited}{} {}",
-            messages::relative_time(row.timestamp_ms),
-            messages::status_glyph(row.status)
-        )
+    let edited = if row.edited_at_ms.is_some() {
+        "edited · "
     } else {
-        format!("{edited}{}", messages::relative_time(row.timestamp_ms))
+        ""
     };
+    let meta_time = format!("{edited}{}", messages::relative_time(row.timestamp_ms));
+    let inline_meta = !row.revoked && matches!(&row.kind, MessageKind::Text { .. });
 
     let mut content = gpui::div().min_w(px(0.0)).flex().flex_col().gap(px(2.0));
     if show_sender {
@@ -457,6 +480,30 @@ fn bubble(
         content = content.child(card);
     } else if let Some(card) = poll_card(&row, text_scale) {
         content = content.child(card);
+    } else if inline_meta {
+        content = content.child(
+            gpui::div()
+                .min_w(px(0.0))
+                .flex()
+                .items_end()
+                .gap(px(8.0))
+                .child(
+                    gpui::div()
+                        .min_w(px(0.0))
+                        .flex_1()
+                        .text_size(px(theme::scaled_text(theme::TEXT_SIZE, text_scale)))
+                        .text_color(text_color)
+                        .child(messages::body_text(&row)),
+                )
+                .child(message_meta(
+                    &row,
+                    row_index,
+                    text_scale,
+                    retrying,
+                    meta_time.clone(),
+                    cx,
+                )),
+        );
     } else {
         content = content.child(
             gpui::div()
@@ -465,48 +512,11 @@ fn bubble(
                 .child(messages::body_text(&row)),
         );
     }
-    if !row.reactions.is_empty() {
-        content = content.child(reaction_chips(
-            row.id.clone(),
-            row_index,
-            row.reactions.clone(),
-            text_scale,
-            cx,
+    if !inline_meta {
+        content = content.child(message_meta(
+            &row, row_index, text_scale, retrying, meta_time, cx,
         ));
     }
-    content = content.child(
-        gpui::div()
-            .flex()
-            .items_center()
-            .justify_end()
-            .gap(px(4.0))
-            .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
-            .text_color(messages::status_color(row.status))
-            .when(
-                outgoing && row.status == wasabi_domain::MessageStatus::Failed,
-                |meta| {
-                    let message = row.id.clone();
-                    meta.child(
-                        gpui::div()
-                            .id(("retry-message", row_index))
-                            .cursor_pointer()
-                            .rounded(px(theme::RADIUS_SM))
-                            .px(px(6.0))
-                            .py(px(2.0))
-                            .bg(theme::surface())
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(theme::danger())
-                            .hover(|style| style.bg(theme::chip_idle()))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.retry_message(message.clone(), cx)
-                            }))
-                            .child(if retrying { "Retrying…" } else { "Retry" }),
-                    )
-                },
-            )
-            .child(meta_ticks)
-            .child(message_actions_button(&row, row_index, cx)),
-    );
 
     let alignment = if outgoing {
         gpui::div().flex().justify_end()
@@ -514,20 +524,115 @@ fn bubble(
         gpui::div().flex().justify_start()
     };
 
-    alignment.w_full().px(px(12.0)).py(px(2.0)).child(
-        gpui::div()
-            .min_w(px(0.0))
-            .max_w(px(theme::BUBBLE_MAX_W))
-            .rounded(px(theme::RADIUS_MD))
-            .px(px(10.0))
-            .py(px(6.0))
-            .border_1()
-            .when(!outgoing, |el| el.border_color(theme::border()))
-            .when(outgoing, |el| el.border_color(gpui::transparent_black()))
-            .when(highlighted, |el| el.border_color(theme::accent()))
-            .bg(bubble_bg)
-            .child(content),
-    )
+    let bubble = gpui::div()
+        .group("message-bubble")
+        .min_w(px(0.0))
+        .max_w(px(theme::BUBBLE_MAX_W))
+        .rounded(px(theme::RADIUS_SM))
+        .when(group_start && outgoing, |el| el.rounded_tr(px(0.0)))
+        .when(group_start && !outgoing, |el| el.rounded_tl(px(0.0)))
+        .px(px(9.0))
+        .pt(px(6.0))
+        .pb(px(7.0))
+        .shadow(theme::bubble_shadow())
+        .when(highlighted, |el| {
+            el.border_1().border_color(theme::accent())
+        })
+        .bg(bubble_bg)
+        .child(content);
+
+    alignment
+        .w_full()
+        .px(px(24.0))
+        .pt(px(if group_start { 3.0 } else { 1.0 }))
+        .pb(px(if row.reactions.is_empty() { 1.0 } else { 6.0 }))
+        .child(
+            gpui::div()
+                .flex()
+                .flex_col()
+                .when(outgoing, |el| el.items_end())
+                .when(!outgoing, |el| el.items_start())
+                .child(bubble)
+                .when(!row.reactions.is_empty(), |el| {
+                    el.child(
+                        reaction_chips(
+                            row.id.clone(),
+                            row_index,
+                            row.reactions.clone(),
+                            text_scale,
+                            cx,
+                        )
+                        .mt(px(-4.0)),
+                    )
+                }),
+        )
+}
+
+fn message_meta(
+    row: &wasabi_domain::MessageRow,
+    row_index: usize,
+    text_scale: u16,
+    retrying: bool,
+    time: String,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Div {
+    let outgoing = row.direction == wasabi_domain::MessageDirection::Outgoing;
+    let status = row.status;
+    gpui::div()
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_end()
+        .gap(px(3.0))
+        .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
+        .text_color(theme::text_secondary())
+        .when(
+            outgoing && status == wasabi_domain::MessageStatus::Failed,
+            |meta| {
+                let message = row.id.clone();
+                meta.child(
+                    gpui::div()
+                        .id(("retry-message", row_index))
+                        .cursor_pointer()
+                        .rounded(px(theme::RADIUS_SM))
+                        .px(px(5.0))
+                        .py(px(1.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(theme::danger())
+                        .hover(|style| style.bg(theme::row_hover()))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.retry_message(message.clone(), cx)
+                        }))
+                        .child(if retrying { "Retrying…" } else { "Retry" }),
+                )
+            },
+        )
+        .child(time)
+        .when(outgoing, |meta| {
+            meta.child(
+                gpui::div()
+                    .text_color(messages::status_color(status))
+                    .child(messages::status_glyph(status)),
+            )
+        })
+        .child(message_actions_button(row, row_index, cx))
+}
+
+fn messages_share_visual_group(
+    previous: &wasabi_domain::MessageRow,
+    current: &wasabi_domain::MessageRow,
+) -> bool {
+    use wasabi_domain::MessageKind;
+
+    if matches!(&previous.kind, MessageKind::System { .. })
+        || matches!(&current.kind, MessageKind::System { .. })
+    {
+        return false;
+    }
+    let gap = current.timestamp_ms.saturating_sub(previous.timestamp_ms);
+    (0..=MESSAGE_GROUP_WINDOW_MS).contains(&gap)
+        && previous.direction == current.direction
+        && previous.sender.bare == current.sender.bare
 }
 
 fn reaction_chips(
@@ -562,13 +667,14 @@ fn reaction_chips(
                         .border_color(if selected {
                             theme::accent()
                         } else {
-                            theme::border()
+                            theme::wallpaper()
                         })
                         .bg(if selected {
                             theme::bubble_out()
                         } else {
-                            theme::surface()
+                            theme::surface_elevated()
                         })
+                        .shadow(theme::bubble_shadow())
                         .px(px(7.0))
                         .py(px(2.0))
                         .text_size(px(theme::scaled_text(theme::TEXT_SIZE_SM, text_scale)))
@@ -595,7 +701,7 @@ fn quoted_message(
         .rounded(px(theme::RADIUS_SM))
         .border_l_2()
         .border_color(theme::accent())
-        .bg(theme::canvas())
+        .bg(theme::bubble_overlay())
         .px(px(8.0))
         .py(px(5.0))
         .mb(px(3.0))
@@ -1294,6 +1400,8 @@ fn message_actions_button(
     gpui::div()
         .id(("message-actions", row_index))
         .ml(px(3.0))
+        .invisible()
+        .group_hover("message-bubble", |style| style.visible())
         .cursor_pointer()
         .px(px(2.0))
         .text_color(theme::text_secondary())
@@ -1345,7 +1453,14 @@ pub fn message_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> g
         .items_center()
         .justify_center()
         .bg(theme::scrim())
-        .child(card)
+        .child(
+            card.with_animation(
+                "message-overlay-entrance",
+                Animation::new(Duration::from_millis(theme::MOTION_OVERLAY_MS))
+                    .with_easing(ease_out_quint()),
+                |card, progress| card.opacity(0.72 + 0.28 * progress),
+            ),
+        )
 }
 
 fn leave_group_confirmation(
@@ -2111,13 +2226,16 @@ fn chat_confirmation_copy(
 
 fn action_card() -> gpui::Div {
     gpui::div()
-        .w(px(390.0))
+        .w(px(500.0))
         .max_w_full()
-        .rounded(px(theme::RADIUS_MD))
+        .rounded(px(theme::RADIUS_MODAL))
         .border_1()
         .border_color(theme::border())
-        .bg(theme::surface())
-        .p(px(18.0))
+        .bg(theme::surface_elevated())
+        .shadow(theme::modal_shadow())
+        .px(px(24.0))
+        .pt(px(22.0))
+        .pb(px(20.0))
         .flex()
         .flex_col()
         .gap(px(10.0))
@@ -2127,12 +2245,13 @@ fn sheet_button(id: &'static str, label: &'static str, danger: bool) -> gpui::St
     gpui::div()
         .id(id)
         .cursor_pointer()
-        .rounded(px(theme::RADIUS_SM))
+        .rounded(px(theme::RADIUS_MD))
         .border_1()
         .border_color(theme::border())
         .px(px(10.0))
         .py(px(7.0))
         .hover(|style| style.bg(theme::row_hover()))
+        .active(|style| style.bg(theme::surface_emphasized()))
         .text_size(px(theme::TEXT_SIZE_SM))
         .text_color(if danger {
             theme::danger()
@@ -2150,8 +2269,94 @@ mod tests {
         contact_confirmation_copy, format_bytes, group_member_confirmation_copy,
         invite_link_error_copy, invite_link_reset_confirmation_copy,
         join_request_confirmation_copy, leave_group_confirmation_copy, maps_url,
-        paints_downloaded_image_thumbnail, suggested_save_name,
+        messages_share_visual_group, paints_downloaded_image_thumbnail, suggested_save_name,
     };
+
+    fn text_row(
+        id: &str,
+        sender: &str,
+        direction: wasabi_domain::MessageDirection,
+        timestamp_ms: i64,
+    ) -> wasabi_domain::MessageRow {
+        wasabi_domain::MessageRow {
+            id: wasabi_domain::MessageId::new(id),
+            chat: wasabi_domain::ChatId::new("preview-chat@s.whatsapp.net"),
+            direction,
+            sender: wasabi_domain::SenderJid {
+                bare: sender.to_string(),
+                push_name: None,
+            },
+            timestamp_ms,
+            seq: wasabi_domain::LocalCursor(timestamp_ms),
+            kind: wasabi_domain::MessageKind::Text {
+                body: id.to_string(),
+            },
+            quoted: None,
+            reactions: Vec::new(),
+            status: wasabi_domain::MessageStatus::Delivered,
+            edited_at_ms: None,
+            revoked: false,
+            starred: false,
+        }
+    }
+
+    #[test]
+    fn visual_groups_require_same_sender_direction_and_close_timestamps() {
+        use wasabi_domain::MessageDirection;
+
+        let first = text_row("one", "a@s.whatsapp.net", MessageDirection::Incoming, 1_000);
+        let same = text_row(
+            "two",
+            "a@s.whatsapp.net",
+            MessageDirection::Incoming,
+            61_000,
+        );
+        assert!(messages_share_visual_group(&first, &same));
+
+        let other_sender = text_row(
+            "three",
+            "b@s.whatsapp.net",
+            MessageDirection::Incoming,
+            62_000,
+        );
+        assert!(!messages_share_visual_group(&same, &other_sender));
+
+        let outgoing = text_row(
+            "four",
+            "a@s.whatsapp.net",
+            MessageDirection::Outgoing,
+            62_000,
+        );
+        assert!(!messages_share_visual_group(&same, &outgoing));
+
+        let stale = text_row(
+            "five",
+            "a@s.whatsapp.net",
+            MessageDirection::Incoming,
+            401_001,
+        );
+        assert!(!messages_share_visual_group(&first, &stale));
+    }
+
+    #[test]
+    fn system_messages_break_visual_groups() {
+        use wasabi_domain::MessageDirection;
+
+        let text = text_row("one", "a@s.whatsapp.net", MessageDirection::Incoming, 1_000);
+        let mut system = text_row(
+            "system",
+            "a@s.whatsapp.net",
+            MessageDirection::Incoming,
+            2_000,
+        );
+        system.kind = wasabi_domain::MessageKind::System {
+            text: "Security code changed".to_string(),
+        };
+        let after = text_row("two", "a@s.whatsapp.net", MessageDirection::Incoming, 3_000);
+
+        assert!(!messages_share_visual_group(&text, &system));
+        assert!(!messages_share_visual_group(&system, &after));
+    }
 
     fn test_media() -> wasabi_domain::MediaDescriptor {
         wasabi_domain::MediaDescriptor {
