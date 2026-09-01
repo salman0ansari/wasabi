@@ -19,6 +19,22 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 - Clicking delivery ticks on an outgoing message lists who delivered or read
   it when the store has per-user receipts. Incoming ticks stay non-interactive,
   and an empty list is shown as unavailable rather than inventing readers.
+- Account settings can edit the linked profile: name, About, and photo (640×640
+  JPEG). Empty names are rejected. Photo removal asks for confirmation. Profile
+  changes require a connection.
+- Privacy settings load live last-seen, online, profile photo, About, group-add,
+  and read-receipt values while connected, with pickers of supported protocol
+  values. Offline rows stay on the last snapshot or say unavailable. The
+  blocklist lists cached names and unblocks through the existing contact action.
+  Outgoing link previews can be written as an account preference that syncs to
+  linked devices.
+- Storage and data has per-kind photo, audio, video, and document auto-download
+  toggles. New remote media under 16 MB (64 MB for video) downloads while
+  connected; larger or unknown-size files stay manual. Downloads use this
+  computer's network and the existing cache quota.
+- Notifications repeats the message-preview preference. Keyboard shortcuts list
+  only bindings that work. Help shows the MIT license, data directory, and that
+  logs omit message bodies and numbers.
 
 ### Changed
 

@@ -9,7 +9,7 @@ mod thumb;
 
 pub use cache::{DiskCache, avatar_cache_key, thumb_cache_key};
 pub use manager::{ClientProvider, MediaManager, StagedUpload, media_downloadable};
-pub use thumb::ThumbnailService;
+pub use thumb::{ThumbnailService, prepare_own_profile_picture};
 pub use tokio_util::sync::CancellationToken;
 
 // Re-exported so callers wiring downloads need no direct tokio-util/upstream
@@ -34,6 +34,10 @@ pub const DECODED_IMAGE_CACHE_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_DISK_CACHE_QUOTA_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Preview profile photos are small; larger bodies are rejected as unavailable.
 pub const MAX_PROFILE_PICTURE_BYTES: u64 = 512 * 1024;
+/// Typical WhatsApp own-profile edge after center-crop.
+pub const OWN_PROFILE_PICTURE_EDGE: u32 = 640;
+/// Bound on a source photo before decode; larger files are rejected.
+pub const MAX_OWN_PROFILE_SOURCE_BYTES: u64 = 20 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MediaError {

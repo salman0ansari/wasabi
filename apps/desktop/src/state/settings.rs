@@ -6,9 +6,12 @@ use std::io;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use wasabi_domain::{MediaAvailability, MessageKind, parse_push_name};
 
 pub const SETTINGS_VERSION: u32 = 1;
 pub const CACHE_QUOTA_CHOICES_MB: [u64; 3] = [256, 1024, 4096];
+pub const AUTO_DOWNLOAD_VIDEO_MAX_BYTES: u64 = 64 * 1024 * 1024;
+pub const AUTO_DOWNLOAD_DEFAULT_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -47,6 +50,10 @@ pub struct DeviceSettings {
     pub suppress_when_focused: bool,
     pub download_path: String,
     pub cache_quota_mb: u64,
+    pub auto_download_photos: bool,
+    pub auto_download_audio: bool,
+    pub auto_download_video: bool,
+    pub auto_download_documents: bool,
 }
 
 impl Default for DeviceSettings {
@@ -69,6 +76,10 @@ impl Default for DeviceSettings {
             suppress_when_focused: true,
             download_path,
             cache_quota_mb: 1024,
+            auto_download_photos: true,
+            auto_download_audio: true,
+            auto_download_video: false,
+            auto_download_documents: false,
         }
     }
 }
@@ -79,6 +90,12 @@ impl DeviceSettings {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("wasabi")
             .join("settings.json")
+    }
+
+    pub fn data_dir() -> PathBuf {
+        dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("wasabi")
     }
 
     pub fn load() -> Self {
@@ -148,6 +165,37 @@ impl DeviceSettings {
     }
 }
 
+/// Whether a newly received payload should start downloading on this computer.
+/// Unknown sizes are treated as unbounded and skipped.
+pub fn should_auto_download(kind: &MessageKind, settings: &DeviceSettings) -> bool {
+    let (enabled, media, cap) = match kind {
+        MessageKind::Image { media, .. } => (
+            settings.auto_download_photos,
+            media,
+            AUTO_DOWNLOAD_DEFAULT_MAX_BYTES,
+        ),
+        MessageKind::Audio { media, .. } => (
+            settings.auto_download_audio,
+            media,
+            AUTO_DOWNLOAD_DEFAULT_MAX_BYTES,
+        ),
+        MessageKind::Video { media, .. } => (
+            settings.auto_download_video,
+            media,
+            AUTO_DOWNLOAD_VIDEO_MAX_BYTES,
+        ),
+        MessageKind::Document { media } => (
+            settings.auto_download_documents,
+            media,
+            AUTO_DOWNLOAD_DEFAULT_MAX_BYTES,
+        ),
+        _ => return false,
+    };
+    enabled
+        && media.availability == MediaAvailability::Remote
+        && media.file_size.is_some_and(|size| size > 0 && size <= cap)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SettingsSection {
     General,
@@ -189,7 +237,46 @@ impl SettingsSection {
 
 #[cfg(test)]
 mod tests {
-    use super::{DeviceSettings, SETTINGS_VERSION};
+    use super::{
+        AUTO_DOWNLOAD_DEFAULT_MAX_BYTES, DeviceSettings, SETTINGS_VERSION, should_auto_download,
+    };
+    use wasabi_domain::{
+        MediaAvailability, MediaDescriptor, MediaId, MessageKind, PrivacyCategory, PrivacyValue,
+        parse_push_name,
+    };
+
+    fn image(availability: MediaAvailability, file_size: Option<u64>) -> MessageKind {
+        MessageKind::Image {
+            caption: None,
+            media: MediaDescriptor {
+                id: MediaId::new("photo-1"),
+                mime_type: Some("image/jpeg".into()),
+                file_name: None,
+                file_size,
+                duration_seconds: None,
+                width: None,
+                height: None,
+                availability,
+            },
+        }
+    }
+
+    fn video(availability: MediaAvailability, file_size: Option<u64>) -> MessageKind {
+        MessageKind::Video {
+            caption: None,
+            video_note: false,
+            media: MediaDescriptor {
+                id: MediaId::new("video-1"),
+                mime_type: Some("video/mp4".into()),
+                file_name: None,
+                file_size,
+                duration_seconds: None,
+                width: None,
+                height: None,
+                availability,
+            },
+        }
+    }
 
     #[test]
     fn settings_json_is_backward_compatible_via_defaults() {
@@ -198,6 +285,66 @@ mod tests {
         assert_eq!(parsed.text_scale, 100);
         assert!(!parsed.reduce_motion);
         assert!(parsed.desktop_notifications);
+        assert!(parsed.auto_download_photos);
+        assert!(parsed.auto_download_audio);
+        assert!(!parsed.auto_download_video);
+        assert!(!parsed.auto_download_documents);
+    }
+
+    #[test]
+    fn auto_download_predicate_respects_kind_size_and_availability() {
+        let settings = DeviceSettings::default();
+        assert!(should_auto_download(
+            &image(
+                MediaAvailability::Remote,
+                Some(AUTO_DOWNLOAD_DEFAULT_MAX_BYTES)
+            ),
+            &settings
+        ));
+        assert!(!should_auto_download(
+            &video(MediaAvailability::Remote, Some(1024)),
+            &settings
+        ));
+        assert!(!should_auto_download(
+            &image(MediaAvailability::Unavailable, Some(1024)),
+            &settings
+        ));
+        assert!(!should_auto_download(
+            &image(MediaAvailability::Remote, None),
+            &settings
+        ));
+    }
+
+    #[test]
+    fn privacy_value_mapping_roundtrips_last_and_read_receipts() {
+        assert_eq!(PrivacyCategory::Last.as_wire(), "last");
+        assert_eq!(
+            PrivacyCategory::from_wire(PrivacyCategory::Last.as_wire()),
+            Some(PrivacyCategory::Last)
+        );
+        assert_eq!(
+            PrivacyValue::from_wire(PrivacyValue::All.as_wire()),
+            Some(PrivacyValue::All)
+        );
+        assert_eq!(
+            PrivacyValue::from_wire(PrivacyValue::None.as_wire()),
+            Some(PrivacyValue::None)
+        );
+        assert!(PrivacyCategory::Last.accepts(PrivacyValue::Contacts));
+        assert!(PrivacyCategory::ReadReceipts.accepts(PrivacyValue::All));
+        assert!(PrivacyCategory::ReadReceipts.accepts(PrivacyValue::None));
+        assert!(!PrivacyCategory::ReadReceipts.accepts(PrivacyValue::Contacts));
+        assert_eq!(
+            PrivacyCategory::from_wire(PrivacyCategory::ReadReceipts.as_wire()),
+            Some(PrivacyCategory::ReadReceipts)
+        );
+    }
+
+    #[test]
+    fn profile_set_push_name_rejects_empty() {
+        assert_eq!(parse_push_name(""), Err("Name cannot be empty"));
+        assert_eq!(parse_push_name("\t  \n"), Err("Name cannot be empty"));
+        assert_eq!(parse_push_name("  Maya  "), Ok("Maya".to_string()));
     }
 
     #[test]

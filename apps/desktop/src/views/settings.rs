@@ -1,12 +1,13 @@
-//! Complete, device-local settings surface. Every interactive control here
-//! writes the versioned settings file immediately.
+//! Settings surface: device-local preferences plus protocol profile/privacy.
 
 use gpui::prelude::*;
 use gpui::{Context, px};
+use gpui_component::input::Input;
 
 use crate::state::settings::CACHE_QUOTA_CHOICES_MB;
 use crate::state::{SettingsSection, ThemePreference};
 use crate::theme;
+use crate::views::avatar;
 use crate::views::root::{MainWindow, SettingsFeedback, SettingsOverlay};
 
 pub fn settings_page(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl IntoElement {
@@ -56,7 +57,13 @@ fn settings_navigation(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> g
                     gpui::div()
                         .text_size(px(theme::TEXT_NAME))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child("wasabi account"),
+                        .child(
+                            this.account_profile
+                                .as_ref()
+                                .map(|profile| profile.push_name.clone())
+                                .filter(|name| !name.is_empty())
+                                .unwrap_or_else(|| "wasabi account".to_string()),
+                        ),
                 )
                 .child(
                     gpui::div()
@@ -135,7 +142,7 @@ fn settings_content(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> impl
                     SettingsSection::Chats => chats(this, cx),
                     SettingsSection::Notifications => notifications(this, cx),
                     SettingsSection::Storage => storage(this, cx),
-                    SettingsSection::Shortcuts => shortcuts(),
+                    SettingsSection::Shortcuts => shortcuts(this),
                     SettingsSection::Help => help(),
                 }),
         )
@@ -276,7 +283,7 @@ fn toggle_row(
 }
 
 fn action_row(
-    id: &'static str,
+    id: impl Into<gpui::ElementId>,
     label: impl Into<String>,
     description: impl Into<String>,
     action_label: &'static str,
@@ -354,39 +361,367 @@ fn general(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElem
 }
 
 fn account(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElement {
-    card("LINKED ACCOUNT")
-        .child(value_row("Connection", this.session.status_label()))
-        .child(value_row(
-            "Local data",
-            "Cached chats remain on this computer when offline",
-        ))
-        .child(action_row(
-            "setting-logout",
-            if this.logout_in_progress {
-                "Logging out…"
-            } else {
-                "Log out of this desktop"
-            },
-            "Unlinks this companion. Cached account data remains on this computer.",
-            "Log out…",
-            true,
-            cx,
-            |this, cx| this.confirm_logout(cx),
-        ))
+    let connected = this.session.state.is_connected();
+    let profile = this.account_profile.as_ref();
+    let photo = profile
+        .and_then(|profile| profile.jid.as_ref())
+        .and_then(|jid| this.avatar_path(jid.as_str()));
+    let initials = profile
+        .map(|profile| avatar::first_initial(&profile.push_name))
+        .unwrap_or_else(|| "#".to_string());
+    let about_hint = if profile.is_some_and(|profile| profile.about_needs_refresh) {
+        "Refresh when connected"
+    } else if !connected {
+        "Connect to edit your profile"
+    } else {
+        "Visible according to your About privacy setting."
+    };
+
+    gpui::div()
+        .child(
+            card("PROFILE")
+                .child(
+                    gpui::div()
+                        .px(px(18.0))
+                        .py(px(14.0))
+                        .border_t_1()
+                        .border_color(theme::border())
+                        .flex()
+                        .items_center()
+                        .gap(px(14.0))
+                        .child(avatar::avatar_face(
+                            64.0,
+                            photo,
+                            initials,
+                            theme::accent(),
+                            theme::text_on_accent(),
+                            Some(theme::TEXT_TITLE),
+                        ))
+                        .child(
+                            gpui::div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .child(
+                                    gpui::div()
+                                        .text_size(px(theme::TEXT_SIZE))
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .child(
+                                            profile
+                                                .map(|profile| profile.push_name.clone())
+                                                .filter(|name| !name.is_empty())
+                                                .unwrap_or_else(|| "Your profile".to_string()),
+                                        ),
+                                )
+                                .child(
+                                    gpui::div()
+                                        .mt(px(3.0))
+                                        .text_size(px(theme::TEXT_SIZE_SM))
+                                        .text_color(theme::text_secondary())
+                                        .child(if this.account_profile_loading {
+                                            "Loading profile…"
+                                        } else {
+                                            about_hint
+                                        }),
+                                ),
+                        ),
+                )
+                .child(
+                    gpui::div()
+                        .px(px(18.0))
+                        .py(px(12.0))
+                        .border_t_1()
+                        .border_color(theme::border())
+                        .child(
+                            gpui::div()
+                                .mb(px(8.0))
+                                .text_size(px(theme::TEXT_SIZE))
+                                .child("Name"),
+                        )
+                        .child(Input::new(&this.profile_name_input).cleanable(true)),
+                )
+                .child(action_row(
+                    "setting-save-name",
+                    "Save name",
+                    "Requires a connection. Empty names are rejected.",
+                    "Save",
+                    false,
+                    cx,
+                    |this, cx| this.save_profile_name(cx),
+                ))
+                .child(
+                    gpui::div()
+                        .px(px(18.0))
+                        .py(px(12.0))
+                        .border_t_1()
+                        .border_color(theme::border())
+                        .child(
+                            gpui::div()
+                                .mb(px(8.0))
+                                .text_size(px(theme::TEXT_SIZE))
+                                .child("About"),
+                        )
+                        .child(Input::new(&this.profile_about_input).cleanable(true)),
+                )
+                .child(action_row(
+                    "setting-save-about",
+                    "Save About",
+                    about_hint,
+                    "Save",
+                    false,
+                    cx,
+                    |this, cx| this.save_profile_about(cx),
+                ))
+                .child(action_row(
+                    "setting-change-photo",
+                    "Profile photo",
+                    "JPEG is sent at 640×640. Requires a connection.",
+                    "Change",
+                    false,
+                    cx,
+                    |this, cx| this.choose_profile_photo(cx),
+                ))
+                .child(action_row(
+                    "setting-remove-photo",
+                    "Remove profile photo",
+                    "Asks for confirmation before removing the photo from your account.",
+                    "Remove…",
+                    true,
+                    cx,
+                    |this, cx| this.confirm_remove_profile_picture(cx),
+                )),
+        )
+        .child(
+            card("LINKED ACCOUNT")
+                .child(value_row("Connection", this.session.status_label()))
+                .child(value_row(
+                    "Local data",
+                    "Cached chats remain on this computer when offline",
+                ))
+                .child(action_row(
+                    "setting-logout",
+                    if this.logout_in_progress {
+                        "Logging out…"
+                    } else {
+                        "Log out of this desktop"
+                    },
+                    "Unlinks this companion. Cached account data remains on this computer.",
+                    "Log out…",
+                    true,
+                    cx,
+                    |this, cx| this.confirm_logout(cx),
+                )),
+        )
         .into_any_element()
 }
 
 fn privacy(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElement {
-    card("MESSAGE PRIVACY")
-        .child(toggle_row(
-            "setting-preview-privacy",
-            "Show message previews",
-            "Hide message text in desktop notifications when disabled.",
-            this.settings.notification_previews,
+    let connected = this.session.state.is_connected();
+    let mut protocol = card("WHO CAN SEE MY INFO");
+    if this.privacy_loading && this.privacy_settings.is_none() {
+        protocol = protocol.child(value_row("Privacy settings", "Loading…"));
+    } else if let Some(settings) = this.privacy_settings.clone() {
+        for category in wasabi_domain::PrivacyCategory::ALL {
+            let current = settings
+                .iter()
+                .find(|setting| setting.category == category)
+                .map(|setting| setting.value);
+            protocol = protocol.child(privacy_picker(category, current, this.privacy_mutating, cx));
+        }
+    } else if connected {
+        protocol = protocol.child(value_row(
+            "Privacy settings",
+            "Unavailable until the linked account answers",
+        ));
+    } else {
+        protocol = protocol.child(value_row("Privacy settings", "Unavailable until connected"));
+    }
+
+    let mut blocked = card("BLOCKED CONTACTS");
+    if this.blocklist_loading && this.blocklist.is_none() {
+        blocked = blocked.child(value_row("Blocklist", "Loading…"));
+    } else if let Some(error) = this.blocklist_error.clone() {
+        blocked = blocked.child(value_row("Blocklist", error));
+    } else if let Some(contacts) = this.blocklist.clone() {
+        if contacts.is_empty() {
+            blocked = blocked.child(value_row("Blocklist", "No blocked contacts"));
+        } else {
+            for (index, contact) in contacts.into_iter().enumerate() {
+                let name = contact.display_name.clone();
+                blocked = blocked.child(action_row(
+                    ("setting-unblock", index),
+                    name.clone(),
+                    "Unblock uses the same protocol action as contact details.",
+                    "Unblock…",
+                    false,
+                    cx,
+                    move |this, cx| this.confirm_settings_unblock(contact.clone(), cx),
+                ));
+            }
+        }
+    } else {
+        blocked = blocked.child(value_row("Blocklist", "Unavailable until connected"));
+    }
+
+    let mut messages = card("MESSAGE PRIVACY").child(toggle_row(
+        "setting-preview-privacy",
+        "Show message previews",
+        "Hide message text in desktop notifications when disabled.",
+        this.settings.notification_previews,
+        cx,
+        |this| this.settings.notification_previews = !this.settings.notification_previews,
+    ));
+    messages = match this.link_previews_disabled {
+        Some(disabled) => messages.child(protocol_toggle_row(
+            "setting-link-previews",
+            "Outgoing link previews",
+            "Writes an account preference that syncs to linked devices.",
+            !disabled,
             cx,
-            |this| this.settings.notification_previews = !this.settings.notification_previews,
-        ))
+            |this, cx| {
+                this.set_link_previews_disabled(!this.link_previews_disabled.unwrap_or(false), cx)
+            },
+        )),
+        None => messages
+            .child(value_row(
+                "Outgoing link previews",
+                "The live value is not readable here. Changing it writes the preference to linked devices.",
+            ))
+            .child(action_row(
+                "setting-link-previews-off",
+                "Disable outgoing link previews",
+                "Syncs to linked devices after the linked account accepts the change.",
+                if connected { "Turn off" } else { "Connect" },
+                false,
+                cx,
+                |this, cx| this.set_link_previews_disabled(true, cx),
+            ))
+            .child(action_row(
+                "setting-link-previews-on",
+                "Enable outgoing link previews",
+                "Syncs to linked devices after the linked account accepts the change.",
+                if connected { "Turn on" } else { "Connect" },
+                false,
+                cx,
+                |this, cx| this.set_link_previews_disabled(false, cx),
+            )),
+    };
+
+    gpui::div()
+        .child(protocol)
+        .child(blocked)
+        .child(messages)
         .into_any_element()
+}
+
+fn privacy_picker(
+    category: wasabi_domain::PrivacyCategory,
+    current: Option<wasabi_domain::PrivacyValue>,
+    mutating: bool,
+    cx: &mut Context<MainWindow>,
+) -> gpui::Div {
+    let mut values: Vec<wasabi_domain::PrivacyValue> = category.picker_values().to_vec();
+    if let Some(current) = current
+        && !values.contains(&current)
+    {
+        values.insert(0, current);
+    }
+    let mut choices = gpui::div().flex().flex_wrap().gap(px(8.0));
+    if let Some(current) = current {
+        for (index, value) in values.into_iter().enumerate() {
+            let selected = current == value;
+            choices = choices.child(
+                gpui::div()
+                    .id((category.as_wire(), index))
+                    .px(px(14.0))
+                    .py(px(7.0))
+                    .rounded(px(theme::RADIUS_MD))
+                    .when(!mutating, |el| el.cursor_pointer())
+                    .border_1()
+                    .when(selected, |el| {
+                        el.border_color(theme::accent())
+                            .text_color(theme::accent_text())
+                    })
+                    .when(!selected, |el| {
+                        el.border_color(theme::border())
+                            .text_color(theme::text_secondary())
+                            .hover(|style| style.bg(theme::row_hover()))
+                    })
+                    .child(value.label())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !mutating {
+                            this.set_privacy_setting(category, value, cx);
+                        }
+                    })),
+            );
+        }
+    } else {
+        choices = choices.child(
+            gpui::div()
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .text_color(theme::text_secondary())
+                .child("Not reported by the linked account"),
+        );
+    }
+    gpui::div()
+        .px(px(18.0))
+        .py(px(12.0))
+        .border_t_1()
+        .border_color(theme::border())
+        .child(
+            gpui::div()
+                .text_size(px(theme::TEXT_SIZE))
+                .child(category.label()),
+        )
+        .child(
+            gpui::div()
+                .mt(px(3.0))
+                .mb(px(8.0))
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .text_color(theme::text_secondary())
+                .child(category.description()),
+        )
+        .child(choices)
+}
+
+fn protocol_toggle_row(
+    id: &'static str,
+    label: &'static str,
+    description: &'static str,
+    checked: bool,
+    cx: &mut Context<MainWindow>,
+    action: impl Fn(&mut MainWindow, &mut Context<MainWindow>) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    gpui::div()
+        .id(id)
+        .min_h(px(62.0))
+        .px(px(18.0))
+        .py(px(9.0))
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .gap(px(16.0))
+        .border_t_1()
+        .border_color(theme::border())
+        .hover(|style| style.bg(theme::row_hover()))
+        .child(
+            gpui::div()
+                .flex_1()
+                .child(
+                    gpui::div()
+                        .text_size(px(theme::TEXT_SIZE))
+                        .text_color(theme::text_primary())
+                        .child(label),
+                )
+                .child(
+                    gpui::div()
+                        .mt(px(2.0))
+                        .text_size(px(theme::TEXT_SIZE_SM))
+                        .text_color(theme::text_secondary())
+                        .child(description),
+                ),
+        )
+        .child(toggle_visual(checked))
+        .on_click(cx.listener(move |this, _, _, cx| action(this, cx)))
 }
 
 fn chats(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElement {
@@ -498,6 +833,10 @@ fn chats(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElemen
             cx,
             |this| this.settings.enter_to_send = !this.settings.enter_to_send,
         ))
+        .child(value_row(
+            "Media auto-download",
+            "Per-kind on/off lives under Storage and data. Downloads use this computer's network.",
+        ))
         .into_any_element()
 }
 
@@ -526,6 +865,14 @@ fn notifications(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::A
             this.settings.suppress_when_focused,
             cx,
             |this| this.settings.suppress_when_focused = !this.settings.suppress_when_focused,
+        ))
+        .child(toggle_row(
+            "setting-preview-notifications",
+            "Show message previews",
+            "Hide message text in desktop notifications when disabled. Same preference as Privacy.",
+            this.settings.notification_previews,
+            cx,
+            |this| this.settings.notification_previews = !this.settings.notification_previews,
         ))
         .into_any_element()
 }
@@ -570,6 +917,38 @@ fn storage(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElem
     }
 
     card("DOWNLOADS AND CACHE")
+        .child(toggle_row(
+            "setting-auto-photos",
+            "Auto-download photos",
+            "Downloads use this computer's network. Files larger than 16 MB stay manual.",
+            this.settings.auto_download_photos,
+            cx,
+            |this| this.settings.auto_download_photos = !this.settings.auto_download_photos,
+        ))
+        .child(toggle_row(
+            "setting-auto-audio",
+            "Auto-download audio",
+            "Downloads use this computer's network. Files larger than 16 MB stay manual.",
+            this.settings.auto_download_audio,
+            cx,
+            |this| this.settings.auto_download_audio = !this.settings.auto_download_audio,
+        ))
+        .child(toggle_row(
+            "setting-auto-video",
+            "Auto-download video",
+            "Downloads use this computer's network. Files larger than 64 MB stay manual.",
+            this.settings.auto_download_video,
+            cx,
+            |this| this.settings.auto_download_video = !this.settings.auto_download_video,
+        ))
+        .child(toggle_row(
+            "setting-auto-documents",
+            "Auto-download documents",
+            "Downloads use this computer's network. Files larger than 16 MB stay manual.",
+            this.settings.auto_download_documents,
+            cx,
+            |this| this.settings.auto_download_documents = !this.settings.auto_download_documents,
+        ))
         .child(action_row(
             "setting-download-location",
             "Download location",
@@ -616,13 +995,21 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-fn shortcuts() -> gpui::AnyElement {
+fn shortcuts(this: &MainWindow) -> gpui::AnyElement {
+    let (send, newline) = if this.settings.enter_to_send {
+        ("Enter", "Shift+Enter")
+    } else {
+        (
+            "Disabled — Enter inserts a new line",
+            "Enter or Shift+Enter",
+        )
+    };
     card("ACTIVE BINDINGS")
         .child(value_row("Focus chat search", "Ctrl+K"))
         .child(value_row("Open Settings", "Ctrl+,"))
         .child(value_row("Close dialog or info", "Escape"))
-        .child(value_row("Send message", "Enter"))
-        .child(value_row("New line", "Shift+Enter"))
+        .child(value_row("Send message", send))
+        .child(value_row("New line", newline))
         .into_any_element()
 }
 
@@ -630,19 +1017,31 @@ fn help() -> gpui::AnyElement {
     card("ABOUT")
         .child(value_row("Version", env!("CARGO_PKG_VERSION")))
         .child(value_row("Build", "Linux / GPUI"))
+        .child(value_row("License", "MIT"))
+        .child(value_row(
+            "Permission",
+            "Copyright (c) 2026 Wasabi contributors. Permission is hereby granted, free of charge, to any person obtaining a copy of this software.",
+        ))
         .child(value_row(
             "Settings file",
             crate::state::DeviceSettings::path().to_string_lossy(),
         ))
-        .child(value_row("Logs", "Content-free and identity-redacted"))
+        .child(value_row(
+            "Data directory",
+            crate::state::DeviceSettings::data_dir().to_string_lossy(),
+        ))
+        .child(value_row(
+            "Logs",
+            "Logs omit message bodies and numbers",
+        ))
         .into_any_element()
 }
 
 fn settings_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
-    let Some(overlay) = this.settings_overlay else {
+    let Some(overlay) = this.settings_overlay.clone() else {
         return gpui::div();
     };
-    let (title, detail, confirm) = settings_overlay_copy(overlay);
+    let (title, detail, confirm) = settings_overlay_copy(&overlay);
     gpui::div()
         .absolute()
         .size_full()
@@ -685,36 +1084,41 @@ fn settings_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui
                             ),
                         )
                         .child(
-                            overlay_button("confirm-settings-action", confirm, true).on_click(
-                                cx.listener(|this, _, _, cx| {
+                            overlay_button("confirm-settings-action", confirm.as_str(), true)
+                                .on_click(cx.listener(|this, _, _, cx| {
                                     this.run_confirmed_settings_action(cx)
-                                }),
-                            ),
+                                })),
                         ),
                 ),
         )
 }
 
-fn settings_overlay_copy(overlay: SettingsOverlay) -> (&'static str, &'static str, &'static str) {
+fn settings_overlay_copy(overlay: &SettingsOverlay) -> (String, String, String) {
     match overlay {
         SettingsOverlay::ClearMediaCache => (
-            "Clear downloaded media?",
-            "Cached photos, videos, audio, and documents will be removed from this computer. Messages remain available and media can be downloaded again.",
-            "Clear cache",
+            "Clear downloaded media?".into(),
+            "Cached photos, videos, audio, and documents will be removed from this computer. Messages remain available and media can be downloaded again.".into(),
+            "Clear cache".into(),
         ),
         SettingsOverlay::Logout => (
-            "Log out of this desktop?",
-            "This companion will be unlinked from WhatsApp. Cached chats and account data remain on this computer unless you remove them separately.",
-            "Log out",
+            "Log out of this desktop?".into(),
+            "This companion will be unlinked from WhatsApp. Cached chats and account data remain on this computer unless you remove them separately.".into(),
+            "Log out".into(),
+        ),
+        SettingsOverlay::RemoveProfilePicture => (
+            "Remove your profile photo?".into(),
+            "The photo is removed from your WhatsApp account after the linked session accepts the request.".into(),
+            "Remove photo".into(),
+        ),
+        SettingsOverlay::UnblockContact { name, .. } => (
+            format!("Unblock {name}?"),
+            "They will be able to message you again after the linked account accepts the request.".into(),
+            "Unblock".into(),
         ),
     }
 }
 
-fn overlay_button(
-    id: &'static str,
-    label: &'static str,
-    danger: bool,
-) -> gpui::Stateful<gpui::Div> {
+fn overlay_button(id: &'static str, label: &str, danger: bool) -> gpui::Stateful<gpui::Div> {
     gpui::div()
         .id(id)
         .px(px(12.0))
@@ -734,7 +1138,7 @@ fn overlay_button(
             theme::text_primary()
         })
         .hover(|style| style.bg(theme::row_hover()))
-        .child(label)
+        .child(label.to_string())
 }
 
 #[cfg(test)]
@@ -751,9 +1155,16 @@ mod tests {
 
     #[test]
     fn logout_confirmation_is_explicit_about_local_data() {
-        let (title, detail, confirm) = settings_overlay_copy(SettingsOverlay::Logout);
+        let (title, detail, confirm) = settings_overlay_copy(&SettingsOverlay::Logout);
         assert!(title.contains("desktop"));
         assert!(detail.contains("remain on this computer"));
         assert_eq!(confirm, "Log out");
+    }
+
+    #[test]
+    fn remove_photo_confirmation_is_explicit() {
+        let (title, _, confirm) = settings_overlay_copy(&SettingsOverlay::RemoveProfilePicture);
+        assert!(title.contains("profile photo"));
+        assert_eq!(confirm, "Remove photo");
     }
 }

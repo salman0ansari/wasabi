@@ -52,7 +52,8 @@ wasabi is being built in public toward a dependable Linux-first replacement for 
 | Done | Multiline text, per-chat drafts, reply/edit context, Enter-to-send, durable staging, multi-kind outbox, progress/cancel/retry, and verified cache. |
 | Done | Local categorized Unicode emoji picker that inserts at the composer caret. |
 | Done | Save As and Reveal in Files for media already in the local cache. |
-| In progress | Live-account interoperability for each media class, metadata fidelity, visible thumbnail loading, and policy-driven auto-download. |
+| In progress | Live-account interoperability for each media class, metadata fidelity, and visible thumbnail loading. |
+| Done | Device-local auto-download policy for photos, audio, video, and documents with conservative size caps. |
 | Planned | Group mentions, voice recording, contact/location sharing, poll/event creation, and sticker creation. |
 
 ## Settings and Linux integration
@@ -60,8 +61,8 @@ wasabi is being built in public toward a dependable Linux-first replacement for 
 | Status | Work |
 | --- | --- |
 | Done | Two-pane Settings shell, appearance/text/composer preferences, notification controls, cache usage/quota/path/clear, XDG autostart, and logout. |
-| In progress | Complete General, Account, Privacy, Chats, Notifications, Storage and data, Shortcuts, and Help with typed persisted behavior. |
-| Planned | Profile editing, supported synced privacy, blocklist, disappearing defaults, wallpaper, spellcheck, previews, archive/history management, media policies, licenses, and redacted diagnostics. |
+| Done | Account profile editing, live privacy categories with supported values, blocklist unblock, outgoing link-preview sync, device-local auto-download, honest shortcuts, and Help license/path/log copy. |
+| Planned | Disappearing defaults, wallpaper, spellcheck, archive/history management, and remaining diagnostics. |
 | Planned | Tested Wayland support and common Linux packages; Windows and macOS follow Linux core GA. |
 | Planned | Tray behavior only after it is reliable across supported desktops. |
 
