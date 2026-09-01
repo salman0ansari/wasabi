@@ -42,7 +42,8 @@ pub use media::{
 pub use message::{
     ChatSummary, MESSAGE_EDIT_WINDOW_MS, MediaAvailability, MediaDescriptor, MessageContext,
     MessageDirection, MessageKind, MessagePage, MessageRow, MessageStatus, PageCursor,
-    QuotedMessage, ReactionSummary, SenderJid, UnavailableMessageReason,
+    QuotedMessage, ReactionActor, ReactionSummary, ReceiptActor, SenderJid,
+    UnavailableMessageReason,
 };
 pub use notification::NotificationCandidate;
 pub use page::{ChatPage, ChatPageCursor, ChatScope};

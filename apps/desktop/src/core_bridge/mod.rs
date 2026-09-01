@@ -26,8 +26,9 @@ use wasabi_domain::{
     GroupInviteLinkRequest, GroupPatch, GroupPatchResult, GroupPermissions, MediaDownloadRequest,
     MessageAction, MessageContext, MessageId, MessagePage, NotificationCandidate, PageCursor,
     PairingPhoneNumber, Participant, ParticipantRole, PendingMembershipRequest, PhonePairCode,
-    ProfilePictureRequest, SearchPage, SendContent, SendReceipt, SendRequest, ServiceError,
-    SharedGroup, StagedAttachment, StarredPage, TransferId, TransferJob,
+    ProfilePictureRequest, ReactionActor, ReceiptActor, SearchPage, SendContent, SendReceipt,
+    SendRequest, ServiceError, SharedGroup, StagedAttachment, StarredPage, TransferId,
+    TransferJob,
 };
 use wasabi_repository::AccountStore;
 use wasabi_whatsapp::lifecycle::QrState;
@@ -90,6 +91,16 @@ pub trait DesktopBackend: Send + Sync {
         before: usize,
         after: usize,
     ) -> Result<MessageContext, String>;
+    async fn reaction_details(
+        &self,
+        chat: String,
+        message: MessageId,
+    ) -> Result<Vec<ReactionActor>, String>;
+    async fn receipt_details(
+        &self,
+        chat: String,
+        message: MessageId,
+    ) -> Result<Vec<ReceiptActor>, String>;
     async fn notification_candidate(
         &self,
         chat: String,
@@ -541,6 +552,36 @@ impl CoreBridge {
         self.run_on_core(async move {
             store
                 .message_context(&chat, anchor, before, after)
+                .await
+                .map_err(service_message)
+        })
+        .await
+    }
+
+    pub async fn reaction_details(
+        &self,
+        chat: String,
+        message: MessageId,
+    ) -> Result<Vec<ReactionActor>, String> {
+        let store = self.store_snapshot()?;
+        self.run_on_core(async move {
+            store
+                .reaction_details(&chat, &message)
+                .await
+                .map_err(service_message)
+        })
+        .await
+    }
+
+    pub async fn receipt_details(
+        &self,
+        chat: String,
+        message: MessageId,
+    ) -> Result<Vec<ReceiptActor>, String> {
+        let store = self.store_snapshot()?;
+        self.run_on_core(async move {
+            store
+                .receipt_details(&chat, &message)
                 .await
                 .map_err(service_message)
         })
@@ -2937,6 +2978,22 @@ impl DesktopBackend for CoreBridge {
         after: usize,
     ) -> Result<MessageContext, String> {
         CoreBridge::load_message_context(self, chat, anchor, before, after).await
+    }
+
+    async fn reaction_details(
+        &self,
+        chat: String,
+        message: MessageId,
+    ) -> Result<Vec<ReactionActor>, String> {
+        CoreBridge::reaction_details(self, chat, message).await
+    }
+
+    async fn receipt_details(
+        &self,
+        chat: String,
+        message: MessageId,
+    ) -> Result<Vec<ReceiptActor>, String> {
+        CoreBridge::receipt_details(self, chat, message).await
     }
 
     async fn notification_candidate(

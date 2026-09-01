@@ -55,6 +55,13 @@ enum LoadedConversation {
 }
 
 #[derive(Clone)]
+pub(crate) enum MessageDetailsLoad<T> {
+    Loading,
+    Ready(T),
+    Failed(String),
+}
+
+#[derive(Clone)]
 pub(crate) enum MessageOverlay {
     Actions(wasabi_domain::MessageId),
     Confirm(wasabi_domain::MessageAction),
@@ -67,6 +74,14 @@ pub(crate) enum MessageOverlay {
     ConfirmResetInviteLink(InviteLinkResetTarget),
     ConfirmContact(wasabi_domain::ContactAction),
     Forward(wasabi_domain::MessageActionTarget),
+    ReactionDetails {
+        message: wasabi_domain::MessageId,
+        actors: MessageDetailsLoad<Vec<wasabi_domain::ReactionActor>>,
+    },
+    ReceiptDetails {
+        message: wasabi_domain::MessageId,
+        actors: MessageDetailsLoad<Vec<wasabi_domain::ReceiptActor>>,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2963,6 +2978,82 @@ impl MainWindow {
     ) {
         self.message_overlay = Some(MessageOverlay::Actions(message));
         self.emoji_picker_open = false;
+        cx.notify();
+    }
+
+    pub(crate) fn open_reaction_details(
+        &mut self,
+        message: wasabi_domain::MessageId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(chat) = self.chats.selected.clone() else {
+            return;
+        };
+        self.message_overlay = Some(MessageOverlay::ReactionDetails {
+            message: message.clone(),
+            actors: MessageDetailsLoad::Loading,
+        });
+        self.emoji_picker_open = false;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.reaction_details(chat, message.clone()).await;
+            this.update(cx, |this, cx| {
+                if let Some(MessageOverlay::ReactionDetails {
+                    message: current,
+                    actors,
+                }) = &mut this.message_overlay
+                    && current == &message
+                {
+                    *actors = match result {
+                        Ok(rows) => MessageDetailsLoad::Ready(rows),
+                        Err(error) => MessageDetailsLoad::Failed(error),
+                    };
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn open_receipt_details(
+        &mut self,
+        message: wasabi_domain::MessageId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(row) = self.messages.rows.iter().find(|row| row.id == message) else {
+            return;
+        };
+        if !crate::state::messages::receipt_details_clickable(row) {
+            return;
+        }
+        let Some(chat) = self.chats.selected.clone() else {
+            return;
+        };
+        self.message_overlay = Some(MessageOverlay::ReceiptDetails {
+            message: message.clone(),
+            actors: MessageDetailsLoad::Loading,
+        });
+        self.emoji_picker_open = false;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.receipt_details(chat, message.clone()).await;
+            this.update(cx, |this, cx| {
+                if let Some(MessageOverlay::ReceiptDetails {
+                    message: current,
+                    actors,
+                }) = &mut this.message_overlay
+                    && current == &message
+                {
+                    *actors = match result {
+                        Ok(rows) => MessageDetailsLoad::Ready(rows),
+                        Err(error) => MessageDetailsLoad::Failed(error),
+                    };
+                }
+                cx.notify();
+            })
+            .ok();
+        });
         cx.notify();
     }
 

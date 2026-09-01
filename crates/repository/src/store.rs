@@ -480,19 +480,7 @@ impl AccountStore {
         if rows.is_empty() {
             return Ok(());
         }
-        let device = self
-            .sqlite
-            .load_device_data_for_device(self.device_id())
-            .await
-            .map_err(|error| {
-                domain::ServiceError::new(domain::ErrorKind::Database, error.to_string())
-            })?;
-        let own_jids = device
-            .into_iter()
-            .flat_map(|device| [device.pn, device.lid])
-            .flatten()
-            .map(|jid| jid.to_non_ad().to_string())
-            .collect::<std::collections::HashSet<_>>();
+        let own_jids = self.own_identity_keys().await?;
         let reactions = futures::future::try_join_all(rows.iter().map(|row| {
             let chat = row.chat.as_str().parse::<whatsapp_rust::Jid>();
             let message = row.id.as_str().to_string();
@@ -511,6 +499,133 @@ impl AccountStore {
             row.reactions = aggregate_reactions(entries, &own_jids);
         }
         Ok(())
+    }
+
+    /// Per-reactor list for one message. Two people using the same emoji stay
+    /// two rows; aggregates never collapse this surface.
+    pub async fn reaction_details(
+        &self,
+        chat: &str,
+        message: &domain::MessageId,
+    ) -> Result<Vec<domain::ReactionActor>, domain::ServiceError> {
+        let jid = parse_jid(chat)?;
+        let entries = self
+            .chats
+            .reactions(&jid, message.as_str())
+            .await
+            .map_err(database_error)?;
+        let own_jids = self.own_identity_keys().await?;
+        let names = self
+            .resolve_actor_names(
+                chat,
+                entries
+                    .iter()
+                    .map(|entry| entry.sender_jid.clone())
+                    .collect(),
+            )
+            .await;
+        Ok(project_reaction_actors(entries, &own_jids, &names))
+    }
+
+    /// Per-user delivery/read list for an **outgoing** message. Incoming rows
+    /// always return empty so the UI cannot invent who read a received message.
+    pub async fn receipt_details(
+        &self,
+        chat: &str,
+        message: &domain::MessageId,
+    ) -> Result<Vec<domain::ReceiptActor>, domain::ServiceError> {
+        let jid = parse_jid(chat)?;
+        let stored = self
+            .chats
+            .message(&jid, message.as_str())
+            .await
+            .map_err(database_error)?;
+        let Some(stored) = stored else {
+            return Err(domain::ServiceError::new(
+                domain::ErrorKind::InvalidRequest,
+                "message no longer exists",
+            ));
+        };
+        if !stored.from_me {
+            return Ok(Vec::new());
+        }
+        let entries = self
+            .chats
+            .receipts(&jid, message.as_str())
+            .await
+            .map_err(database_error)?;
+        let names = self
+            .resolve_actor_names(
+                chat,
+                entries.iter().map(|entry| entry.user_jid.clone()).collect(),
+            )
+            .await;
+        Ok(project_receipt_actors(true, entries, &names))
+    }
+
+    async fn own_identity_keys(
+        &self,
+    ) -> Result<std::collections::HashSet<String>, domain::ServiceError> {
+        let device = self
+            .sqlite
+            .load_device_data_for_device(self.device_id())
+            .await
+            .map_err(|error| {
+                domain::ServiceError::new(domain::ErrorKind::Database, error.to_string())
+            })?;
+        Ok(device
+            .into_iter()
+            .flat_map(|device| [device.pn, device.lid])
+            .flatten()
+            .map(|jid| jid.to_non_ad().to_string())
+            .collect())
+    }
+
+    async fn resolve_actor_names(
+        &self,
+        chat: &str,
+        jids: Vec<whatsapp_rust::Jid>,
+    ) -> std::collections::HashMap<String, String> {
+        let mut names = std::collections::HashMap::new();
+        if chat.ends_with("@g.us")
+            && let Ok(Some(details)) =
+                crate::group_cache::load(self.shared_db(), self.device_id(), chat.to_string()).await
+        {
+            for participant in details.participants {
+                if !participant.display_name.trim().is_empty() {
+                    names
+                        .entry(participant.jid)
+                        .or_insert(participant.display_name);
+                }
+            }
+        }
+        for jid in jids {
+            let key = jid.to_non_ad().to_string();
+            if let Ok(Some(contact)) = self.chats.contact(&jid).await
+                && let Some(name) = contact
+                    .display_name()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+            {
+                names.insert(key.clone(), name.to_string());
+                continue;
+            }
+            if names.contains_key(&key) {
+                continue;
+            }
+            if let Ok(Some(cached)) =
+                crate::contacts::load_metadata(self.shared_db(), self.device_id(), key.clone())
+                    .await
+                && let Some(name) = cached
+                    .display_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+            {
+                names.insert(key, name.to_string());
+            }
+        }
+        names
     }
 
     /// Latest committed message plus chat-level notification policy inputs.
@@ -872,13 +987,14 @@ fn chat_kind(jid: &str) -> domain::ChatKind {
 
 #[cfg(test)]
 mod projection_tests {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     use super::{
         aggregate_reactions, chat_kind, chat_list_preview, format_coord, map_kind_fields,
-        map_quoted_message, notification_preview, quoted_preview,
+        map_quoted_message, notification_preview, project_reaction_actors, project_receipt_actors,
+        quoted_preview,
     };
-    use wasabi_domain::{ChatKind, MessageKind, UnavailableMessageReason};
+    use wasabi_domain::{ChatKind, MessageKind, MessageStatus, UnavailableMessageReason};
     use whatsapp_rust::chrono::Utc;
     use whatsapp_rust::wacore::proto_helpers::{MessageBuilderExt, build_quote_context};
     use whatsapp_rust::waproto::buffa::MessageField;
@@ -954,6 +1070,97 @@ mod projection_tests {
         assert!(!summaries[0].reacted_by_me);
         assert_eq!(summaries[1].emoji, "❤️");
         assert!(summaries[1].reacted_by_me);
+    }
+
+    #[test]
+    fn reaction_details_keep_two_actors_for_the_same_emoji() {
+        let entry = |sender: &str, emoji: &str| whatsapp_rust_chat_store::ReactionEntry {
+            sender_jid: sender.parse().unwrap(),
+            emoji: emoji.to_string(),
+            timestamp: Utc::now(),
+        };
+        let own = HashSet::from(["15550000001@s.whatsapp.net".to_string()]);
+        let names = HashMap::from([
+            (
+                "15550000000@s.whatsapp.net".to_string(),
+                "Alice".to_string(),
+            ),
+            ("15550000002@s.whatsapp.net".to_string(), "Cara".to_string()),
+        ]);
+        let actors = project_reaction_actors(
+            vec![
+                entry("15550000000@s.whatsapp.net", "👍"),
+                entry("15550000001@s.whatsapp.net", "👍"),
+                entry("15550000002@s.whatsapp.net", "❤️"),
+            ],
+            &own,
+            &names,
+        );
+        let summaries = aggregate_reactions(
+            vec![
+                entry("15550000000@s.whatsapp.net", "👍"),
+                entry("15550000001@s.whatsapp.net", "👍"),
+                entry("15550000002@s.whatsapp.net", "❤️"),
+            ],
+            &own,
+        );
+
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].emoji, "👍");
+        assert_eq!(summaries[0].count, 2);
+        assert_eq!(actors.len(), 3);
+        assert_eq!(actors[0].display_name, "Alice");
+        assert_eq!(actors[0].emoji, "👍");
+        assert!(!actors[0].is_self);
+        assert_eq!(actors[1].display_name, "You");
+        assert_eq!(actors[1].emoji, "👍");
+        assert!(actors[1].is_self);
+        assert_eq!(actors[2].display_name, "Cara");
+        assert_eq!(actors[2].emoji, "❤️");
+    }
+
+    #[test]
+    fn receipt_details_omit_incoming_even_when_rows_exist() {
+        let entry = |user: &str, status: whatsapp_rust_chat_store::types::MessageStatus| {
+            whatsapp_rust_chat_store::ReceiptEntry {
+                user_jid: user.parse().unwrap(),
+                status,
+                timestamp: Utc::now(),
+            }
+        };
+        let names = HashMap::from([(
+            "15550000000@s.whatsapp.net".to_string(),
+            "Alice".to_string(),
+        )]);
+        let incoming = project_receipt_actors(
+            false,
+            vec![entry(
+                "15550000000@s.whatsapp.net",
+                whatsapp_rust_chat_store::types::MessageStatus::Read,
+            )],
+            &names,
+        );
+        assert!(incoming.is_empty());
+
+        let outgoing = project_receipt_actors(
+            true,
+            vec![
+                entry(
+                    "15550000000@s.whatsapp.net",
+                    whatsapp_rust_chat_store::types::MessageStatus::Read,
+                ),
+                entry(
+                    "15550000002@s.whatsapp.net",
+                    whatsapp_rust_chat_store::types::MessageStatus::Delivered,
+                ),
+            ],
+            &names,
+        );
+        assert_eq!(outgoing.len(), 2);
+        assert_eq!(outgoing[0].display_name, "Alice");
+        assert_eq!(outgoing[0].status, MessageStatus::Read);
+        assert_eq!(outgoing[1].display_name, "15550000002");
+        assert_eq!(outgoing[1].status, MessageStatus::Delivered);
     }
 
     fn location_message(
@@ -1375,6 +1582,78 @@ mod projection_tests {
     }
 }
 
+fn map_up_status(status: whatsapp_rust_chat_store::types::MessageStatus) -> domain::MessageStatus {
+    use whatsapp_rust_chat_store::types::MessageStatus as UpStatus;
+    match status {
+        UpStatus::Error => domain::MessageStatus::Failed,
+        UpStatus::Pending => domain::MessageStatus::Pending,
+        UpStatus::ServerAck => domain::MessageStatus::ServerAck,
+        UpStatus::Delivered | UpStatus::Played => domain::MessageStatus::Delivered,
+        UpStatus::Read => domain::MessageStatus::Read,
+    }
+}
+
+fn actor_label(
+    jid: &whatsapp_rust::Jid,
+    is_self: bool,
+    names: &std::collections::HashMap<String, String>,
+) -> String {
+    if is_self {
+        return "You".to_string();
+    }
+    let key = jid.to_non_ad().to_string();
+    names
+        .get(&key)
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| jid.user.to_string())
+}
+
+fn project_reaction_actors(
+    entries: Vec<whatsapp_rust_chat_store::ReactionEntry>,
+    own_jids: &std::collections::HashSet<String>,
+    names: &std::collections::HashMap<String, String>,
+) -> Vec<domain::ReactionActor> {
+    entries
+        .into_iter()
+        .filter(|entry| !entry.emoji.is_empty())
+        .map(|entry| {
+            let is_self = own_jids.contains(&entry.sender_jid.to_non_ad().to_string());
+            domain::ReactionActor {
+                display_name: actor_label(&entry.sender_jid, is_self, names),
+                emoji: entry.emoji,
+                is_self,
+            }
+        })
+        .collect()
+}
+
+fn project_receipt_actors(
+    from_me: bool,
+    entries: Vec<whatsapp_rust_chat_store::ReceiptEntry>,
+    names: &std::collections::HashMap<String, String>,
+) -> Vec<domain::ReceiptActor> {
+    if !from_me {
+        return Vec::new();
+    }
+    entries
+        .into_iter()
+        .filter_map(|entry| {
+            let status = map_up_status(entry.status);
+            matches!(
+                status,
+                domain::MessageStatus::Delivered | domain::MessageStatus::Read
+            )
+            .then(|| domain::ReceiptActor {
+                display_name: actor_label(&entry.user_jid, false, names),
+                status,
+                timestamp_ms: entry.timestamp.timestamp_millis(),
+            })
+        })
+        .collect()
+}
+
 fn aggregate_reactions(
     entries: Vec<whatsapp_rust_chat_store::ReactionEntry>,
     own_jids: &std::collections::HashSet<String>,
@@ -1405,14 +1684,7 @@ fn aggregate_reactions(
 pub(crate) fn stored_to_row(
     m: whatsapp_rust_chat_store::types::StoredMessage,
 ) -> Result<domain::MessageRow, domain::ServiceError> {
-    use whatsapp_rust_chat_store::types::MessageStatus as UpStatus;
-    let status = match m.status {
-        UpStatus::Error => domain::MessageStatus::Failed,
-        UpStatus::Pending => domain::MessageStatus::Pending,
-        UpStatus::ServerAck => domain::MessageStatus::ServerAck,
-        UpStatus::Delivered | UpStatus::Played => domain::MessageStatus::Delivered,
-        UpStatus::Read => domain::MessageStatus::Read,
-    };
+    let status = map_up_status(m.status);
     let kind = map_kind(&m);
     let quoted = m.message.as_deref().and_then(map_quoted_message);
     Ok(domain::MessageRow {

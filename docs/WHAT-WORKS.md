@@ -47,6 +47,8 @@ This page describes the shipped behavior in wasabi `0.3.6`. It is a capability i
 | Done | Copy, star, react to, delete locally, or revoke eligible sent messages through real protocol actions. |
 | Done | Forward eligible text and media to cached conversations from the message action sheet. View-once, unavailable, revoked, and system rows stay ineligible. Closing the picker sends nothing. |
 | Done | Render reaction aggregates with counts and the linked account's own selection. |
+| Done | Open a reaction list from a chip showing each person who reacted, resolved from the contact cache. |
+| Done | Open receipt details from outgoing delivery ticks, grouped as Delivered and Read from stored per-user rows. Incoming messages never expose a read-by list. |
 | Done | Render received location and contact cards with a place name, address, and coordinates or a contact display name. Live locations are labeled without tracking; sharing those kinds from the composer is not available yet. |
 | Done | Render received poll and quiz cards with the stored question and option names. Quizzes are labeled without revealing the answer. Voting and poll creation are not available. |
 

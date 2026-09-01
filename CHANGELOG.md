@@ -14,6 +14,11 @@ All notable user-visible changes to wasabi are recorded here. The format follows
   contacts, requires a live connection to send, and leaves view-once,
   unavailable, revoked, and system messages ineligible. Closing the picker
   sends nothing; a partial send keeps successful copies and reports the rest.
+- Clicking a reaction chip lists the people who used that emoji. Counts stay
+  aggregated on the chip; two people with the same emoji are two names.
+- Clicking delivery ticks on an outgoing message lists who delivered or read
+  it when the store has per-user receipts. Incoming ticks stay non-interactive,
+  and an empty list is shown as unavailable rather than inventing readers.
 
 ### Changed
 

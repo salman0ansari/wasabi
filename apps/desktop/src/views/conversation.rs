@@ -614,11 +614,24 @@ fn message_meta(
         )
         .child(time)
         .when(outgoing, |meta| {
-            meta.child(
-                gpui::div()
-                    .text_color(messages::status_color(status))
-                    .child(messages::status_glyph(status)),
-            )
+            let ticks = gpui::div()
+                .text_color(messages::status_color(status))
+                .child(messages::status_glyph(status));
+            if messages::receipt_details_clickable(row) {
+                let message = row.id.clone();
+                meta.child(
+                    ticks
+                        .id(("receipt-details", row_index))
+                        .cursor_pointer()
+                        .rounded(px(theme::RADIUS_SM))
+                        .hover(|style| style.bg(theme::row_hover()))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open_receipt_details(message.clone(), cx)
+                        })),
+                )
+            } else {
+                meta.child(ticks)
+            }
         })
 }
 
@@ -658,7 +671,6 @@ fn reaction_chips(
                 .enumerate()
                 .map(|(reaction_index, reaction)| {
                     let selected = reaction.reacted_by_me;
-                    let emoji = reaction.emoji.clone();
                     let target = message.clone();
                     gpui::div()
                         .id(("reaction-chip", row_index * 32 + reaction_index))
@@ -685,7 +697,7 @@ fn reaction_chips(
                         .text_color(theme::text_primary())
                         .hover(|style| style.border_color(theme::accent()))
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.react_to_message(target.clone(), emoji.clone(), cx)
+                            this.open_reaction_details(target.clone(), cx)
                         }))
                         .child(format!("{} {}", reaction.emoji, reaction.count))
                 }),
@@ -1470,6 +1482,12 @@ pub fn message_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> g
         }
         crate::views::root::MessageOverlay::Forward(target) => {
             return super::forward::overlay(this, &target, cx);
+        }
+        crate::views::root::MessageOverlay::ReactionDetails { actors, .. } => {
+            crate::views::message_details::reaction_overlay(actors, cx)
+        }
+        crate::views::root::MessageOverlay::ReceiptDetails { actors, .. } => {
+            crate::views::message_details::receipt_overlay(actors, cx)
         }
     };
     let card = if reduce_motion {

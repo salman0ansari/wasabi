@@ -381,6 +381,13 @@ pub fn status_color(status: MessageStatus) -> gpui::Rgba {
     }
 }
 
+/// Ticks that can open a per-user receipt list. Incoming rows and
+/// pending/failed ticks have nothing beyond the glyph already on the bubble.
+pub fn receipt_details_clickable(row: &MessageRow) -> bool {
+    row.direction == MessageDirection::Outgoing
+        && matches!(row.status, MessageStatus::Delivered | MessageStatus::Read)
+}
+
 /// Sender display name: push name when resolved, else bare identity. Group
 /// conversations always surface it.
 pub fn sender_display(row: &MessageRow) -> String {
@@ -439,6 +446,23 @@ mod tests {
         ChatId, LocalCursor, MessageContext, MessageDirection, MessageId, MessageKind,
         MessageStatus, SenderJid,
     };
+
+    #[test]
+    fn receipt_details_are_hidden_for_incoming_and_unacked_rows() {
+        let mut outgoing = row("OUT", 1);
+        outgoing.direction = MessageDirection::Outgoing;
+        outgoing.status = MessageStatus::Read;
+        assert!(receipt_details_clickable(&outgoing));
+        outgoing.status = MessageStatus::Delivered;
+        assert!(receipt_details_clickable(&outgoing));
+        outgoing.status = MessageStatus::Pending;
+        assert!(!receipt_details_clickable(&outgoing));
+
+        let mut incoming = row("IN", 2);
+        incoming.direction = MessageDirection::Incoming;
+        incoming.status = MessageStatus::Read;
+        assert!(!receipt_details_clickable(&incoming));
+    }
 
     #[test]
     fn unavailable_messages_explain_the_correct_recovery_path() {
