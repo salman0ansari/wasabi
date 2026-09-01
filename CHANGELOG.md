@@ -4,6 +4,8 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-09-01
+
 ### Added
 
 - Downloaded photos, stickers, and videos open in a lightbox. Escape closes;
