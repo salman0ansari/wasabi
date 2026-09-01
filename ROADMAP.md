@@ -26,6 +26,7 @@ wasabi is being built in public toward a dependable Linux-first replacement for 
 | --- | --- |
 | Done | Active/archived pagination, filters, pin/mute/archive/read actions, drafts/favorites, FTS search, anchored navigation, and measured rows. |
 | Done | Viewport-preserving prepends, non-jumping incoming messages, reply navigation, reactions, edits, starring, deletes, revoke, and clear. |
+| Done | Browse durable starred messages from the chat list header, open them in context, and unstar them in place. |
 | Done | Render received location and contact cards in the timeline, quotes, chat-list previews, and notifications. Composer sharing and live-location tracking stay planned. |
 | Done | Paint downloaded sticker stills in the timeline. Animated stickers are labeled and show a still frame, not a playing animation. |
 | Done | Render received poll and quiz cards from stored proto fields. Voting and poll creation stay planned. |

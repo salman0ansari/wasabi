@@ -31,18 +31,43 @@ pub fn pane_header(_this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui
         )
         .child(
             gpui::div()
-                .id("open-new-chat")
-                .size(px(theme::ACTION_SIZE))
-                .rounded_full()
                 .flex()
                 .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .aria_label("New chat")
-                .tooltip(|window, cx| Tooltip::new("New chat").build(window, cx))
-                .hover(|button| button.bg(theme::row_hover()))
-                .on_click(cx.listener(|this, _, window, cx| this.open_new_chat(window, cx)))
-                .child(Icon::new(IconName::Plus).size(px(18.0))),
+                .gap(px(4.0))
+                .child(
+                    gpui::div()
+                        .id("open-starred-messages")
+                        .size(px(theme::ACTION_SIZE))
+                        .rounded_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .aria_label("Starred messages")
+                        .tooltip(|window, cx| Tooltip::new("Starred messages").build(window, cx))
+                        .hover(|button| button.bg(theme::row_hover()))
+                        .on_click(
+                            cx.listener(|this, _, window, cx| {
+                                this.open_starred_messages(window, cx)
+                            }),
+                        )
+                        .child(Icon::new(IconName::Star).size(px(18.0))),
+                )
+                .child(
+                    gpui::div()
+                        .id("open-new-chat")
+                        .size(px(theme::ACTION_SIZE))
+                        .rounded_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .aria_label("New chat")
+                        .tooltip(|window, cx| Tooltip::new("New chat").build(window, cx))
+                        .hover(|button| button.bg(theme::row_hover()))
+                        .on_click(cx.listener(|this, _, window, cx| this.open_new_chat(window, cx)))
+                        .child(Icon::new(IconName::Plus).size(px(18.0))),
+                ),
         )
 }
 

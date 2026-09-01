@@ -26,7 +26,7 @@ use crate::state::{
 };
 use crate::theme;
 use crate::views::{
-    chat_list, composer, conversation, new_chat, new_group, pairing, right_panel, settings,
+    chat_list, composer, conversation, new_chat, new_group, pairing, right_panel, settings, starred,
 };
 use wasabi_domain::{
     ChatKind, ChatScope, ConversationDetails, PendingMembershipRequest, SharedGroup,
@@ -37,6 +37,7 @@ gpui::actions!(wasabi_desktop, [FocusSearch, OpenSettings, CloseInfo]);
 pub const MAIN_KEY_CONTEXT: &str = "Main";
 const CHAT_PAGE_LIMIT: usize = 100;
 const MESSAGE_PAGE_LIMIT: usize = 60;
+const STARRED_PAGE_LIMIT: usize = 50;
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
 const CONTACT_SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(200);
 const CONTACT_PAGE_LIMIT: usize = 100;
@@ -275,6 +276,13 @@ pub struct MainWindow {
     pub(crate) editing_messages: HashSet<(String, String)>,
     pub(crate) destructive_chats: HashSet<String>,
     pub(crate) new_chat_open: bool,
+    pub(crate) starred_open: bool,
+    pub(crate) starred_hits: Vec<wasabi_domain::StarredMessageHit>,
+    pub(crate) starred_next: Option<wasabi_domain::PageCursor>,
+    pub(crate) starred_has_more: bool,
+    pub(crate) starred_loading: bool,
+    pub(crate) starred_loading_more: bool,
+    pub(crate) starred_error: Option<String>,
     pub(crate) contacts: Vec<wasabi_domain::ContactSummary>,
     pub(crate) contacts_next: Option<wasabi_domain::ContactPageCursor>,
     pub(crate) contacts_loading: bool,
@@ -289,6 +297,7 @@ pub struct MainWindow {
     pub(crate) emoji_picker_open: bool,
     pub(crate) emoji_category: emoji::EmojiCategory,
     pub(crate) search_input: gpui::Entity<InputState>,
+    pub(crate) starred_search_input: gpui::Entity<InputState>,
     pub(crate) contact_search_input: gpui::Entity<InputState>,
     pub(crate) group_subject_input: gpui::Entity<InputState>,
     pub(crate) group_info_subject_input: gpui::Entity<InputState>,
@@ -312,6 +321,7 @@ pub struct MainWindow {
     outbound_typing_sent_at: HashMap<String, std::time::Instant>,
     chats_gen: AtomicU64,
     search_gen: AtomicU64,
+    starred_gen: AtomicU64,
     contacts_gen: AtomicU64,
     phone_lookup_gen: AtomicU64,
     group_creation_gen: AtomicU64,
@@ -376,6 +386,8 @@ impl MainWindow {
         let composer_input = composer::build_input(window, cx);
         let search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search or start new chat"));
+        let starred_search_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search starred messages"));
         let contact_search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search contacts"));
         let group_subject_input =
@@ -440,6 +452,13 @@ impl MainWindow {
             editing_messages: HashSet::new(),
             destructive_chats: HashSet::new(),
             new_chat_open: false,
+            starred_open: false,
+            starred_hits: Vec::new(),
+            starred_next: None,
+            starred_has_more: false,
+            starred_loading: false,
+            starred_loading_more: false,
+            starred_error: None,
             contacts: Vec::new(),
             contacts_next: None,
             contacts_loading: false,
@@ -454,6 +473,7 @@ impl MainWindow {
             emoji_picker_open: false,
             emoji_category: emoji::EmojiCategory::Smileys,
             search_input,
+            starred_search_input,
             contact_search_input,
             group_subject_input,
             group_info_subject_input,
@@ -475,6 +495,7 @@ impl MainWindow {
             outbound_typing_sent_at: HashMap::new(),
             chats_gen: AtomicU64::new(0),
             search_gen: AtomicU64::new(0),
+            starred_gen: AtomicU64::new(0),
             contacts_gen: AtomicU64::new(0),
             phone_lookup_gen: AtomicU64::new(0),
             group_creation_gen: AtomicU64::new(0),
@@ -521,6 +542,15 @@ impl MainWindow {
             }
         });
         this.subscriptions.push(on_search_change);
+
+        let on_starred_search_change = cx.subscribe_in(&this.starred_search_input, window, {
+            move |this, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) && this.starred_open {
+                    cx.notify();
+                }
+            }
+        });
+        this.subscriptions.push(on_starred_search_change);
 
         let on_contact_search_change = cx.subscribe_in(&this.contact_search_input, window, {
             move |this, _, event: &InputEvent, _, cx| {
@@ -904,7 +934,140 @@ impl MainWindow {
 
     // ---- User intents ------------------------------------------------------
 
+    pub(crate) fn open_starred_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_new_chat(cx);
+        self.nav_destination = NavDestination::Chats;
+        self.show_right_panel = false;
+        self.message_overlay = None;
+        self.starred_open = true;
+        self.starred_search_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.reload_starred(cx);
+        self.starred_search_input
+            .update(cx, |input, cx| input.focus(window, cx));
+        cx.notify();
+    }
+
+    pub(crate) fn close_starred_messages(&mut self, cx: &mut Context<Self>) {
+        if !self.starred_open {
+            return;
+        }
+        self.starred_open = false;
+        self.starred_gen.fetch_add(1, Ordering::AcqRel);
+        self.starred_hits.clear();
+        self.starred_next = None;
+        self.starred_has_more = false;
+        self.starred_loading = false;
+        self.starred_loading_more = false;
+        self.starred_error = None;
+        cx.notify();
+    }
+
+    fn reload_starred(&mut self, cx: &mut Context<Self>) {
+        let generation = self.starred_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        self.starred_loading = self.starred_hits.is_empty();
+        self.starred_loading_more = false;
+        self.starred_error = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.starred_page(None, STARRED_PAGE_LIMIT).await;
+            this.update(cx, |this, cx| {
+                if this.starred_gen.load(Ordering::Acquire) != generation {
+                    return;
+                }
+                this.starred_loading = false;
+                match result {
+                    Ok(page) => {
+                        this.starred_hits = page.hits;
+                        this.starred_next = page.next_after;
+                        this.starred_has_more = page.has_more;
+                        this.starred_error = None;
+                    }
+                    Err(error) => this.starred_error = Some(error),
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    fn refresh_starred_if_open(&mut self, cx: &mut Context<Self>) {
+        if self.starred_open {
+            self.reload_starred(cx);
+        }
+    }
+
+    pub(crate) fn load_more_starred(&mut self, cx: &mut Context<Self>) {
+        if self.starred_loading || self.starred_loading_more || !self.starred_has_more {
+            return;
+        }
+        let Some(after) = self.starred_next else {
+            return;
+        };
+        let generation = self.starred_gen.load(Ordering::Acquire);
+        self.starred_loading_more = true;
+        self.starred_error = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.starred_page(Some(after), STARRED_PAGE_LIMIT).await;
+            this.update(cx, |this, cx| {
+                if this.starred_gen.load(Ordering::Acquire) != generation {
+                    return;
+                }
+                this.starred_loading_more = false;
+                match result {
+                    Ok(page) => {
+                        this.starred_hits.extend(page.hits);
+                        this.starred_next = page.next_after;
+                        this.starred_has_more = page.has_more;
+                        this.starred_error = None;
+                    }
+                    Err(error) => this.starred_error = Some(error),
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn open_starred_hit(
+        &mut self,
+        chat_id: String,
+        message_id: wasabi_domain::MessageId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_starred_messages(cx);
+        self.open_search_result(chat_id, message_id, window, cx);
+    }
+
+    pub(crate) fn unstar_starred_hit(
+        &mut self,
+        chat: wasabi_domain::ChatId,
+        message: wasabi_domain::MessageId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(hit) = self
+            .starred_hits
+            .iter()
+            .find(|hit| hit.row.chat == chat && hit.row.id == message)
+            .cloned()
+        else {
+            return;
+        };
+        self.perform_message_action(
+            wasabi_domain::MessageAction::Star {
+                target: (&hit.row).into(),
+                starred: false,
+            },
+            cx,
+        );
+    }
+
     pub(crate) fn open_new_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_starred_messages(cx);
         self.new_chat_open = true;
         self.new_chat_mode = NewChatMode::Direct;
         self.group_participants.clear();
@@ -1514,6 +1677,7 @@ impl MainWindow {
     }
 
     fn select_nav(&mut self, destination: NavDestination, cx: &mut Context<Self>) {
+        self.close_starred_messages(cx);
         self.new_chat_open = false;
         self.contacts_gen.fetch_add(1, Ordering::AcqRel);
         self.phone_lookup_gen.fetch_add(1, Ordering::AcqRel);
@@ -2705,6 +2869,10 @@ impl MainWindow {
         {
             row.starred = starred;
         }
+        if desired_star == Some(false) {
+            self.starred_hits
+                .retain(|hit| hit.row.chat != target.chat || hit.row.id != target.message);
+        }
         if let Some((_, optimistic)) = &reaction_change
             && let Some(row) = self
                 .messages
@@ -2747,6 +2915,11 @@ impl MainWindow {
                         this.msg_scroll.remeasure();
                     }
                     this.send_error = Some(error.ui_message().to_string());
+                    if this.starred_open && desired_star.is_some() {
+                        this.reload_starred(cx);
+                    }
+                } else if this.starred_open && desired_star == Some(true) {
+                    this.reload_starred(cx);
                 }
                 if this.chats.selected.as_deref() == Some(target.chat.as_str()) {
                     this.refresh_current_messages(cx);
@@ -3535,7 +3708,9 @@ impl MainWindow {
     }
 
     pub(crate) fn dismiss_overlay_or_drawer(&mut self, cx: &mut Context<Self>) {
-        if self.new_chat_open {
+        if self.starred_open {
+            self.close_starred_messages(cx);
+        } else if self.new_chat_open {
             if !self.group_creating {
                 self.close_new_chat(cx);
             }
@@ -4024,6 +4199,14 @@ impl MainWindow {
                         this.retrying_messages.clear();
                         this.destructive_chats.clear();
                         this.new_chat_open = false;
+                        this.starred_open = false;
+                        this.starred_hits.clear();
+                        this.starred_next = None;
+                        this.starred_has_more = false;
+                        this.starred_loading = false;
+                        this.starred_loading_more = false;
+                        this.starred_error = None;
+                        this.starred_gen.fetch_add(1, Ordering::AcqRel);
                         this.contacts.clear();
                         this.contacts_next = None;
                         this.contacts_loading = false;
@@ -4333,7 +4516,10 @@ impl MainWindow {
                 handle.update(cx, |this, cx| {
                     use wasabi_core::events::Invalidation;
                     match invalidation {
-                        Invalidation::Chats => this.refresh_chats(cx),
+                        Invalidation::Chats => {
+                            this.refresh_chats(cx);
+                            this.refresh_starred_if_open(cx);
+                        }
                         Invalidation::Contacts => {
                             this.refresh_chats(cx);
                             if this.new_chat_open {
@@ -4367,6 +4553,7 @@ impl MainWindow {
                             if this.chats.selected.as_deref() == Some(chat.as_str()) {
                                 this.refresh_current_messages(cx);
                             }
+                            this.refresh_starred_if_open(cx);
                             this.consider_notification(chat, cx);
                         }
                     }
@@ -4767,6 +4954,16 @@ fn main_content(
             .flex()
             .child(nav_rail(this, cx))
             .child(settings::settings_page(this, cx))
+            .into_any_element();
+    }
+
+    if this.starred_open {
+        return div()
+            .flex_1()
+            .min_h(px(0.0))
+            .flex()
+            .child(nav_rail(this, cx))
+            .child(starred::page(this, cx))
             .into_any_element();
     }
 

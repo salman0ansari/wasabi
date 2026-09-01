@@ -27,7 +27,7 @@ use wasabi_domain::{
     MessageAction, MessageContext, MessageId, MessagePage, NotificationCandidate, PageCursor,
     PairingPhoneNumber, Participant, ParticipantRole, PendingMembershipRequest, PhonePairCode,
     ProfilePictureRequest, SearchPage, SendContent, SendReceipt, SendRequest, ServiceError,
-    SharedGroup, StagedAttachment, TransferId, TransferJob,
+    SharedGroup, StagedAttachment, StarredPage, TransferId, TransferJob,
 };
 use wasabi_repository::AccountStore;
 use wasabi_whatsapp::lifecycle::QrState;
@@ -149,6 +149,11 @@ pub trait DesktopBackend: Send + Sync {
     async fn perform_message_action(&self, action: MessageAction) -> Result<(), ServiceError>;
     async fn perform_chat_action(&self, action: ChatAction) -> Result<(), ServiceError>;
     async fn perform_contact_action(&self, action: ContactAction) -> Result<(), ServiceError>;
+    async fn starred_page(
+        &self,
+        after: Option<PageCursor>,
+        limit: usize,
+    ) -> Result<StarredPage, String>;
 }
 
 /// Longer-edge bound for still-image timeline thumbnails. The visual card is
@@ -566,6 +571,21 @@ impl CoreBridge {
         self.run_on_core(async move {
             wasabi_repository::search::SearchService::new(Arc::clone(store.chats()))
                 .search(&query, chat_scope, page)
+                .await
+                .map_err(service_message)
+        })
+        .await
+    }
+
+    pub async fn starred_page(
+        &self,
+        after: Option<PageCursor>,
+        limit: usize,
+    ) -> Result<StarredPage, String> {
+        let store = self.store_snapshot()?;
+        self.run_on_core(async move {
+            store
+                .starred_messages(after, limit)
                 .await
                 .map_err(service_message)
         })
@@ -2940,6 +2960,14 @@ impl DesktopBackend for CoreBridge {
 
     async fn perform_contact_action(&self, action: ContactAction) -> Result<(), ServiceError> {
         CoreBridge::perform_contact_action(self, action).await
+    }
+
+    async fn starred_page(
+        &self,
+        after: Option<PageCursor>,
+        limit: usize,
+    ) -> Result<StarredPage, String> {
+        CoreBridge::starred_page(self, after, limit).await
     }
 }
 

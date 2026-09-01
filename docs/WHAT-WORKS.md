@@ -22,6 +22,7 @@ This page describes the shipped behavior in wasabi `0.3.6`. It is a capability i
 | Done | Show a disk-cached contact or group photo on chat list rows and search hits when one is already stored; otherwise keep initials. |
 | Done | Preserve protocol ordering: pinned chats first, followed by recent activity. |
 | Done | Search loaded chats and the complete local message FTS index, then open the exact message in context. |
+| Done | Browse starred messages from the chat list header, open one in context, and unstar it from the viewer. |
 | Done | Search the cached address book, page through deterministic name ordering, and open existing contacts offline. |
 | Done | Verify an international number with the linked account before starting an unknown-number chat. |
 | Done | Create a real group from cached contacts with an acknowledged identity and duplicate-safe uncertain-delivery handling. |

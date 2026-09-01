@@ -4,6 +4,12 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Starred messages can be browsed from the chat list header, opened in their
+  original conversation, and unstarred from that viewer. The list reads
+  durable starred rows, newest first, and hides revoked messages.
+
 ### Changed
 
 - Refined the native desktop shell and messaging surfaces with a denser,

@@ -12,5 +12,6 @@ mod pairing;
 mod right_panel;
 mod root;
 mod settings;
+mod starred;
 
 pub use root::{BridgeGlobal, MainWindow, key_bindings};

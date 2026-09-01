@@ -436,6 +436,43 @@ impl AccountStore {
         })
     }
 
+    /// Newest-first keyset page of durable starred messages across chats.
+    pub async fn starred_messages(
+        &self,
+        after: Option<domain::PageCursor>,
+        limit: usize,
+    ) -> Result<domain::StarredPage, domain::ServiceError> {
+        if limit == 0 {
+            return Ok(domain::StarredPage {
+                hits: Vec::new(),
+                next_after: None,
+                has_more: false,
+            });
+        }
+        let fetch = limit.saturating_add(1);
+        let mut rows =
+            crate::chat_indexes::starred_page(self.shared_db(), self.device_id(), after, fetch)
+                .await
+                .map_err(|error| {
+                    domain::ServiceError::new(domain::ErrorKind::Database, error.to_string())
+                })?;
+        let has_more = rows.len() > limit;
+        rows.truncate(limit);
+        let hits = rows.into_iter().map(starred_row_to_hit).collect::<Vec<_>>();
+        let next_after = has_more.then(|| {
+            let last = hits.last().expect("non-empty starred page");
+            domain::PageCursor {
+                timestamp_ms: last.row.timestamp_ms,
+                seq: last.row.seq,
+            }
+        });
+        Ok(domain::StarredPage {
+            hits,
+            next_after,
+            has_more,
+        })
+    }
+
     async fn attach_reaction_summaries(
         &self,
         rows: &mut [domain::MessageRow],
@@ -1428,6 +1465,46 @@ struct MessageContextRow {
     revoked: bool,
     #[diesel(sql_type = diesel::sql_types::BigInt)]
     rowid: i64,
+}
+
+fn starred_row_to_hit(row: crate::chat_indexes::StarredMessageRow) -> domain::StarredMessageHit {
+    let chat_name = chat_display_name(&row.chat_jid, row.chat_name.as_deref());
+    let chat = row.chat_jid;
+    domain::StarredMessageHit {
+        row: context_row_to_domain(
+            &chat,
+            MessageContextRow {
+                msg_id: row.msg_id,
+                sender_jid: row.sender_jid,
+                from_me: row.from_me,
+                timestamp_ms: row.timestamp_ms,
+                kind: row.kind,
+                text_content: row.text_content,
+                proto: row.proto,
+                status: row.status,
+                starred: row.starred,
+                edited_at_ms: row.edited_at_ms,
+                revoked: row.revoked,
+                rowid: row.rowid,
+            },
+        ),
+        chat_name,
+    }
+}
+
+fn chat_display_name(chat_jid: &str, stored: Option<&str>) -> String {
+    stored
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            chat_jid
+                .split('@')
+                .next()
+                .filter(|part| !part.is_empty())
+                .unwrap_or(chat_jid)
+                .to_string()
+        })
 }
 
 fn context_row_to_domain(chat: &str, row: MessageContextRow) -> domain::MessageRow {

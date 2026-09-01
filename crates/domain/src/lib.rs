@@ -19,6 +19,7 @@ pub mod preferences;
 pub mod presence;
 pub mod search;
 pub mod send;
+pub mod starred;
 
 pub use actions::{ChatAction, ContactAction, MessageAction, MessageActionTarget};
 pub use contact::{
@@ -50,3 +51,4 @@ pub use preferences::Draft;
 pub use presence::{TypingState, TypingUpdate};
 pub use search::{MessageSearchHit, SearchPage};
 pub use send::{SendContent, SendReceipt, SendRequest};
+pub use starred::{StarredMessageHit, StarredPage};
