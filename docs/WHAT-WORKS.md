@@ -13,6 +13,7 @@ This page describes the shipped behavior in wasabi `0.3.6`. It is a capability i
 | Done | Log out through a confirmation that distinguishes unlinking from local-data removal. |
 | Done | Persist device settings independently from the linked account. |
 | Done | Enable standards-based XDG autostart. |
+| Done | Edit the linked profile name, About, and photo while connected. Empty names are rejected; photo removal confirms first. |
 
 ## Chats and search
 
@@ -59,6 +60,7 @@ This page describes the shipped behavior in wasabi `0.3.6`. It is a capability i
 | Done | Save a cached download to a chosen path and reveal it in the file manager. A missing cache file drops back to download instead of claiming the file is still present. |
 | Done | Configure the download location and actively enforced cache quota. |
 | Done | Inspect cache usage and clear downloaded media through an explicit confirmation flow. |
+| Done | Auto-download newly received photos, audio, video, or documents when the matching device-local setting is on, the session is connected, the payload is remote, and the known size is under 16 MB (64 MB for video). |
 
 ## Contacts and groups
 
@@ -84,8 +86,10 @@ This page describes the shipped behavior in wasabi `0.3.6`. It is a capability i
 | Done | Keep the information drawer closed until explicitly opened; use an overlay and scrim at compact widths. |
 | Done | Use light, dark, or Linux system appearance. |
 | Done | Configure text size, Enter-to-send, notifications, download location, and media-cache quota with persistence. |
+| Done | Load and change supported privacy categories from the linked account, list the blocklist, and write the outgoing link-preview preference so it syncs to linked devices. Offline privacy rows show the last snapshot or stay unavailable. |
 | Done | Receive Linux notifications respecting mute, focus, sound, and preview privacy. |
 | Done | Focus the exact conversation when a notification is activated. |
+| Done | Show only working keyboard shortcuts and honest Help metadata (version, MIT license, settings path, data directory, redacted logs). |
 
 ## Intentionally not exposed yet
 

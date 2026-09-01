@@ -192,6 +192,37 @@ fn encoded_pixel_cost(encoded: &[u8]) -> u64 {
         .unwrap_or(encoded.len() as u64)
 }
 
+/// Center-crop to square and encode a 640×640 JPEG for an own-profile photo.
+/// Does not log or retain the source bytes.
+pub fn prepare_own_profile_picture(bytes: &[u8]) -> Result<Vec<u8>, MediaError> {
+    if bytes.is_empty() {
+        return Err(MediaError::InvalidInput("empty image".into()));
+    }
+    let source =
+        image::load_from_memory(bytes).map_err(|error| MediaError::Decode(error.to_string()))?;
+    let rgb = source.to_rgb8();
+    let (width, height) = rgb.dimensions();
+    if width == 0 || height == 0 {
+        return Err(MediaError::InvalidInput("empty image".into()));
+    }
+    let side = width.min(height);
+    let x = (width - side) / 2;
+    let y = (height - side) / 2;
+    let cropped = image::imageops::crop_imm(&rgb, x, y, side, side).to_image();
+    let resized = image::imageops::resize(
+        &cropped,
+        crate::OWN_PROFILE_PICTURE_EDGE,
+        crate::OWN_PROFILE_PICTURE_EDGE,
+        image::imageops::FilterType::Triangle,
+    );
+    let mut out = Cursor::new(Vec::new());
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85);
+    image::DynamicImage::ImageRgb8(resized)
+        .write_with_encoder(encoder)
+        .map_err(|error| MediaError::Decode(error.to_string()))?;
+    Ok(out.into_inner())
+}
+
 fn render_thumbnail(path: &Path, max_dim: u32) -> Result<Arc<Vec<u8>>, MediaError> {
     // Format is sniffed from the file header before decode consumes the
     // reader; DynamicImage does not retain it.
@@ -244,6 +275,25 @@ mod tests {
             .and_then(|mut f| f.write_all(buf.get_ref()))
             .expect("write fixture");
         path
+    }
+
+    #[test]
+    fn own_profile_picture_is_square_jpeg() {
+        let img = image::RgbImage::from_fn(80, 40, |_, _| image::Rgb([10, 20, 30]));
+        let mut buf = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_with_encoder(image::codecs::png::PngEncoder::new(&mut buf))
+            .expect("encode fixture");
+        let jpeg = prepare_own_profile_picture(buf.get_ref()).expect("prepare");
+        let decoded = image::load_from_memory(&jpeg).expect("decode jpeg");
+        assert_eq!(
+            (decoded.width(), decoded.height()),
+            (
+                crate::OWN_PROFILE_PICTURE_EDGE,
+                crate::OWN_PROFILE_PICTURE_EDGE
+            )
+        );
+        assert!(image::guess_format(&jpeg).ok() == Some(image::ImageFormat::Jpeg));
     }
 
     #[tokio::test]

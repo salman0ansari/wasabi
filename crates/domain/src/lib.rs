@@ -4,6 +4,7 @@
 //! durable-shaped lives here; protocol types never cross this boundary
 //!.
 
+pub mod account;
 pub mod actions;
 pub mod contact;
 pub mod conversation;
@@ -17,9 +18,11 @@ pub mod page;
 pub mod pairing;
 pub mod preferences;
 pub mod presence;
+pub mod privacy;
 pub mod search;
 pub mod send;
 
+pub use account::{AccountProfile, parse_push_name};
 pub use actions::{ChatAction, ContactAction, MessageAction, MessageActionTarget};
 pub use contact::{
     ContactLookupResult, ContactPage, ContactPageCursor, ContactPhoneNumber, ContactSummary,
@@ -48,5 +51,6 @@ pub use page::{ChatPage, ChatPageCursor, ChatScope};
 pub use pairing::{PairingPhoneNumber, PhonePairCode, RATE_LIMITED_DEVICE};
 pub use preferences::Draft;
 pub use presence::{TypingState, TypingUpdate};
+pub use privacy::{BlockedContact, PrivacyCategory, PrivacySetting, PrivacyValue};
 pub use search::{MessageSearchHit, SearchPage};
 pub use send::{SendContent, SendReceipt, SendRequest};

@@ -20,14 +20,15 @@ use tokio_util::sync::CancellationToken;
 use wasabi_core::events::{Invalidation, InvalidationPublisher};
 use wasabi_core::state::SessionState;
 use wasabi_domain::{
-    AvatarRef, CachedAvatar, CachedMedia, ChatAction, ChatId, ChatPage, ChatScope, ContactAction,
-    ContactLookupResult, ContactPage, ContactPageCursor, ContactPhoneNumber, ContactSummary,
-    CreateGroupRequest, DirectContactDetails, ErrorKind, GroupChange, GroupDetails,
-    GroupInviteLinkRequest, GroupPatch, GroupPatchResult, GroupPermissions, MediaDownloadRequest,
-    MessageAction, MessageContext, MessageId, MessagePage, NotificationCandidate, PageCursor,
-    PairingPhoneNumber, Participant, ParticipantRole, PendingMembershipRequest, PhonePairCode,
+    AccountProfile, AvatarRef, BlockedContact, CachedAvatar, CachedMedia, ChatAction, ChatId,
+    ChatPage, ChatScope, ContactAction, ContactLookupResult, ContactPage, ContactPageCursor,
+    ContactPhoneNumber, ContactSummary, CreateGroupRequest, DirectContactDetails, ErrorKind,
+    GroupChange, GroupDetails, GroupInviteLinkRequest, GroupPatch, GroupPatchResult,
+    GroupPermissions, MediaDownloadRequest, MessageAction, MessageContext, MessageId, MessagePage,
+    NotificationCandidate, PageCursor, PairingPhoneNumber, Participant, ParticipantRole,
+    PendingMembershipRequest, PhonePairCode, PrivacyCategory, PrivacySetting, PrivacyValue,
     ProfilePictureRequest, SearchPage, SendContent, SendReceipt, SendRequest, ServiceError,
-    SharedGroup, StagedAttachment, TransferId, TransferJob,
+    SharedGroup, StagedAttachment, TransferId, TransferJob, parse_push_name,
 };
 use wasabi_repository::AccountStore;
 use wasabi_whatsapp::lifecycle::QrState;
@@ -149,6 +150,22 @@ pub trait DesktopBackend: Send + Sync {
     async fn perform_message_action(&self, action: MessageAction) -> Result<(), ServiceError>;
     async fn perform_chat_action(&self, action: ChatAction) -> Result<(), ServiceError>;
     async fn perform_contact_action(&self, action: ContactAction) -> Result<(), ServiceError>;
+    async fn account_profile(&self) -> Result<AccountProfile, ServiceError>;
+    async fn set_push_name(&self, name: String) -> Result<(), ServiceError>;
+    async fn set_status_text(&self, text: String) -> Result<(), ServiceError>;
+    async fn set_own_profile_picture(
+        &self,
+        source: PathBuf,
+    ) -> Result<AccountProfile, ServiceError>;
+    async fn remove_own_profile_picture(&self) -> Result<(), ServiceError>;
+    async fn privacy_settings(&self) -> Result<Vec<PrivacySetting>, ServiceError>;
+    async fn set_privacy_setting(
+        &self,
+        category: PrivacyCategory,
+        value: PrivacyValue,
+    ) -> Result<(), ServiceError>;
+    async fn blocklist(&self) -> Result<Vec<BlockedContact>, ServiceError>;
+    async fn set_link_previews_disabled(&self, disabled: bool) -> Result<(), ServiceError>;
 }
 
 /// Longer-edge bound for still-image timeline thumbnails. The visual card is
@@ -2078,6 +2095,274 @@ impl CoreBridge {
         .await
     }
 
+    pub async fn account_profile(&self) -> Result<AccountProfile, ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let session = self
+            .session_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::NotPaired, detail))?;
+        self.run_on_core_service(async move { load_account_profile(&session).await })
+            .await
+    }
+
+    pub async fn set_push_name(&self, name: String) -> Result<(), ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let name = parse_push_name(&name)
+            .map_err(|detail| ServiceError::new(ErrorKind::InvalidRequest, detail))?;
+        let session = self
+            .session_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::NotPaired, detail))?;
+        self.run_on_core_service(async move {
+            require_connected(&session)?;
+            let client = live_client(&session).await?;
+            client
+                .profile()
+                .set_push_name(&name)
+                .await
+                .map_err(map_profile_error)
+        })
+        .await
+    }
+
+    pub async fn set_status_text(&self, text: String) -> Result<(), ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let session = self
+            .session_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::NotPaired, detail))?;
+        self.run_on_core_service(async move {
+            require_connected(&session)?;
+            let client = live_client(&session).await?;
+            client
+                .profile()
+                .set_status_text(text.trim())
+                .await
+                .map_err(map_profile_error)?;
+            if let Some(jid) = own_chat_id(&session).await {
+                let mut details = session
+                    .store
+                    .direct_contact_details(jid.as_str())
+                    .await
+                    .unwrap_or_else(|_| DirectContactDetails {
+                        jid: jid.as_str().to_string(),
+                        display_name: String::new(),
+                        phone_number: None,
+                        about: None,
+                        avatar: None,
+                        is_blocked: None,
+                    });
+                details.about = optional_profile_text(Some(text.trim()));
+                if let Err(error) = session.store.save_direct_contact_metadata(&details).await {
+                    tracing::warn!(kind = %error.kind, "failed to persist own About");
+                }
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn set_own_profile_picture(
+        &self,
+        source: PathBuf,
+    ) -> Result<AccountProfile, ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let session = self
+            .session_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::NotPaired, detail))?;
+        self.run_on_core_service(async move {
+            require_connected(&session)?;
+            let metadata = tokio::fs::metadata(&source)
+                .await
+                .map_err(|error| ServiceError::new(ErrorKind::InvalidRequest, error.to_string()))?;
+            if !metadata.is_file() || metadata.len() == 0 {
+                return Err(ServiceError::new(
+                    ErrorKind::InvalidRequest,
+                    "profile photo is not a readable file",
+                ));
+            }
+            if metadata.len() > wasabi_media::MAX_OWN_PROFILE_SOURCE_BYTES {
+                return Err(ServiceError::new(
+                    ErrorKind::InvalidRequest,
+                    "profile photo is too large",
+                ));
+            }
+            let bytes = tokio::fs::read(&source)
+                .await
+                .map_err(|error| ServiceError::new(ErrorKind::InvalidRequest, error.to_string()))?;
+            let jpeg = tokio::task::spawn_blocking(move || {
+                wasabi_media::prepare_own_profile_picture(&bytes)
+            })
+            .await
+            .map_err(|error| ServiceError::new(ErrorKind::Internal, error.to_string()))?
+            .map_err(map_profile_picture_prepare_error)?;
+            let client = live_client(&session).await?;
+            let response = client
+                .profile()
+                .set_profile_picture(jpeg)
+                .await
+                .map_err(map_profile_error)?;
+            if let Some(jid) = own_protocol_jid(&session).await {
+                persist_avatar_ref(
+                    &session.store,
+                    &jid,
+                    avatar_ref_from_picture_id(Some(response.id.as_str())),
+                )
+                .await;
+            }
+            load_account_profile(&session).await
+        })
+        .await
+    }
+
+    pub async fn remove_own_profile_picture(&self) -> Result<(), ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let session = self
+            .session_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::NotPaired, detail))?;
+        self.run_on_core_service(async move {
+            require_connected(&session)?;
+            let client = live_client(&session).await?;
+            client
+                .profile()
+                .remove_profile_picture()
+                .await
+                .map_err(map_profile_error)?;
+            if let Some(jid) = own_protocol_jid(&session).await {
+                persist_avatar_ref(&session.store, &jid, None).await;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn privacy_settings(&self) -> Result<Vec<PrivacySetting>, ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let session = self
+            .session_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::NotPaired, detail))?;
+        self.run_on_core_service(async move {
+            require_connected(&session)?;
+            let client = live_client(&session).await?;
+            let response = client
+                .fetch_privacy_settings()
+                .await
+                .map_err(map_iq_service_error)?;
+            Ok(response
+                .settings
+                .into_iter()
+                .filter_map(|setting| {
+                    let category = PrivacyCategory::from_wire(setting.category.as_str())?;
+                    let value = PrivacyValue::from_wire(setting.value.as_str())?;
+                    category
+                        .accepts(value)
+                        .then_some(PrivacySetting { category, value })
+                })
+                .collect())
+        })
+        .await
+    }
+
+    pub async fn set_privacy_setting(
+        &self,
+        category: PrivacyCategory,
+        value: PrivacyValue,
+    ) -> Result<(), ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        if !category.accepts(value) || value == PrivacyValue::ContactBlacklist {
+            return Err(ServiceError::new(
+                ErrorKind::InvalidRequest,
+                "unsupported privacy value",
+            ));
+        }
+        let session = self
+            .session_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::NotPaired, detail))?;
+        self.run_on_core_service(async move {
+            require_connected(&session)?;
+            let client = live_client(&session).await?;
+            let wire_category =
+                whatsapp_rust::wacore::iq::privacy::PrivacyCategory::from(category.as_wire());
+            let wire_value =
+                whatsapp_rust::wacore::iq::privacy::PrivacyValue::from(value.as_wire());
+            if !wire_category.is_valid_value(&wire_value) {
+                return Err(ServiceError::new(
+                    ErrorKind::InvalidRequest,
+                    "unsupported privacy value",
+                ));
+            }
+            client
+                .set_privacy_setting(wire_category, wire_value)
+                .await
+                .map(|_| ())
+                .map_err(map_iq_service_error)
+        })
+        .await
+    }
+
+    pub async fn blocklist(&self) -> Result<Vec<BlockedContact>, ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let session = self
+            .session_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::NotPaired, detail))?;
+        self.run_on_core_service(async move {
+            require_connected(&session)?;
+            let client = live_client(&session).await?;
+            let entries = client
+                .blocking()
+                .get_blocklist()
+                .await
+                .map_err(map_blocking_error)?;
+            let mut contacts = Vec::with_capacity(entries.len());
+            for entry in entries {
+                let jid = ChatId::new(entry.jid.to_non_ad().to_string());
+                let display_name = session
+                    .store
+                    .direct_contact_details(jid.as_str())
+                    .await
+                    .ok()
+                    .map(|details| details.display_name)
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or_else(|| "Unknown contact".to_string());
+                contacts.push(BlockedContact { jid, display_name });
+            }
+            Ok(contacts)
+        })
+        .await
+    }
+
+    pub async fn set_link_previews_disabled(&self, disabled: bool) -> Result<(), ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let session = self
+            .session_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::NotPaired, detail))?;
+        self.run_on_core_service(async move {
+            require_connected(&session)?;
+            let client = live_client(&session).await?;
+            client
+                .app_state_settings()
+                .set_link_previews_disabled(disabled)
+                .await
+                .map_err(map_app_state_contact_error)
+        })
+        .await
+    }
+
     // ---- Plumbing -----------------------------------------------------------
 
     fn store_snapshot(&self) -> Result<Arc<AccountStore>, String> {
@@ -2556,6 +2841,186 @@ fn map_blocking_error(error: whatsapp_rust::BlockingError) -> ServiceError {
     ServiceError::new(kind, detail)
 }
 
+fn map_profile_error(error: whatsapp_rust::ProfileError) -> ServiceError {
+    use whatsapp_rust::ProfileError;
+    use whatsapp_rust::client::ClientError;
+    use whatsapp_rust::request::IqError;
+
+    let kind = match &error {
+        ProfileError::InvalidArgument(_) => ErrorKind::InvalidRequest,
+        ProfileError::Iq(IqError::Timeout) => ErrorKind::Timeout,
+        ProfileError::Iq(IqError::NotConnected)
+        | ProfileError::Iq(IqError::ClientState(_))
+        | ProfileError::Iq(IqError::Socket(_))
+        | ProfileError::Iq(IqError::EncryptSend(_))
+        | ProfileError::Iq(IqError::Disconnected(_))
+        | ProfileError::Iq(IqError::InternalChannelClosed)
+        | ProfileError::Client(ClientError::NotConnected | ClientError::Socket(_)) => {
+            ErrorKind::NotConnected
+        }
+        ProfileError::Iq(IqError::ServerError { code: 429, .. }) => ErrorKind::RateLimited,
+        ProfileError::Client(ClientError::NotLoggedIn) => ErrorKind::NotPaired,
+        _ => ErrorKind::Protocol,
+    };
+    let detail = match kind {
+        ErrorKind::InvalidRequest => "invalid profile value",
+        ErrorKind::NotConnected => "not connected",
+        ErrorKind::NotPaired => "not paired",
+        _ => "profile update failed",
+    };
+    ServiceError::new(kind, detail)
+}
+
+fn map_iq_service_error(error: whatsapp_rust::request::IqError) -> ServiceError {
+    use whatsapp_rust::request::IqError;
+
+    let kind = match &error {
+        IqError::Timeout => ErrorKind::Timeout,
+        IqError::NotConnected
+        | IqError::ClientState(_)
+        | IqError::Socket(_)
+        | IqError::EncryptSend(_)
+        | IqError::Disconnected(_)
+        | IqError::InternalChannelClosed => ErrorKind::NotConnected,
+        IqError::ServerError { code: 429, .. } => ErrorKind::RateLimited,
+        _ => ErrorKind::Protocol,
+    };
+    ServiceError::new(kind, "privacy request failed")
+}
+
+fn map_profile_picture_prepare_error(error: wasabi_media::MediaError) -> ServiceError {
+    match error {
+        wasabi_media::MediaError::InvalidInput(_) | wasabi_media::MediaError::Decode(_) => {
+            ServiceError::new(ErrorKind::InvalidRequest, "unreadable profile photo")
+        }
+        other => map_media_error(other),
+    }
+}
+
+fn require_connected(session: &AccountSession) -> Result<(), ServiceError> {
+    if session.state().is_connected() {
+        Ok(())
+    } else {
+        Err(ServiceError::new(
+            ErrorKind::NotConnected,
+            "account change requires a connected session",
+        ))
+    }
+}
+
+async fn live_client(
+    session: &AccountSession,
+) -> Result<std::sync::Arc<whatsapp_rust::client::Client>, ServiceError> {
+    session
+        .client()
+        .await
+        .ok_or_else(|| ServiceError::new(ErrorKind::NotConnected, "no live protocol client"))
+}
+
+async fn device_identities(
+    session: &AccountSession,
+) -> (
+    String,
+    Option<whatsapp_rust::Jid>,
+    Option<whatsapp_rust::Jid>,
+) {
+    if let Some(client) = session.client().await {
+        let snapshot = client.persistence_manager().get_device_snapshot();
+        return (
+            snapshot.push_name.clone(),
+            snapshot.pn.clone(),
+            snapshot.lid.clone(),
+        );
+    }
+    match session
+        .store
+        .sqlite()
+        .load_device_data_for_device(session.store.device_id())
+        .await
+        .ok()
+        .flatten()
+    {
+        Some(device) => (device.push_name, device.pn, device.lid),
+        None => (String::new(), None, None),
+    }
+}
+
+async fn own_protocol_jid(session: &AccountSession) -> Option<whatsapp_rust::Jid> {
+    let (_, pn, lid) = device_identities(session).await;
+    pn.or(lid)
+}
+
+async fn own_chat_id(session: &AccountSession) -> Option<ChatId> {
+    own_protocol_jid(session)
+        .await
+        .map(|jid| ChatId::new(jid.to_non_ad().to_string()))
+}
+
+async fn load_account_profile(session: &AccountSession) -> Result<AccountProfile, ServiceError> {
+    let (push_name, pn, lid) = device_identities(session).await;
+    let jid = pn
+        .as_ref()
+        .or(lid.as_ref())
+        .map(|jid| ChatId::new(jid.to_non_ad().to_string()));
+    let mut about = None;
+    let mut avatar = None;
+    if let Some(jid) = jid.as_ref() {
+        if let Ok(details) = session.store.direct_contact_details(jid.as_str()).await {
+            about = details.about;
+            avatar = details.avatar;
+        }
+    }
+    let connected = session.state().is_connected();
+    if connected && let Some(own) = pn.as_ref().or(lid.as_ref()) {
+        if let Some(client) = session.client().await {
+            match client
+                .contacts()
+                .get_user_info(std::slice::from_ref(own))
+                .await
+            {
+                Ok(info) => {
+                    if let Some(info) = info.get(own) {
+                        about = optional_profile_text(info.status.as_deref());
+                        avatar = avatar_ref_from_picture_id(info.picture_id.as_deref()).or(avatar);
+                        if let Some(jid) = jid.as_ref() {
+                            let details = DirectContactDetails {
+                                jid: jid.as_str().to_string(),
+                                display_name: push_name.clone(),
+                                phone_number: pn.as_ref().map(|jid| jid.user.to_string()),
+                                about: about.clone(),
+                                avatar: avatar.clone(),
+                                is_blocked: None,
+                            };
+                            if let Err(error) =
+                                session.store.save_direct_contact_metadata(&details).await
+                            {
+                                tracing::warn!(
+                                    kind = %error.kind,
+                                    "failed to persist own profile metadata"
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        kind = %contact_error_kind(&error),
+                        "live own-profile About refresh failed"
+                    );
+                }
+            }
+        }
+    }
+    let about_needs_refresh = about.is_none() && !connected;
+    Ok(AccountProfile {
+        jid,
+        push_name,
+        about,
+        about_needs_refresh,
+        avatar,
+    })
+}
+
 fn map_app_state_contact_error(error: whatsapp_rust::AppStateError) -> ServiceError {
     let kind = match error {
         whatsapp_rust::AppStateError::InvalidRequest(_) => ErrorKind::InvalidRequest,
@@ -2941,6 +3406,49 @@ impl DesktopBackend for CoreBridge {
     async fn perform_contact_action(&self, action: ContactAction) -> Result<(), ServiceError> {
         CoreBridge::perform_contact_action(self, action).await
     }
+
+    async fn account_profile(&self) -> Result<AccountProfile, ServiceError> {
+        CoreBridge::account_profile(self).await
+    }
+
+    async fn set_push_name(&self, name: String) -> Result<(), ServiceError> {
+        CoreBridge::set_push_name(self, name).await
+    }
+
+    async fn set_status_text(&self, text: String) -> Result<(), ServiceError> {
+        CoreBridge::set_status_text(self, text).await
+    }
+
+    async fn set_own_profile_picture(
+        &self,
+        source: PathBuf,
+    ) -> Result<AccountProfile, ServiceError> {
+        CoreBridge::set_own_profile_picture(self, source).await
+    }
+
+    async fn remove_own_profile_picture(&self) -> Result<(), ServiceError> {
+        CoreBridge::remove_own_profile_picture(self).await
+    }
+
+    async fn privacy_settings(&self) -> Result<Vec<PrivacySetting>, ServiceError> {
+        CoreBridge::privacy_settings(self).await
+    }
+
+    async fn set_privacy_setting(
+        &self,
+        category: PrivacyCategory,
+        value: PrivacyValue,
+    ) -> Result<(), ServiceError> {
+        CoreBridge::set_privacy_setting(self, category, value).await
+    }
+
+    async fn blocklist(&self) -> Result<Vec<BlockedContact>, ServiceError> {
+        CoreBridge::blocklist(self).await
+    }
+
+    async fn set_link_previews_disabled(&self, disabled: bool) -> Result<(), ServiceError> {
+        CoreBridge::set_link_previews_disabled(self, disabled).await
+    }
 }
 
 enum StaticUrlMedia {
@@ -3107,6 +3615,13 @@ mod tests {
             transfer_failure_state(ErrorKind::NotConnected),
             wasabi_domain::TransferState::FailedRetryable
         );
+    }
+
+    #[test]
+    fn profile_set_push_name_rejects_empty_before_protocol() {
+        assert_eq!(parse_push_name("").unwrap_err(), "Name cannot be empty");
+        assert_eq!(parse_push_name("   ").unwrap_err(), "Name cannot be empty");
+        assert_eq!(parse_push_name("Ada").unwrap(), "Ada");
     }
 
     #[test]

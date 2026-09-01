@@ -127,10 +127,15 @@ pub(crate) struct InviteLinkResetTarget {
     pub(crate) group_name: String,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) enum SettingsOverlay {
     ClearMediaCache,
     Logout,
+    RemoveProfilePicture,
+    UnblockContact {
+        jid: wasabi_domain::ChatId,
+        name: String,
+    },
 }
 
 #[derive(Clone)]
@@ -257,6 +262,17 @@ pub struct MainWindow {
     pub(crate) settings_section: SettingsSection,
     pub(crate) settings_overlay: Option<SettingsOverlay>,
     pub(crate) settings_feedback: Option<SettingsFeedback>,
+    pub(crate) profile_name_input: gpui::Entity<InputState>,
+    pub(crate) profile_about_input: gpui::Entity<InputState>,
+    pub(crate) account_profile: Option<wasabi_domain::AccountProfile>,
+    pub(crate) account_profile_loading: bool,
+    pub(crate) privacy_settings: Option<Vec<wasabi_domain::PrivacySetting>>,
+    pub(crate) privacy_loading: bool,
+    pub(crate) privacy_mutating: bool,
+    pub(crate) blocklist: Option<Vec<wasabi_domain::BlockedContact>>,
+    pub(crate) blocklist_error: Option<String>,
+    pub(crate) blocklist_loading: bool,
+    pub(crate) link_previews_disabled: Option<bool>,
     pub(crate) media_cache_usage_bytes: Option<u64>,
     pub(crate) media_cache_loading: bool,
     pub(crate) logout_in_progress: bool,
@@ -321,6 +337,9 @@ pub struct MainWindow {
     membership_requests_gen: AtomicU64,
     invite_link_gen: AtomicU64,
     contact_mutation_gen: AtomicU64,
+    account_profile_gen: AtomicU64,
+    privacy_gen: AtomicU64,
+    blocklist_gen: AtomicU64,
     qr_ticker_gen: AtomicU64,
     phone_pair_ticker_gen: AtomicU64,
     pairing_request_gen: AtomicU64,
@@ -390,6 +409,13 @@ impl MainWindow {
         });
         let phone_pair_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Country code and phone number"));
+        let profile_name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Your name"));
+        let profile_about_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .multi_line(true)
+                .auto_grow(2, 4)
+                .placeholder("About")
+        });
         let (notification_click_tx, notification_click_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let mut this = Self {
@@ -423,6 +449,17 @@ impl MainWindow {
             settings_section: SettingsSection::Chats,
             settings_overlay: None,
             settings_feedback: None,
+            profile_name_input,
+            profile_about_input,
+            account_profile: None,
+            account_profile_loading: false,
+            privacy_settings: None,
+            privacy_loading: false,
+            privacy_mutating: false,
+            blocklist: None,
+            blocklist_error: None,
+            blocklist_loading: false,
+            link_previews_disabled: None,
             media_cache_usage_bytes: None,
             media_cache_loading: false,
             logout_in_progress: false,
@@ -484,6 +521,9 @@ impl MainWindow {
             membership_requests_gen: AtomicU64::new(0),
             invite_link_gen: AtomicU64::new(0),
             contact_mutation_gen: AtomicU64::new(0),
+            account_profile_gen: AtomicU64::new(0),
+            privacy_gen: AtomicU64::new(0),
+            blocklist_gen: AtomicU64::new(0),
             qr_ticker_gen: AtomicU64::new(0),
             phone_pair_ticker_gen: AtomicU64::new(0),
             pairing_request_gen: AtomicU64::new(0),
@@ -3845,8 +3885,14 @@ impl MainWindow {
     ) {
         self.settings_section = section;
         self.settings_feedback = None;
-        if section == SettingsSection::Storage {
-            self.refresh_media_cache_usage(cx);
+        match section {
+            SettingsSection::Account => self.load_account_profile(cx),
+            SettingsSection::Privacy => {
+                self.load_privacy_settings(cx);
+                self.load_blocklist(cx);
+            }
+            SettingsSection::Storage => self.refresh_media_cache_usage(cx),
+            _ => {}
         }
         cx.notify();
     }
@@ -3856,6 +3902,8 @@ impl MainWindow {
             self.settings_feedback = Some(SettingsFeedback::Error(format!(
                 "Could not save settings: {error}"
             )));
+        } else {
+            self.auto_download_rows(cx);
         }
         cx.notify();
     }
@@ -3997,6 +4045,8 @@ impl MainWindow {
         match self.settings_overlay.take() {
             Some(SettingsOverlay::ClearMediaCache) => self.run_clear_media_cache(cx),
             Some(SettingsOverlay::Logout) => self.run_logout(cx),
+            Some(SettingsOverlay::RemoveProfilePicture) => self.run_remove_profile_picture(cx),
+            Some(SettingsOverlay::UnblockContact { jid, .. }) => self.run_settings_unblock(jid, cx),
             None => {}
         }
     }
@@ -4040,6 +4090,18 @@ impl MainWindow {
                         this.typing.clear();
                         this.notification_seen.clear();
                         this.notification_seen_order.clear();
+                        this.account_profile = None;
+                        this.account_profile_loading = false;
+                        this.account_profile_gen.fetch_add(1, Ordering::AcqRel);
+                        this.privacy_settings = None;
+                        this.privacy_loading = false;
+                        this.privacy_mutating = false;
+                        this.privacy_gen.fetch_add(1, Ordering::AcqRel);
+                        this.blocklist = None;
+                        this.blocklist_error = None;
+                        this.blocklist_loading = false;
+                        this.blocklist_gen.fetch_add(1, Ordering::AcqRel);
+                        this.link_previews_disabled = None;
                     }
                     Err(error) => {
                         tracing::warn!(kind = %error.kind, "account logout failed");
@@ -4052,6 +4114,462 @@ impl MainWindow {
             .ok();
         });
         cx.notify();
+    }
+
+    pub(crate) fn load_account_profile(&mut self, cx: &mut Context<Self>) {
+        if self.account_profile_loading {
+            return;
+        }
+        self.account_profile_loading = true;
+        let generation = self.account_profile_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.account_profile().await;
+            this.update_in(cx, |this, window, cx| {
+                if this.account_profile_gen.load(Ordering::Acquire) != generation {
+                    return;
+                }
+                this.account_profile_loading = false;
+                match result {
+                    Ok(profile) => {
+                        if let Some(jid) = profile.jid.as_ref() {
+                            this.request_avatar(jid.as_str().to_string(), true, cx);
+                        }
+                        let name = profile.push_name.clone();
+                        let about = profile.about.clone().unwrap_or_default();
+                        this.profile_name_input.update(cx, |input, cx| {
+                            input.set_value(name, window, cx);
+                        });
+                        this.profile_about_input.update(cx, |input, cx| {
+                            input.set_value(about, window, cx);
+                        });
+                        this.account_profile = Some(profile);
+                    }
+                    Err(error) => {
+                        tracing::warn!(kind = %error.kind, "account profile load failed");
+                        this.settings_feedback =
+                            Some(SettingsFeedback::Error(error.ui_message().to_string()));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn save_profile_name(&mut self, cx: &mut Context<Self>) {
+        let name = self.profile_name_input.read(cx).value().to_string();
+        match wasabi_domain::parse_push_name(&name) {
+            Ok(name) => self.run_profile_update(cx, "Name updated", move |bridge| async move {
+                bridge.set_push_name(name).await
+            }),
+            Err(detail) => {
+                self.settings_feedback = Some(SettingsFeedback::Error(detail.to_string()));
+                cx.notify();
+            }
+        }
+    }
+
+    pub(crate) fn save_profile_about(&mut self, cx: &mut Context<Self>) {
+        let text = self.profile_about_input.read(cx).value().to_string();
+        self.run_profile_update(cx, "About updated", move |bridge| async move {
+            bridge.set_status_text(text).await
+        });
+    }
+
+    fn run_profile_update<F, Fut>(&mut self, cx: &mut Context<Self>, success: &'static str, work: F)
+    where
+        F: FnOnce(Arc<dyn DesktopBackend>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<(), wasabi_domain::ServiceError>> + Send + 'static,
+    {
+        if !self.session.state.is_connected() {
+            self.settings_feedback = Some(SettingsFeedback::Error(
+                "Connect to edit your profile".to_string(),
+            ));
+            cx.notify();
+            return;
+        }
+        self.settings_feedback = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = work(bridge).await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => {
+                        this.settings_feedback =
+                            Some(SettingsFeedback::Success(success.to_string()));
+                        this.load_account_profile(cx);
+                    }
+                    Err(error) => {
+                        tracing::warn!(kind = %error.kind, "profile update failed");
+                        this.settings_feedback =
+                            Some(SettingsFeedback::Error(error.ui_message().to_string()));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn choose_profile_photo(&mut self, cx: &mut Context<Self>) {
+        if !self.session.state.is_connected() {
+            self.settings_feedback = Some(SettingsFeedback::Error(
+                "Connect to edit your profile".to_string(),
+            ));
+            cx.notify();
+            return;
+        }
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Choose profile photo".into()),
+        });
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let selected = paths.await.ok().and_then(Result::ok).flatten();
+            let Some(path) = selected.and_then(|mut paths| paths.pop()) else {
+                return;
+            };
+            let result = bridge.set_own_profile_picture(path).await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(profile) => {
+                        if let Some(jid) = profile.jid.as_ref() {
+                            this.request_avatar(jid.as_str().to_string(), true, cx);
+                        }
+                        this.account_profile = Some(profile);
+                        this.settings_feedback = Some(SettingsFeedback::Success(
+                            "Profile photo updated".to_string(),
+                        ));
+                    }
+                    Err(error) => {
+                        tracing::warn!(kind = %error.kind, "profile photo update failed");
+                        this.settings_feedback =
+                            Some(SettingsFeedback::Error(error.ui_message().to_string()));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+    }
+
+    pub(crate) fn confirm_remove_profile_picture(&mut self, cx: &mut Context<Self>) {
+        if !self.session.state.is_connected() {
+            self.settings_feedback = Some(SettingsFeedback::Error(
+                "Connect to edit your profile".to_string(),
+            ));
+            cx.notify();
+            return;
+        }
+        self.settings_overlay = Some(SettingsOverlay::RemoveProfilePicture);
+        cx.notify();
+    }
+
+    fn run_remove_profile_picture(&mut self, cx: &mut Context<Self>) {
+        self.settings_overlay = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.remove_own_profile_picture().await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => {
+                        if let Some(profile) = this.account_profile.as_mut() {
+                            profile.avatar = None;
+                            if let Some(jid) = profile.jid.as_ref() {
+                                this.avatars
+                                    .insert(jid.as_str().to_string(), AvatarUi::Missing);
+                            }
+                        }
+                        this.settings_feedback = Some(SettingsFeedback::Success(
+                            "Profile photo removed".to_string(),
+                        ));
+                    }
+                    Err(error) => {
+                        tracing::warn!(kind = %error.kind, "profile photo removal failed");
+                        this.settings_feedback =
+                            Some(SettingsFeedback::Error(error.ui_message().to_string()));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn load_privacy_settings(&mut self, cx: &mut Context<Self>) {
+        if !self.session.state.is_connected() {
+            return;
+        }
+        if self.privacy_loading {
+            return;
+        }
+        self.privacy_loading = true;
+        let generation = self.privacy_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.privacy_settings().await;
+            this.update(cx, |this, cx| {
+                if this.privacy_gen.load(Ordering::Acquire) != generation {
+                    return;
+                }
+                this.privacy_loading = false;
+                match result {
+                    Ok(settings) => this.privacy_settings = Some(settings),
+                    Err(error) => {
+                        tracing::warn!(kind = %error.kind, "privacy settings load failed");
+                        this.settings_feedback =
+                            Some(SettingsFeedback::Error(error.ui_message().to_string()));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn set_privacy_setting(
+        &mut self,
+        category: wasabi_domain::PrivacyCategory,
+        value: wasabi_domain::PrivacyValue,
+        cx: &mut Context<Self>,
+    ) {
+        if self.privacy_mutating {
+            return;
+        }
+        if !self.session.state.is_connected() {
+            self.settings_feedback = Some(SettingsFeedback::Error(
+                "Connect to change privacy settings".to_string(),
+            ));
+            cx.notify();
+            return;
+        }
+        if self.privacy_settings.as_ref().and_then(|settings| {
+            settings
+                .iter()
+                .find(|setting| setting.category == category)
+                .map(|setting| setting.value)
+        }) == Some(value)
+        {
+            return;
+        }
+        self.privacy_mutating = true;
+        self.settings_feedback = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.set_privacy_setting(category, value).await;
+            this.update(cx, |this, cx| {
+                this.privacy_mutating = false;
+                match result {
+                    Ok(()) => {
+                        if let Some(settings) = this.privacy_settings.as_mut() {
+                            if let Some(existing) = settings
+                                .iter_mut()
+                                .find(|setting| setting.category == category)
+                            {
+                                existing.value = value;
+                            } else {
+                                settings.push(wasabi_domain::PrivacySetting { category, value });
+                            }
+                        }
+                        this.settings_feedback = Some(SettingsFeedback::Success(
+                            "Privacy setting updated".to_string(),
+                        ));
+                    }
+                    Err(error) => {
+                        tracing::warn!(kind = %error.kind, "privacy setting update failed");
+                        this.settings_feedback =
+                            Some(SettingsFeedback::Error(error.ui_message().to_string()));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn load_blocklist(&mut self, cx: &mut Context<Self>) {
+        if !self.session.state.is_connected() {
+            if self.blocklist.is_none() && self.blocklist_error.is_none() {
+                self.blocklist_error = Some("Unavailable until connected".to_string());
+            }
+            return;
+        }
+        if self.blocklist_loading {
+            return;
+        }
+        self.blocklist_loading = true;
+        self.blocklist_error = None;
+        let generation = self.blocklist_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.blocklist().await;
+            this.update(cx, |this, cx| {
+                if this.blocklist_gen.load(Ordering::Acquire) != generation {
+                    return;
+                }
+                this.blocklist_loading = false;
+                match result {
+                    Ok(contacts) => {
+                        this.blocklist = Some(contacts);
+                        this.blocklist_error = None;
+                    }
+                    Err(error) => {
+                        tracing::warn!(kind = %error.kind, "blocklist load failed");
+                        this.blocklist_error = Some(error.ui_message().to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn confirm_settings_unblock(
+        &mut self,
+        contact: wasabi_domain::BlockedContact,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings_overlay = Some(SettingsOverlay::UnblockContact {
+            jid: contact.jid,
+            name: contact.display_name,
+        });
+        cx.notify();
+    }
+
+    fn run_settings_unblock(&mut self, jid: wasabi_domain::ChatId, cx: &mut Context<Self>) {
+        self.settings_overlay = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge
+                .perform_contact_action(wasabi_domain::ContactAction::Unblock { jid: jid.clone() })
+                .await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => {
+                        if let Some(blocklist) = this.blocklist.as_mut() {
+                            blocklist.retain(|contact| contact.jid != jid);
+                        }
+                        this.settings_feedback =
+                            Some(SettingsFeedback::Success("Contact unblocked".to_string()));
+                    }
+                    Err(error) => {
+                        tracing::warn!(kind = %error.kind, "settings unblock failed");
+                        this.settings_feedback =
+                            Some(SettingsFeedback::Error(error.ui_message().to_string()));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn set_link_previews_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
+        if !self.session.state.is_connected() {
+            self.settings_feedback = Some(SettingsFeedback::Error(
+                "Connect to change link previews".to_string(),
+            ));
+            cx.notify();
+            return;
+        }
+        if self.link_previews_disabled == Some(disabled) {
+            return;
+        }
+        self.settings_feedback = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.set_link_previews_disabled(disabled).await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => {
+                        this.link_previews_disabled = Some(disabled);
+                        this.settings_feedback = Some(SettingsFeedback::Success(
+                            "Link preview preference updated".to_string(),
+                        ));
+                    }
+                    Err(error) => {
+                        tracing::warn!(kind = %error.kind, "link preview setting failed");
+                        this.settings_feedback =
+                            Some(SettingsFeedback::Error(error.ui_message().to_string()));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    fn auto_download_rows(&mut self, cx: &mut Context<Self>) {
+        if !self.session.state.is_connected() {
+            return;
+        }
+        let rows: Vec<(wasabi_domain::ChatId, wasabi_domain::MediaId, bool)> = self
+            .messages
+            .rows
+            .iter()
+            .filter(|row| crate::state::should_auto_download(&row.kind, &self.settings))
+            .filter_map(|row| {
+                let media = match &row.kind {
+                    wasabi_domain::MessageKind::Image { media, .. }
+                    | wasabi_domain::MessageKind::Video { media, .. }
+                    | wasabi_domain::MessageKind::Audio { media, .. }
+                    | wasabi_domain::MessageKind::Document { media } => media,
+                    _ => return None,
+                };
+                Some((
+                    row.chat.clone(),
+                    media.id.clone(),
+                    matches!(row.kind, wasabi_domain::MessageKind::Image { .. }),
+                ))
+            })
+            .collect();
+        for (chat, media, paint_thumb) in rows {
+            self.download_media(chat, media, paint_thumb, cx);
+        }
+    }
+
+    fn auto_download_chat_media(&mut self, chat: String, cx: &mut Context<Self>) {
+        if !self.session.state.is_connected() {
+            return;
+        }
+        let settings = self.settings.clone();
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let page = bridge
+                .load_message_page(&chat, None, MESSAGE_PAGE_LIMIT)
+                .await;
+            this.update(cx, |this, cx| {
+                let Ok(page) = page else {
+                    return;
+                };
+                for row in page.rows {
+                    if !crate::state::should_auto_download(&row.kind, &settings) {
+                        continue;
+                    }
+                    let media_id = match &row.kind {
+                        wasabi_domain::MessageKind::Image { media, .. }
+                        | wasabi_domain::MessageKind::Video { media, .. }
+                        | wasabi_domain::MessageKind::Audio { media, .. }
+                        | wasabi_domain::MessageKind::Document { media } => media.id.clone(),
+                        _ => continue,
+                    };
+                    let paint_thumb = matches!(row.kind, wasabi_domain::MessageKind::Image { .. });
+                    this.download_media(row.chat, media_id, paint_thumb, cx);
+                }
+            })
+            .ok();
+        });
     }
 
     pub(crate) fn refresh_visible(&mut self) {
@@ -4266,6 +4784,7 @@ impl MainWindow {
                             this.sync_message_list(before);
                             this.pending_new_messages = this.pending_new_messages.max(unseen);
                         }
+                        this.auto_download_rows(cx);
                     }
                     Err(err) => this.messages.set_error(err.clone()),
                 }
@@ -4366,6 +4885,8 @@ impl MainWindow {
                         Invalidation::Messages { chat } => {
                             if this.chats.selected.as_deref() == Some(chat.as_str()) {
                                 this.refresh_current_messages(cx);
+                            } else {
+                                this.auto_download_chat_media(chat.clone(), cx);
                             }
                             this.consider_notification(chat, cx);
                         }
@@ -5092,6 +5613,7 @@ fn apply_state(
             this.session.pairing_requesting = false;
             this.session.pairing_error = None;
         }
+        let became_connected = !this.session.state.is_connected() && state.is_connected();
         this.session.state = state;
         if this.session.state.is_connected() && this.show_right_panel {
             this.load_membership_requests(cx);
@@ -5099,6 +5621,17 @@ fn apply_state(
         } else if !this.session.state.is_connected() {
             this.reset_membership_requests();
             this.reset_invite_link();
+        }
+        if became_connected {
+            this.auto_download_rows(cx);
+            match this.settings_section {
+                SettingsSection::Account => this.load_account_profile(cx),
+                SettingsSection::Privacy => {
+                    this.load_privacy_settings(cx);
+                    this.load_blocklist(cx);
+                }
+                _ => {}
+            }
         }
         cx.notify();
     })

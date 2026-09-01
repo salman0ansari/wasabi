@@ -11,4 +11,4 @@ pub(crate) mod settings;
 pub use chats::ChatListModel;
 pub use messages::MessageWindowModel;
 pub use session::{RecoveryAction, RecoveryCopy, SessionMirror};
-pub use settings::{DeviceSettings, SettingsSection, ThemePreference};
+pub use settings::{DeviceSettings, SettingsSection, ThemePreference, should_auto_download};
