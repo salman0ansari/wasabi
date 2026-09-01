@@ -4,6 +4,8 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-09-01
+
 ### Added
 
 - Starred messages can be browsed from the chat list header, opened in their
