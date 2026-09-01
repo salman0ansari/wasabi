@@ -1468,6 +1468,9 @@ pub fn message_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> g
         crate::views::root::MessageOverlay::ConfirmContact(action) => {
             contact_action_confirmation(this, action, cx)
         }
+        crate::views::root::MessageOverlay::Forward(target) => {
+            return super::forward::overlay(this, &target, cx);
+        }
     };
     let card = if reduce_motion {
         card.into_any_element()
@@ -1903,6 +1906,9 @@ fn message_action_sheet(
     let edit = row
         .can_edit_text_at(chrono::Utc::now().timestamp_millis())
         .then(|| row.id.clone());
+    let forward = row
+        .can_forward()
+        .then(|| wasabi_domain::MessageActionTarget::from(&row));
     let ready_cached_media = media_descriptor(&row.kind).and_then(|media| {
         match this
             .media_downloads
@@ -1963,6 +1969,13 @@ fn message_action_sheet(
             card.child(
                 sheet_button("reply-to-message", "Reply", false).on_click(cx.listener(
                     move |this, _, window, cx| this.begin_reply(message.clone(), window, cx),
+                )),
+            )
+        })
+        .when_some(forward, |card, target| {
+            card.child(
+                sheet_button("forward-message", "Forward…", false).on_click(cx.listener(
+                    move |this, _, window, cx| this.open_forward_picker(target.clone(), window, cx),
                 )),
             )
         })

@@ -30,7 +30,8 @@ wasabi is being built in public toward a dependable Linux-first replacement for 
 | Done | Paint downloaded sticker stills in the timeline. Animated stickers are labeled and show a still frame, not a playing animation. |
 | Done | Render received poll and quiz cards from stored proto fields. Voting and poll creation stay planned. |
 | In progress | Complete content projection/rendering for events, invites, voice/video notes, system, and remaining unsupported messages. |
-| Planned | Grouped global search, in-chat next/previous, forwarding selection, receipt/reaction detail, typing transmission, and expiring presence. |
+| Done | Forward eligible messages to cached conversations from the message action sheet. |
+| Planned | Grouped global search, in-chat next/previous, receipt/reaction detail, typing transmission, and expiring presence. |
 
 ## Contacts and groups
 

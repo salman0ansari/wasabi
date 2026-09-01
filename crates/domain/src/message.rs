@@ -111,6 +111,13 @@ impl MessageRow {
             && now_ms >= self.timestamp_ms
             && now_ms.saturating_sub(self.timestamp_ms) <= MESSAGE_EDIT_WINDOW_MS
     }
+
+    /// Whether the desktop product may offer Forward for this row.
+    /// View-once, unavailable, revoked, and system rows stay ineligible;
+    /// protocol and store checks still run at submit time.
+    pub fn can_forward(&self) -> bool {
+        !self.revoked && self.kind.is_forwardable()
+    }
 }
 
 /// Display-safe reply context projected from a message's protocol context.
@@ -211,6 +218,29 @@ pub enum MessageKind {
     Unknown,
 }
 
+impl MessageKind {
+    /// Content the product may copy into another chat. Media includes photos,
+    /// video, audio, documents, and stickers; location, contact, and poll
+    /// rows have real stored payloads and follow the same entry point.
+    pub fn is_forwardable(&self) -> bool {
+        match self {
+            Self::Text { .. }
+            | Self::Image { .. }
+            | Self::Video { .. }
+            | Self::Audio { .. }
+            | Self::Document { .. }
+            | Self::Sticker { .. }
+            | Self::Location { .. }
+            | Self::Contact { .. }
+            | Self::Poll { .. } => true,
+            Self::Reaction { .. }
+            | Self::System { .. }
+            | Self::Unavailable { .. }
+            | Self::Unknown => false,
+        }
+    }
+}
+
 /// Why a durable message row cannot expose its original content on this
 /// companion device. Each reason has a distinct recovery expectation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -270,6 +300,120 @@ mod edit_tests {
         let mut media = row(now);
         media.kind = MessageKind::Unknown;
         assert!(!media.can_edit_text_at(now));
+    }
+}
+
+#[cfg(test)]
+mod forward_tests {
+    use super::*;
+
+    fn media() -> MediaDescriptor {
+        MediaDescriptor {
+            id: MediaId::new("media-a"),
+            mime_type: Some("image/jpeg".to_string()),
+            file_name: None,
+            file_size: None,
+            duration_seconds: None,
+            width: None,
+            height: None,
+            availability: MediaAvailability::Remote,
+        }
+    }
+
+    fn row(kind: MessageKind) -> MessageRow {
+        MessageRow {
+            id: MessageId::new("message-a"),
+            chat: ChatId::new("chat-a@s.whatsapp.net"),
+            direction: MessageDirection::Incoming,
+            sender: SenderJid {
+                bare: "sender@s.whatsapp.net".to_string(),
+                push_name: None,
+            },
+            timestamp_ms: 1,
+            seq: LocalCursor(1),
+            kind,
+            quoted: None,
+            reactions: Vec::new(),
+            status: MessageStatus::Delivered,
+            edited_at_ms: None,
+            revoked: false,
+            starred: false,
+        }
+    }
+
+    #[test]
+    fn text_and_media_are_forwardable() {
+        assert!(
+            row(MessageKind::Text {
+                body: "hello".to_string()
+            })
+            .can_forward()
+        );
+        assert!(
+            row(MessageKind::Image {
+                caption: None,
+                media: media(),
+            })
+            .can_forward()
+        );
+        assert!(
+            row(MessageKind::Video {
+                caption: None,
+                video_note: false,
+                media: media(),
+            })
+            .can_forward()
+        );
+        assert!(
+            row(MessageKind::Audio {
+                voice_note: false,
+                media: media(),
+            })
+            .can_forward()
+        );
+        assert!(row(MessageKind::Document { media: media() }).can_forward());
+        assert!(
+            row(MessageKind::Sticker {
+                animated: false,
+                media: media(),
+            })
+            .can_forward()
+        );
+    }
+
+    #[test]
+    fn revoked_system_unavailable_and_view_once_are_not_forwardable() {
+        let mut revoked = row(MessageKind::Text {
+            body: "hello".to_string(),
+        });
+        revoked.revoked = true;
+        assert!(!revoked.can_forward());
+
+        assert!(
+            !row(MessageKind::System {
+                text: "group created".to_string()
+            })
+            .can_forward()
+        );
+        assert!(
+            !row(MessageKind::Unavailable {
+                reason: UnavailableMessageReason::WaitingForDecryption,
+            })
+            .can_forward()
+        );
+        assert!(
+            !row(MessageKind::Unavailable {
+                reason: UnavailableMessageReason::ViewOnceOnPhone,
+            })
+            .can_forward()
+        );
+        assert!(
+            !row(MessageKind::Reaction {
+                emoji: "👍".to_string()
+            })
+            .can_forward()
+        );
+        assert!(!row(MessageKind::Unknown).can_forward());
     }
 }
 

@@ -1964,6 +1964,47 @@ impl CoreBridge {
                             ServiceError::new(ErrorKind::Protocol, error.to_string())
                         })?;
                 }
+                MessageAction::Forward {
+                    target,
+                    destinations,
+                } => {
+                    let destinations = forward_destination_list(&target.chat, destinations)?;
+                    let stored = session
+                        .chats
+                        .message(&chat, target.message.as_str())
+                        .await
+                        .map_err(|error| ServiceError::new(ErrorKind::Database, error.to_string()))?
+                        .ok_or_else(|| {
+                            ServiceError::new(ErrorKind::InvalidRequest, "message no longer exists")
+                        })?;
+                    reject_unforwardable_stored(&stored)?;
+                    let proto = stored.message.as_deref().ok_or_else(|| {
+                        ServiceError::new(
+                            ErrorKind::InvalidRequest,
+                            "message content is unavailable",
+                        )
+                    })?;
+                    let body = prepare_forward_copy(proto)?;
+                    let attempted = destinations.len();
+                    let mut failed = 0usize;
+                    for destination in destinations {
+                        let Ok(to) = destination.as_str().parse::<whatsapp_rust::Jid>() else {
+                            failed += 1;
+                            continue;
+                        };
+                        match outbox.send_message(&client, to, body.clone()).await {
+                            Ok(_) => {}
+                            Err(wasabi_whatsapp::outbox::OutboxError::Send { .. }) => {}
+                            Err(_) => failed += 1,
+                        }
+                    }
+                    if failed > 0 {
+                        return Err(ServiceError::new(
+                            ErrorKind::Protocol,
+                            format!("forward failed for {failed} of {attempted} destinations"),
+                        ));
+                    }
+                }
             }
             Ok(())
         })
@@ -2152,6 +2193,72 @@ fn map_outbox_error_ref(error: &wasabi_whatsapp::outbox::OutboxError) -> Service
         _ => ErrorKind::Internal,
     };
     ServiceError::new(kind, error.to_string())
+}
+
+fn unique_forward_destinations(source: &ChatId, destinations: Vec<ChatId>) -> Vec<ChatId> {
+    let mut seen = HashSet::with_capacity(destinations.len());
+    destinations
+        .into_iter()
+        .filter(|destination| destination != source && seen.insert(destination.clone()))
+        .collect()
+}
+
+fn forward_destination_list(
+    source: &ChatId,
+    destinations: Vec<ChatId>,
+) -> Result<Vec<ChatId>, ServiceError> {
+    let destinations = unique_forward_destinations(source, destinations);
+    if destinations.is_empty() {
+        return Err(ServiceError::new(
+            ErrorKind::InvalidRequest,
+            "no forward destinations",
+        ));
+    }
+    Ok(destinations)
+}
+
+fn reject_unforwardable_stored(
+    stored: &whatsapp_rust_chat_store::types::StoredMessage,
+) -> Result<(), ServiceError> {
+    if stored.revoked {
+        return Err(ServiceError::new(
+            ErrorKind::InvalidRequest,
+            "message cannot be forwarded",
+        ));
+    }
+    if matches!(
+        stored.kind,
+        whatsapp_rust_chat_store::MessageKind::ViewOnce
+            | whatsapp_rust_chat_store::MessageKind::Undecryptable
+            | whatsapp_rust_chat_store::MessageKind::Hosted
+            | whatsapp_rust_chat_store::MessageKind::Bot
+    ) {
+        return Err(ServiceError::new(
+            ErrorKind::InvalidRequest,
+            "message cannot be forwarded",
+        ));
+    }
+    if stored.message.is_none() {
+        return Err(ServiceError::new(
+            ErrorKind::InvalidRequest,
+            "message content is unavailable",
+        ));
+    }
+    Ok(())
+}
+
+fn prepare_forward_copy(
+    message: &whatsapp_rust::waproto::whatsapp::Message,
+) -> Result<whatsapp_rust::waproto::whatsapp::Message, ServiceError> {
+    use whatsapp_rust::wacore::proto_helpers::MessageExt;
+
+    if message.is_view_once() {
+        return Err(ServiceError::new(
+            ErrorKind::InvalidRequest,
+            "message cannot be forwarded",
+        ));
+    }
+    Ok(*message.get_base_message().prepare_for_forward())
 }
 
 fn map_protocol_send_error(error: whatsapp_rust::SendError) -> ServiceError {
@@ -2980,7 +3087,7 @@ fn expected_media_sha(file_sha256: Option<&[u8]>) -> Option<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use whatsapp_rust::wacore::proto_helpers::MessageExt;
+    use whatsapp_rust::wacore::proto_helpers::{MessageBuilderExt, MessageExt};
     use whatsapp_rust::waproto::buffa::MessageField;
 
     #[test]
@@ -3201,5 +3308,136 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert!(participant_jids(&[ChatId::new("120363000000000001@g.us")]).is_err());
         assert_eq!(participant_result_counts(&[]), (0, 0, false));
+    }
+
+    fn stored_forward_row(
+        kind: whatsapp_rust_chat_store::MessageKind,
+        revoked: bool,
+        message: Option<whatsapp_rust::waproto::whatsapp::Message>,
+    ) -> whatsapp_rust_chat_store::types::StoredMessage {
+        whatsapp_rust_chat_store::types::StoredMessage {
+            chat_jid: "1@s.whatsapp.net".parse().expect("jid"),
+            id: "mid".to_string(),
+            sender_jid: "1@s.whatsapp.net".parse().expect("jid"),
+            from_me: false,
+            timestamp: whatsapp_rust::chrono::Utc::now(),
+            kind,
+            text: None,
+            message: message.map(Box::new),
+            status: whatsapp_rust_chat_store::MessageStatus::Delivered,
+            starred: false,
+            edited_at: None,
+            revoked,
+            seq: 1,
+        }
+    }
+
+    #[test]
+    fn forward_destinations_exclude_source_and_reject_empty() {
+        let source = ChatId::new("chat-a@s.whatsapp.net");
+        let other = ChatId::new("chat-b@s.whatsapp.net");
+        let group = ChatId::new("120363000000000001@g.us");
+        assert_eq!(
+            unique_forward_destinations(
+                &source,
+                vec![source.clone(), other.clone(), other.clone(), group.clone()]
+            ),
+            vec![other.clone(), group]
+        );
+        assert_eq!(
+            forward_destination_list(&source, Vec::new())
+                .unwrap_err()
+                .kind,
+            ErrorKind::InvalidRequest
+        );
+        assert_eq!(
+            forward_destination_list(&source, vec![source.clone()])
+                .unwrap_err()
+                .kind,
+            ErrorKind::InvalidRequest
+        );
+        assert_eq!(
+            forward_destination_list(&source, vec![source, other.clone()]).unwrap(),
+            vec![other]
+        );
+    }
+
+    #[test]
+    fn prepare_for_forward_marks_copy_and_rejects_view_once() {
+        let plain = whatsapp_rust::waproto::whatsapp::Message::text("hello");
+        let forwarded = prepare_forward_copy(&plain).unwrap();
+        let context = forwarded
+            .extended_text_message
+            .as_option()
+            .and_then(|message| message.context_info.as_option())
+            .expect("forwarded text carries context");
+        assert_eq!(context.is_forwarded, Some(true));
+
+        let view_once = whatsapp_rust::waproto::whatsapp::Message {
+            image_message: MessageField::some(
+                whatsapp_rust::waproto::whatsapp::message::ImageMessage {
+                    view_once: Some(true),
+                    ..Default::default()
+                },
+            ),
+            ..Default::default()
+        };
+        assert_eq!(
+            prepare_forward_copy(&view_once).unwrap_err().kind,
+            ErrorKind::InvalidRequest
+        );
+    }
+
+    #[test]
+    fn stored_forward_rejects_revoked_unavailable_and_missing_proto() {
+        let text = whatsapp_rust::waproto::whatsapp::Message::text("hello");
+        assert!(
+            reject_unforwardable_stored(&stored_forward_row(
+                whatsapp_rust_chat_store::MessageKind::Text,
+                false,
+                Some(text.clone()),
+            ))
+            .is_ok()
+        );
+        assert_eq!(
+            reject_unforwardable_stored(&stored_forward_row(
+                whatsapp_rust_chat_store::MessageKind::Text,
+                true,
+                Some(text),
+            ))
+            .unwrap_err()
+            .kind,
+            ErrorKind::InvalidRequest
+        );
+        assert_eq!(
+            reject_unforwardable_stored(&stored_forward_row(
+                whatsapp_rust_chat_store::MessageKind::ViewOnce,
+                false,
+                None,
+            ))
+            .unwrap_err()
+            .kind,
+            ErrorKind::InvalidRequest
+        );
+        assert_eq!(
+            reject_unforwardable_stored(&stored_forward_row(
+                whatsapp_rust_chat_store::MessageKind::Undecryptable,
+                false,
+                None,
+            ))
+            .unwrap_err()
+            .kind,
+            ErrorKind::InvalidRequest
+        );
+        assert_eq!(
+            reject_unforwardable_stored(&stored_forward_row(
+                whatsapp_rust_chat_store::MessageKind::Text,
+                false,
+                None,
+            ))
+            .unwrap_err()
+            .kind,
+            ErrorKind::InvalidRequest
+        );
     }
 }

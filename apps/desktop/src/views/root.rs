@@ -65,6 +65,7 @@ pub(crate) enum MessageOverlay {
     ConfirmJoinRequest(JoinRequestAction),
     ConfirmResetInviteLink(InviteLinkResetTarget),
     ConfirmContact(wasabi_domain::ContactAction),
+    Forward(wasabi_domain::MessageActionTarget),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -263,6 +264,10 @@ pub struct MainWindow {
     pub(crate) send_error: Option<String>,
     pub(crate) active_draft: wasabi_domain::Draft,
     pub(crate) message_overlay: Option<MessageOverlay>,
+    pub(crate) forward_search_input: gpui::Entity<InputState>,
+    pub(crate) forward_selected: Vec<wasabi_domain::ChatId>,
+    pub(crate) forward_error: Option<String>,
+    pub(crate) forwarding: bool,
     pub(crate) media_downloads:
         HashMap<(wasabi_domain::ChatId, wasabi_domain::MediaId), MediaDownloadUi>,
     pub(crate) media_thumbs: HashMap<(wasabi_domain::ChatId, wasabi_domain::MediaId), MediaThumbUi>,
@@ -313,6 +318,7 @@ pub struct MainWindow {
     chats_gen: AtomicU64,
     search_gen: AtomicU64,
     contacts_gen: AtomicU64,
+    forward_gen: AtomicU64,
     phone_lookup_gen: AtomicU64,
     group_creation_gen: AtomicU64,
     messages_gen: AtomicU64,
@@ -378,6 +384,8 @@ impl MainWindow {
             cx.new(|cx| InputState::new(window, cx).placeholder("Search or start new chat"));
         let contact_search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search contacts"));
+        let forward_search_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search chats"));
         let group_subject_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Group name"));
         let group_info_subject_input =
@@ -429,6 +437,10 @@ impl MainWindow {
             send_error: None,
             active_draft: wasabi_domain::Draft::default(),
             message_overlay: None,
+            forward_search_input,
+            forward_selected: Vec::new(),
+            forward_error: None,
+            forwarding: false,
             media_downloads: HashMap::new(),
             media_thumbs: HashMap::new(),
             avatars: HashMap::new(),
@@ -476,6 +488,7 @@ impl MainWindow {
             chats_gen: AtomicU64::new(0),
             search_gen: AtomicU64::new(0),
             contacts_gen: AtomicU64::new(0),
+            forward_gen: AtomicU64::new(0),
             phone_lookup_gen: AtomicU64::new(0),
             group_creation_gen: AtomicU64::new(0),
             messages_gen: AtomicU64::new(0),
@@ -530,6 +543,18 @@ impl MainWindow {
             }
         });
         this.subscriptions.push(on_contact_search_change);
+
+        let on_forward_search_change = cx.subscribe_in(&this.forward_search_input, window, {
+            move |this, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change)
+                    && matches!(this.message_overlay, Some(MessageOverlay::Forward(_)))
+                {
+                    this.queue_forward_contact_search(cx);
+                    cx.notify();
+                }
+            }
+        });
+        this.subscriptions.push(on_forward_search_change);
 
         let on_group_subject_change = cx.subscribe_in(&this.group_subject_input, window, {
             move |this, _, event: &InputEvent, _, cx| {
@@ -2769,8 +2794,184 @@ impl MainWindow {
     }
 
     pub(crate) fn close_message_overlay(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.message_overlay, Some(MessageOverlay::Forward(_))) {
+            self.forward_gen.fetch_add(1, Ordering::AcqRel);
+            self.contacts_gen.fetch_add(1, Ordering::AcqRel);
+            self.forward_selected.clear();
+            self.forward_error = None;
+            self.forwarding = false;
+            self.contacts_loading = false;
+        }
         self.message_overlay = None;
         self.group_text_edit_error = None;
+        cx.notify();
+    }
+
+    pub(crate) fn open_forward_picker(
+        &mut self,
+        target: wasabi_domain::MessageActionTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.forward_gen.fetch_add(1, Ordering::AcqRel);
+        self.message_overlay = Some(MessageOverlay::Forward(target));
+        self.emoji_picker_open = false;
+        self.forward_selected.clear();
+        self.forward_error = None;
+        self.forwarding = false;
+        self.contacts.clear();
+        self.contacts_next = None;
+        self.contacts_error = None;
+        self.contacts_loading = false;
+        self.forward_search_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.forward_search_input
+            .update(cx, |input, cx| input.focus(window, cx));
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_forward_destination(
+        &mut self,
+        destination: wasabi_domain::ChatId,
+        cx: &mut Context<Self>,
+    ) {
+        if self.forwarding {
+            return;
+        }
+        if let Some(MessageOverlay::Forward(target)) = &self.message_overlay
+            && destination == target.chat
+        {
+            return;
+        }
+        if let Some(index) = self
+            .forward_selected
+            .iter()
+            .position(|selected| *selected == destination)
+        {
+            self.forward_selected.remove(index);
+        } else {
+            self.forward_selected.push(destination);
+        }
+        self.forward_error = None;
+        cx.notify();
+    }
+
+    pub(crate) fn submit_forward(&mut self, cx: &mut Context<Self>) {
+        let Some(MessageOverlay::Forward(target)) = self.message_overlay.clone() else {
+            return;
+        };
+        if self.forwarding {
+            return;
+        }
+        if !self.session.state.is_connected() {
+            self.forward_error = Some("Connect to forward this message".to_string());
+            cx.notify();
+            return;
+        }
+        let destinations = self
+            .forward_selected
+            .iter()
+            .filter(|destination| **destination != target.chat)
+            .cloned()
+            .collect::<Vec<_>>();
+        if destinations.is_empty() {
+            self.forward_error = Some("Choose a conversation to forward to".to_string());
+            cx.notify();
+            return;
+        }
+        let action = wasabi_domain::MessageAction::Forward {
+            target: target.clone(),
+            destinations,
+        };
+        self.forwarding = true;
+        self.forward_error = None;
+        let generation = self.forward_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.perform_message_action(action).await;
+            this.update(cx, |this, cx| {
+                if this.forward_gen.load(Ordering::Acquire) != generation {
+                    if let Err(error) = result {
+                        this.send_error = Some(forward_error_copy(&error).to_string());
+                    }
+                    return;
+                }
+                this.forwarding = false;
+                match result {
+                    Ok(()) => this.close_message_overlay(cx),
+                    Err(error) => {
+                        this.forward_error = Some(forward_error_copy(&error).to_string());
+                        cx.notify();
+                    }
+                }
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    fn queue_forward_contact_search(&mut self, cx: &mut Context<Self>) {
+        let query = self.forward_search_input.read(cx).value();
+        if query.trim().is_empty() {
+            self.contacts_gen.fetch_add(1, Ordering::AcqRel);
+            self.contacts.clear();
+            self.contacts_next = None;
+            self.contacts_loading = false;
+            self.contacts_error = None;
+            return;
+        }
+        self.load_forward_contacts(true, cx);
+    }
+
+    fn load_forward_contacts(&mut self, debounce: bool, cx: &mut Context<Self>) {
+        let generation = self.contacts_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        let query = normalized_contact_query(&self.forward_search_input.read(cx).value());
+        if query.trim().is_empty() {
+            self.contacts.clear();
+            self.contacts_next = None;
+            self.contacts_loading = false;
+            self.contacts_error = None;
+            return;
+        }
+        self.contacts.clear();
+        self.contacts_next = None;
+        self.contacts_error = None;
+        self.contacts_loading = true;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            if debounce {
+                cx.background_executor()
+                    .timer(CONTACT_SEARCH_DEBOUNCE)
+                    .await;
+            }
+            let current = this
+                .update(cx, |this, _| {
+                    matches!(this.message_overlay, Some(MessageOverlay::Forward(_)))
+                        && this.contacts_gen.load(Ordering::Acquire) == generation
+                })
+                .unwrap_or(false);
+            if !current {
+                return;
+            }
+            let result = bridge.contact_page(query, None, CONTACT_PAGE_LIMIT).await;
+            this.update(cx, |this, cx| {
+                if !matches!(this.message_overlay, Some(MessageOverlay::Forward(_)))
+                    || this.contacts_gen.load(Ordering::Acquire) != generation
+                {
+                    return;
+                }
+                this.contacts_loading = false;
+                match result {
+                    Ok(page) => {
+                        this.contacts = page.rows;
+                        this.contacts_next = page.next_after;
+                    }
+                    Err(_) => this.contacts_error = Some("Contacts unavailable".to_string()),
+                }
+                cx.notify();
+            })
+            .ok();
+        });
         cx.notify();
     }
 
@@ -4018,6 +4219,10 @@ impl MainWindow {
                         this.nav_destination = NavDestination::Chats;
                         this.show_right_panel = false;
                         this.message_overlay = None;
+                        this.forward_selected.clear();
+                        this.forward_error = None;
+                        this.forwarding = false;
+                        this.forward_gen.fetch_add(1, Ordering::AcqRel);
                         this.settings_overlay = None;
                         this.active_draft = wasabi_domain::Draft::default();
                         this.editing_messages.clear();
@@ -4969,6 +5174,18 @@ fn normalized_contact_query(input: &str) -> String {
     wasabi_domain::ContactPhoneNumber::parse(input)
         .map(|phone| phone.as_str().to_string())
         .unwrap_or_else(|_| input.to_string())
+}
+
+fn forward_error_copy(error: &wasabi_domain::ServiceError) -> &'static str {
+    match error.kind {
+        wasabi_domain::ErrorKind::NotConnected => "Connect to forward this message",
+        wasabi_domain::ErrorKind::InvalidRequest => "This message can't be forwarded",
+        wasabi_domain::ErrorKind::Protocol => "Couldn't forward to every conversation",
+        wasabi_domain::ErrorKind::Timeout => "Forwarding timed out",
+        wasabi_domain::ErrorKind::RateLimited => "Rate limited by WhatsApp",
+        wasabi_domain::ErrorKind::Overloaded => "Busy, try again shortly",
+        _ => error.ui_message(),
+    }
 }
 
 fn group_creation_failure(kind: wasabi_domain::ErrorKind) -> (String, bool) {
