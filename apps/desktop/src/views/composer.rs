@@ -479,6 +479,7 @@ fn attachment_kind_label(kind: wasabi_domain::AttachmentKind) -> &'static str {
         wasabi_domain::AttachmentKind::Video => "Video",
         wasabi_domain::AttachmentKind::Audio => "Audio",
         wasabi_domain::AttachmentKind::Document => "Document",
+        wasabi_domain::AttachmentKind::Sticker => "Sticker",
     }
 }
 

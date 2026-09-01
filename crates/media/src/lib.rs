@@ -3,12 +3,16 @@
 //! Design constants are non-negotiable resource budgets;
 //! values are benchmark-tunable, never removable.
 
+mod animation;
 mod cache;
 mod manager;
+mod sticker;
 mod thumb;
 
+pub use animation::{AnimationFrame, DecodedAnimation, play_animated_sticker};
 pub use cache::{DiskCache, avatar_cache_key, thumb_cache_key};
 pub use manager::{ClientProvider, MediaManager, StagedUpload, media_downloadable};
+pub use sticker::{STICKER_MAX_EDGE, convert_image_to_sticker};
 pub use thumb::{ThumbnailService, prepare_own_profile_picture};
 pub use tokio_util::sync::CancellationToken;
 

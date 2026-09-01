@@ -28,7 +28,7 @@ wasabi is being built in public toward a dependable Linux-first replacement for 
 | Done | Viewport-preserving prepends, non-jumping incoming messages, reply navigation, reactions, edits, starring, deletes, revoke, and clear. |
 | Done | Browse durable starred messages from the chat list header, open them in context, and unstar them in place. |
 | Done | Render received location and contact cards in the timeline, quotes, chat-list previews, and notifications. Composer sharing and live-location tracking stay planned. |
-| Done | Paint downloaded sticker stills in the timeline. Animated stickers are labeled and show a still frame, not a playing animation. |
+| Done | Paint downloaded sticker stills in the timeline. Animated stickers play unless Reduce motion is on. |
 | Done | Render received poll and quiz cards from stored proto fields. Voting and poll creation stay planned. |
 | In progress | Complete content projection/rendering for events, invites, voice/video notes, system, and remaining unsupported messages. |
 | Done | Forward eligible messages to cached conversations from the message action sheet. |
@@ -52,9 +52,11 @@ wasabi is being built in public toward a dependable Linux-first replacement for 
 | Done | Multiline text, per-chat drafts, reply/edit context, Enter-to-send, durable staging, multi-kind outbox, progress/cancel/retry, and verified cache. |
 | Done | Local categorized Unicode emoji picker that inserts at the composer caret. |
 | Done | Save As and Reveal in Files for media already in the local cache. |
-| In progress | Live-account interoperability for each media class, metadata fidelity, and visible thumbnail loading. |
+| Done | Lightbox for downloaded photos, stickers, and video stills; videos open in the system player. |
+| Done | Send a downloaded image to the current chat as a sticker. |
 | Done | Device-local auto-download policy for photos, audio, video, and documents with conservative size caps. |
-| Planned | Group mentions, voice recording, contact/location sharing, poll/event creation, and sticker creation. |
+| In progress | Live-account interoperability for each media class, metadata fidelity, and visible thumbnail loading. |
+| Planned | Group mentions, voice recording, contact/location sharing, and poll/event creation. |
 
 ## Settings and Linux integration
 
