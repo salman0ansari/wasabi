@@ -2028,6 +2028,7 @@ version = "0.3.6"
 dependencies = [
  "chrono",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 

@@ -13,6 +13,10 @@ All notable user-visible changes to wasabi are recorded here. The format follows
   Decode failures keep the still frame and Animated sticker label.
 - A downloaded image can be sent to the current chat as a WebP sticker (max
   512×512, alpha preserved, no caption) while connected.
+- Voice notes can be recorded from the composer when the draft is empty, sent
+  as Opus in Ogg, and played from the timeline. Click the microphone to start,
+  click send to stop and send, or press Escape to discard. Recording stops if
+  the session disconnects, without sending silence.
 
 ## [0.3.7] - 2026-09-01
 

@@ -9,6 +9,7 @@ mod emoji;
 mod forward;
 mod media_viewer;
 mod message_details;
+mod voice;
 mod new_chat;
 mod new_group;
 mod pairing;

@@ -8,6 +8,7 @@
 //! half-initialized core. Only then does the UI come up and drive everything
 //! through the bridge.
 
+mod audio;
 mod core_bridge;
 mod notifications;
 mod state;

@@ -307,6 +307,8 @@ impl MediaManager {
                 display_name,
                 mime_type,
                 caption: None,
+                voice_note: false,
+                duration_seconds: None,
             },
         })
     }

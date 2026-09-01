@@ -34,7 +34,8 @@ This page describes the shipped behavior in wasabi `0.3.6`. It is a capability i
 
 | Status | Capability |
 | --- | --- |
-| Done | Read cursor-paginated history and send text, image, video, audio, and document messages with supported captions. |
+| Done | Read cursor-paginated history and send text, image, video, audio, document, and voice-note messages with supported captions. |
+| Done | Record a voice note from the composer when the draft is empty, send it as 16 kHz mono Opus in Ogg, and play cached voice notes and other audio from the timeline. |
 | Done | Measure multiline and multilingual bubbles from rendered layout so resizing and text scaling do not overlap. |
 | Done | Preserve the visible history anchor across prepends and incoming messages, with an explicit jump-to-newest control. |
 | Done | Keep independent, restart-safe drafts for each chat. |
@@ -60,7 +61,7 @@ This page describes the shipped behavior in wasabi `0.3.6`. It is a capability i
 | Done | Stage outgoing files durably, recover interrupted attachments after restart, and cancel safely. |
 | Done | Stream encryption and upload without buffering an entire file in memory. |
 | Done | Download received media into a bounded, content-addressed, SHA-256-verified cache. |
-| Done | Paint a still-image thumbnail for downloaded photos and stickers in the timeline. Animated stickers play from the verified cache unless Reduce motion is on; decode failures keep the still frame and label. Video, audio, and documents keep their existing cards. |
+| Done | Paint a still-image thumbnail for downloaded photos and stickers in the timeline. Animated stickers play from the verified cache unless Reduce motion is on; decode failures keep the still frame and label. Downloaded voice notes and other audio show a play control; video and documents keep their existing cards. |
 | Done | Open a downloaded photo, sticker, or video in a lightbox. Navigation stays inside the current cached timeline window. Videos are opened with the system player rather than a fake in-app decoder. |
 | Done | Save a cached download to a chosen path and reveal it in the file manager. A missing cache file drops back to download instead of claiming the file is still present. |
 | Done | Convert a downloaded image into a WebP sticker (max 512×512) and send it to the current chat through the durable outbox while connected. |

@@ -219,6 +219,75 @@ pub(crate) enum NewChatMode {
     GroupSubject,
 }
 
+pub(crate) struct VoiceRecording {
+    pub chat: String,
+    pub started_at: std::time::Instant,
+    pub reply_to: Option<wasabi_domain::MessageId>,
+    recorder: crate::audio::Recorder,
+}
+
+impl VoiceRecording {
+    pub fn elapsed_seconds(&self) -> u32 {
+        self.started_at.elapsed().as_secs() as u32
+    }
+}
+
+pub(crate) struct VoicePlayback {
+    player: crate::audio::Player,
+    current: Option<VoicePlaybackCurrent>,
+}
+
+struct VoicePlaybackCurrent {
+    chat: wasabi_domain::ChatId,
+    media: wasabi_domain::MediaId,
+    playing: bool,
+    duration: std::time::Duration,
+    origin: std::time::Instant,
+    offset: std::time::Duration,
+}
+
+impl VoicePlayback {
+    fn new() -> Self {
+        Self {
+            player: crate::audio::Player::new(),
+            current: None,
+        }
+    }
+
+    pub fn view(
+        &self,
+        chat: &wasabi_domain::ChatId,
+        media: &wasabi_domain::MediaId,
+    ) -> Option<super::voice::PlaybackView> {
+        let current = self.current.as_ref()?;
+        if current.chat != *chat || current.media != *media {
+            return None;
+        }
+        Some(current.view())
+    }
+}
+
+impl VoicePlaybackCurrent {
+    fn position(&self) -> std::time::Duration {
+        if self.playing {
+            self.offset.saturating_add(self.origin.elapsed())
+        } else {
+            self.offset
+        }
+    }
+
+    fn view(&self) -> super::voice::PlaybackView {
+        let total = self.duration.as_secs_f32().max(0.001);
+        let position = self.position().min(self.duration);
+        super::voice::PlaybackView {
+            playing: self.playing,
+            progress: (position.as_secs_f32() / total).clamp(0.0, 1.0),
+            position_seconds: position.as_secs() as u32,
+            duration_seconds: self.duration.as_secs() as u32,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct TypingDisplay {
     pub state: wasabi_domain::TypingState,
@@ -332,6 +401,8 @@ pub struct MainWindow {
     pub(crate) staged_attachments: HashMap<String, wasabi_domain::StagedAttachment>,
     pub(crate) attachment_staging: HashSet<String>,
     pub(crate) attachment_sending: HashSet<String>,
+    pub(crate) voice_recording: Option<VoiceRecording>,
+    pub(crate) voice_playback: VoicePlayback,
     pub(crate) retrying_messages: HashSet<(String, String)>,
     pub(crate) editing_messages: HashSet<(String, String)>,
     pub(crate) destructive_chats: HashSet<String>,
@@ -399,6 +470,9 @@ pub struct MainWindow {
     phone_pair_ticker_gen: AtomicU64,
     pairing_request_gen: AtomicU64,
     phone_pair_request_gen: AtomicU64,
+    recording_ticker_gen: AtomicU64,
+    recording_presence_gen: AtomicU64,
+    playback_ticker_gen: AtomicU64,
     #[allow(dead_code)]
     subscriptions: Vec<Subscription>,
 }
@@ -551,6 +625,8 @@ impl MainWindow {
             staged_attachments: HashMap::new(),
             attachment_staging: HashSet::new(),
             attachment_sending: HashSet::new(),
+            voice_recording: None,
+            voice_playback: VoicePlayback::new(),
             retrying_messages: HashSet::new(),
             editing_messages: HashSet::new(),
             destructive_chats: HashSet::new(),
@@ -616,6 +692,9 @@ impl MainWindow {
             phone_pair_ticker_gen: AtomicU64::new(0),
             pairing_request_gen: AtomicU64::new(0),
             phone_pair_request_gen: AtomicU64::new(0),
+            recording_ticker_gen: AtomicU64::new(0),
+            recording_presence_gen: AtomicU64::new(0),
+            playback_ticker_gen: AtomicU64::new(0),
             subscriptions: Vec::new(),
         };
         let message_list = this.msg_scroll.clone();
@@ -1771,6 +1850,7 @@ impl MainWindow {
         self.chats.filter = ChatFilter::All;
         self.chats.chats.clear();
         self.chats.visible_cache.clear();
+        self.discard_voice_recording("Recording discarded.", cx);
         self.chats.selected = None;
         self.chats.loading = true;
         self.details_gen.fetch_add(1, Ordering::AcqRel);
@@ -1848,6 +1928,13 @@ impl MainWindow {
             && previous != chat_id
         {
             self.stop_outbound_typing(previous, cx);
+        }
+        if self
+            .voice_recording
+            .as_ref()
+            .is_some_and(|recording| recording.chat != chat_id)
+        {
+            self.discard_voice_recording("Recording discarded.", cx);
         }
         // Bump first so any in-flight message load is discarded as stale.
         self.messages_gen.fetch_add(1, Ordering::AcqRel);
@@ -2320,6 +2407,348 @@ impl MainWindow {
             }
         });
         cx.notify();
+    }
+
+    pub(crate) fn toggle_voice_recording(&mut self, cx: &mut Context<Self>) {
+        if self.voice_recording.is_some() {
+            self.stop_and_send_voice_recording(cx);
+        } else {
+            self.start_voice_recording(cx);
+        }
+    }
+
+    fn start_voice_recording(&mut self, cx: &mut Context<Self>) {
+        if self.voice_recording.is_some() {
+            return;
+        }
+        let Some(chat) = self.chats.selected.clone() else {
+            return;
+        };
+        if !self.session.can_send()
+            || self.attachment_staging.contains(&chat)
+            || self.attachment_sending.contains(&chat)
+            || self.active_draft.edit_target.is_some()
+            || self.staged_attachments.contains_key(&chat)
+            || !self.composer_input.read(cx).value().trim().is_empty()
+        {
+            return;
+        }
+        match crate::audio::Recorder::start() {
+            Ok(recorder) => {
+                self.stop_outbound_typing(chat.clone(), cx);
+                self.emoji_picker_open = false;
+                self.send_error = None;
+                let reply_to = self.active_draft.reply_to.clone();
+                self.voice_recording = Some(VoiceRecording {
+                    chat: chat.clone(),
+                    started_at: recorder.started_at(),
+                    reply_to,
+                    recorder,
+                });
+                self.start_recording_presence(chat, cx);
+                self.spawn_recording_ticker(cx);
+            }
+            Err(error) => {
+                tracing::warn!("voice recording could not start");
+                self.send_error = Some(error.user_message().to_string());
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn stop_and_send_voice_recording(&mut self, cx: &mut Context<Self>) {
+        let Some(recording) = self.voice_recording.take() else {
+            return;
+        };
+        self.recording_ticker_gen.fetch_add(1, Ordering::AcqRel);
+        self.stop_recording_presence(&recording.chat, cx);
+        if !self.attachment_sending.insert(recording.chat.clone()) {
+            recording.recorder.cancel();
+            cx.notify();
+            return;
+        }
+        self.send_error = None;
+        let chat_id = recording.chat.clone();
+        let reply_to = recording.reply_to.clone();
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(recording.recorder.finish());
+            });
+            let encoded = rx.await.unwrap_or(Err(crate::audio::RecordError::Cancelled));
+            let encoded = match encoded {
+                Ok(encoded) => encoded,
+                Err(error) => {
+                    this.update(cx, |this, cx| {
+                        this.attachment_sending.remove(&chat_id);
+                        if error != crate::audio::RecordError::Cancelled {
+                            this.send_error = Some(error.user_message().to_string());
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let temp = std::env::temp_dir().join(format!(
+                "wasabi-voice-{}.ogg",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+            if std::fs::write(&temp, &encoded.bytes).is_err() {
+                this.update(cx, |this, cx| {
+                    this.attachment_sending.remove(&chat_id);
+                    this.send_error = Some(
+                        crate::audio::RecordError::Encode
+                            .user_message()
+                            .to_string(),
+                    );
+                    cx.notify();
+                })
+                .ok();
+                return;
+            }
+            let staged = bridge
+                .stage_voice_note(
+                    wasabi_domain::ChatId::new(chat_id.clone()),
+                    temp.clone(),
+                    encoded.duration_seconds,
+                )
+                .await;
+            let _ = std::fs::remove_file(&temp);
+            let staged = match staged {
+                Ok(staged) => staged,
+                Err(error) => {
+                    this.update(cx, |this, cx| {
+                        this.attachment_sending.remove(&chat_id);
+                        tracing::warn!(kind = %error.kind, "voice note staging failed");
+                        this.send_error = Some(error.ui_message().to_string());
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let request = reply_to.clone().map_or_else(
+                || {
+                    wasabi_domain::SendRequest::attachment(
+                        wasabi_domain::ChatId::new(chat_id.clone()),
+                        staged.transfer.clone(),
+                        None,
+                    )
+                },
+                |reply_to| {
+                    wasabi_domain::SendRequest::attachment_reply(
+                        wasabi_domain::ChatId::new(chat_id.clone()),
+                        staged.transfer.clone(),
+                        None,
+                        reply_to,
+                    )
+                },
+            );
+            let result = bridge.send(request).await;
+            this.update(cx, |this, cx| {
+                this.attachment_sending.remove(&chat_id);
+                if result.is_ok()
+                    && this.chats.selected.as_deref() == Some(chat_id.as_str())
+                    && this.active_draft.reply_to == reply_to
+                {
+                    this.active_draft.reply_to = None;
+                    this.queue_draft_save(cx);
+                }
+                if let Err(error) = &result {
+                    tracing::warn!(kind = %error.kind, "voice note send failed");
+                    this.send_error = Some(error.ui_message().to_string());
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn discard_voice_recording(&mut self, message: &str, cx: &mut Context<Self>) {
+        let Some(recording) = self.voice_recording.take() else {
+            return;
+        };
+        self.recording_ticker_gen.fetch_add(1, Ordering::AcqRel);
+        self.stop_recording_presence(&recording.chat, cx);
+        std::thread::spawn(move || recording.recorder.cancel());
+        if !message.is_empty() {
+            self.send_error = Some(message.to_string());
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_voice_playback(
+        &mut self,
+        chat: wasabi_domain::ChatId,
+        media: wasabi_domain::MediaId,
+        path: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(current) = self.voice_playback.current.as_mut()
+            && current.chat == chat
+            && current.media == media
+        {
+            if current.playing {
+                current.offset = current.position();
+                current.playing = false;
+                self.voice_playback.player.pause();
+            } else {
+                current.origin = std::time::Instant::now();
+                current.playing = true;
+                self.voice_playback.player.resume();
+                self.spawn_playback_ticker(cx);
+            }
+            cx.notify();
+            return;
+        }
+        self.voice_playback.player.stop();
+        let key = crate::audio::PlaybackKey {
+            chat: chat.as_str().to_string(),
+            media: media.as_str().to_string(),
+        };
+        match self.voice_playback.player.play_file(key, &path) {
+            Ok(duration) => {
+                self.voice_playback.current = Some(VoicePlaybackCurrent {
+                    chat,
+                    media,
+                    playing: true,
+                    duration,
+                    origin: std::time::Instant::now(),
+                    offset: std::time::Duration::ZERO,
+                });
+                self.spawn_playback_ticker(cx);
+            }
+            Err(error) => {
+                self.voice_playback.current = None;
+                self.send_error = Some(error.user_message().to_string());
+            }
+        }
+        cx.notify();
+    }
+
+    fn start_recording_presence(&mut self, chat: String, cx: &mut Context<Self>) {
+        let generation = self.recording_presence_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        self.dispatch_recording(chat.clone(), true, cx);
+        let bridge_tick = TYPING_REFRESH_AFTER;
+        spawn_main(cx, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(bridge_tick).await;
+                let alive = this
+                    .update(cx, |this, cx| {
+                        if this.recording_presence_gen.load(Ordering::Acquire) != generation
+                            || this
+                                .voice_recording
+                                .as_ref()
+                                .is_none_or(|recording| recording.chat != chat)
+                        {
+                            return false;
+                        }
+                        this.dispatch_recording(chat.clone(), true, cx);
+                        true
+                    })
+                    .unwrap_or(false);
+                if !alive {
+                    break;
+                }
+            }
+        });
+    }
+
+    fn stop_recording_presence(&mut self, chat: &str, cx: &mut Context<Self>) {
+        self.recording_presence_gen.fetch_add(1, Ordering::AcqRel);
+        self.dispatch_recording(chat.to_string(), false, cx);
+    }
+
+    fn dispatch_recording(&self, chat: String, recording: bool, cx: &mut Context<Self>) {
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |_this, _cx| {
+            if let Err(error) = bridge
+                .set_recording(wasabi_domain::ChatId::new(chat), recording)
+                .await
+            {
+                tracing::debug!(kind = %error.kind, "recording state update failed");
+            }
+        });
+    }
+
+    fn spawn_recording_ticker(&mut self, cx: &mut Context<Self>) {
+        let generation = self.recording_ticker_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        spawn_main(cx, async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(200))
+                    .await;
+                let alive = this
+                    .update(cx, |this, cx| {
+                        if this.recording_ticker_gen.load(Ordering::Acquire) != generation {
+                            return false;
+                        }
+                        let timed_out = this
+                            .voice_recording
+                            .as_ref()
+                            .is_some_and(|recording| recording.recorder.timed_out());
+                        if this.voice_recording.is_none() {
+                            return false;
+                        }
+                        if timed_out {
+                            this.stop_and_send_voice_recording(cx);
+                            return false;
+                        }
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if !alive {
+                    break;
+                }
+            }
+        });
+    }
+
+    fn spawn_playback_ticker(&mut self, cx: &mut Context<Self>) {
+        let generation = self.playback_ticker_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        spawn_main(cx, async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(200))
+                    .await;
+                let alive = this
+                    .update(cx, |this, cx| {
+                        if this.playback_ticker_gen.load(Ordering::Acquire) != generation {
+                            return false;
+                        }
+                        if let Some(finished) = this.voice_playback.player.take_finished()
+                            && let Some(current) = this.voice_playback.current.as_mut()
+                            && current.chat.as_str() == finished.chat
+                            && current.media.as_str() == finished.media
+                        {
+                            current.playing = false;
+                            current.offset = current.duration;
+                        }
+                        if let Some(current) = this.voice_playback.current.as_mut() {
+                            if current.playing && current.position() >= current.duration {
+                                current.playing = false;
+                                current.offset = current.duration;
+                            }
+                            let keep = current.playing;
+                            cx.notify();
+                            keep
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
+                if !alive {
+                    break;
+                }
+            }
+        });
     }
 
     pub(crate) fn download_media(
@@ -4318,6 +4747,10 @@ impl MainWindow {
     }
 
     pub(crate) fn dismiss_overlay_or_drawer(&mut self, cx: &mut Context<Self>) {
+        if self.voice_recording.is_some() {
+            self.discard_voice_recording("Recording discarded.", cx);
+            return;
+        }
         if self.starred_open {
             self.close_starred_messages(cx);
         } else if self.new_chat_open {
@@ -6404,6 +6837,12 @@ fn apply_state(
         }
         let became_connected = !this.session.state.is_connected() && state.is_connected();
         this.session.state = state;
+        if !this.session.can_send() && this.voice_recording.is_some() {
+            this.discard_voice_recording(
+                "Recording stopped because the connection was lost.",
+                cx,
+            );
+        }
         if this.session.state.is_connected() && this.show_right_panel {
             this.load_membership_requests(cx);
             this.load_invite_link(cx);

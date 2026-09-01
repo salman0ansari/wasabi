@@ -78,6 +78,12 @@ pub struct TransferPayload {
     pub display_name: String,
     pub mime_type: String,
     pub caption: Option<String>,
+    /// Push-to-talk voice note. Absent in older staged jobs.
+    #[serde(default)]
+    pub voice_note: bool,
+    /// Rounded duration for voice notes and other timed audio.
+    #[serde(default)]
+    pub duration_seconds: Option<u32>,
 }
 
 /// Safe composer projection returned after a source has been copied into
@@ -181,5 +187,32 @@ mod tests {
         assert_eq!(job.state, TransferState::Staged);
         assert!(!job.state.is_terminal());
         assert_eq!(format!("{:?}", job.transfer), "TransferId(<opaque>)");
+    }
+
+    #[test]
+    fn transfer_payload_voice_note_defaults_for_legacy_json() {
+        let payload: TransferPayload = serde_json::from_str(
+            r#"{"kind":"Audio","display_name":"clip.ogg","mime_type":"audio/ogg","caption":null}"#,
+        )
+        .expect("legacy payload");
+        assert!(!payload.voice_note);
+        assert_eq!(payload.duration_seconds, None);
+    }
+
+    #[test]
+    fn transfer_payload_roundtrips_voice_note_metadata() {
+        let payload = TransferPayload {
+            kind: AttachmentKind::Audio,
+            display_name: "Voice message".to_string(),
+            mime_type: "audio/ogg; codecs=opus".to_string(),
+            caption: None,
+            voice_note: true,
+            duration_seconds: Some(4),
+        };
+        let json = serde_json::to_string(&payload).expect("serialize");
+        let parsed: TransferPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, payload);
+        assert!(parsed.voice_note);
+        assert_eq!(parsed.duration_seconds, Some(4));
     }
 }
