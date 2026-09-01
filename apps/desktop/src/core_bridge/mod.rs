@@ -149,6 +149,13 @@ pub trait DesktopBackend: Send + Sync {
     async fn perform_message_action(&self, action: MessageAction) -> Result<(), ServiceError>;
     async fn perform_chat_action(&self, action: ChatAction) -> Result<(), ServiceError>;
     async fn perform_contact_action(&self, action: ContactAction) -> Result<(), ServiceError>;
+    async fn stage_voice_note(
+        &self,
+        chat: ChatId,
+        source: PathBuf,
+        duration_seconds: u32,
+    ) -> Result<StagedAttachment, ServiceError>;
+    async fn set_recording(&self, chat: ChatId, recording: bool) -> Result<(), ServiceError>;
 }
 
 /// Longer-edge bound for still-image timeline thumbnails. The visual card is
@@ -1412,6 +1419,56 @@ impl CoreBridge {
         .await
     }
 
+    pub async fn stage_voice_note(
+        &self,
+        chat: ChatId,
+        source: PathBuf,
+        duration_seconds: u32,
+    ) -> Result<StagedAttachment, ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let store = self
+            .store_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
+        let manager = self
+            .media_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
+        let cancel = self
+            .root_token
+            .get()
+            .map(CancellationToken::child_token)
+            .ok_or_else(|| ServiceError::new(ErrorKind::Internal, "no cancellation root"))?;
+        let transfer = next_transfer_id();
+        self.run_on_core_service(async move {
+            let mut staged = manager
+                .stage_upload(source, transfer.clone(), cancel)
+                .await
+                .map_err(map_media_error)?;
+            staged.payload.kind = wasabi_domain::AttachmentKind::Audio;
+            staged.payload.mime_type = "audio/ogg; codecs=opus".to_string();
+            staged.payload.display_name = "Voice message".to_string();
+            staged.payload.voice_note = true;
+            staged.payload.duration_seconds = Some(duration_seconds.max(1));
+            staged.attachment.kind = wasabi_domain::AttachmentKind::Audio;
+            staged.attachment.mime_type = staged.payload.mime_type.clone();
+            staged.attachment.display_name = staged.payload.display_name.clone();
+            let mut job = TransferJob::staged_upload(
+                transfer,
+                chat,
+                staged.durable_path.clone(),
+                staged.attachment.bytes_total,
+            );
+            job.payload = Some(staged.payload);
+            if let Err(error) = store.save_transfer_job(job).await {
+                let _ = manager.discard_staged_upload(staged.durable_path).await;
+                return Err(error);
+            }
+            Ok(staged.attachment)
+        })
+        .await
+    }
+
     pub async fn cancel_transfer(&self, transfer: TransferId) -> Result<(), ServiceError> {
         let store = self
             .store_snapshot()
@@ -1537,6 +1594,32 @@ impl CoreBridge {
             let state = client.chatstate();
             let result = if composing {
                 state.send_composing(&chat).await
+            } else {
+                state.send_paused(&chat).await
+            };
+            result.map_err(|error| ServiceError::new(ErrorKind::Protocol, error.to_string()))
+        })
+        .await
+    }
+
+    pub async fn set_recording(&self, chat: ChatId, recording: bool) -> Result<(), ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let session = self
+            .session_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::NotPaired, detail))?;
+        self.run_on_core_service(async move {
+            let chat = chat
+                .as_str()
+                .parse::<whatsapp_rust::Jid>()
+                .map_err(|error| ServiceError::new(ErrorKind::InvalidRequest, error.to_string()))?;
+            let client = session.client().await.ok_or_else(|| {
+                ServiceError::new(ErrorKind::NotConnected, "no live protocol client")
+            })?;
+            let state = client.chatstate();
+            let result = if recording {
+                state.send_recording(&chat).await
             } else {
                 state.send_paused(&chat).await
             };
@@ -2264,13 +2347,9 @@ fn attachment_message(
                 ..Default::default()
             },
         ),
-        AttachmentKind::Audio => whatsapp_rust::media::audio_message(
-            upload,
-            whatsapp_rust::media::AudioOptions {
-                mimetype: Some(payload.mime_type.clone()),
-                ..Default::default()
-            },
-        ),
+        AttachmentKind::Audio => {
+            whatsapp_rust::media::audio_message(upload, audio_send_options(payload))
+        }
         AttachmentKind::Document => whatsapp_rust::media::document_message(
             upload,
             whatsapp_rust::media::DocumentOptions {
@@ -2280,6 +2359,19 @@ fn attachment_message(
                 ..Default::default()
             },
         ),
+    }
+}
+
+fn audio_send_options(payload: &wasabi_domain::TransferPayload) -> whatsapp_rust::media::AudioOptions {
+    whatsapp_rust::media::AudioOptions {
+        mimetype: Some(if payload.voice_note {
+            "audio/ogg; codecs=opus".to_string()
+        } else {
+            payload.mime_type.clone()
+        }),
+        duration_seconds: payload.duration_seconds,
+        ptt: payload.voice_note.then_some(true),
+        ..Default::default()
     }
 }
 
@@ -2941,6 +3033,19 @@ impl DesktopBackend for CoreBridge {
     async fn perform_contact_action(&self, action: ContactAction) -> Result<(), ServiceError> {
         CoreBridge::perform_contact_action(self, action).await
     }
+
+    async fn stage_voice_note(
+        &self,
+        chat: ChatId,
+        source: PathBuf,
+        duration_seconds: u32,
+    ) -> Result<StagedAttachment, ServiceError> {
+        CoreBridge::stage_voice_note(self, chat, source, duration_seconds).await
+    }
+
+    async fn set_recording(&self, chat: ChatId, recording: bool) -> Result<(), ServiceError> {
+        CoreBridge::set_recording(self, chat, recording).await
+    }
 }
 
 enum StaticUrlMedia {
@@ -3201,5 +3306,35 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert!(participant_jids(&[ChatId::new("120363000000000001@g.us")]).is_err());
         assert_eq!(participant_result_counts(&[]), (0, 0, false));
+    }
+
+    fn audio_payload(voice_note: bool) -> wasabi_domain::TransferPayload {
+        wasabi_domain::TransferPayload {
+            kind: wasabi_domain::AttachmentKind::Audio,
+            display_name: "clip.ogg".to_string(),
+            mime_type: "audio/ogg".to_string(),
+            caption: None,
+            voice_note,
+            duration_seconds: voice_note.then_some(3),
+        }
+    }
+
+    #[test]
+    fn voice_note_payload_sets_ptt_and_opus_mime() {
+        let options = audio_send_options(&audio_payload(true));
+        assert_eq!(options.ptt, Some(true));
+        assert_eq!(options.duration_seconds, Some(3));
+        assert_eq!(
+            options.mimetype.as_deref(),
+            Some("audio/ogg; codecs=opus")
+        );
+    }
+
+    #[test]
+    fn regular_audio_payload_is_not_a_voice_note() {
+        let options = audio_send_options(&audio_payload(false));
+        assert_ne!(options.ptt, Some(true));
+        assert_eq!(options.duration_seconds, None);
+        assert_eq!(options.mimetype.as_deref(), Some("audio/ogg"));
     }
 }

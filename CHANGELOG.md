@@ -4,6 +4,13 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Voice notes can be recorded from the composer when the draft is empty, sent
+  as Opus in Ogg, and played from the timeline. Click the microphone to start,
+  click send to stop and send, or press Escape to discard. Recording stops if
+  the session disconnects, without sending silence.
+
 ### Changed
 
 - Refined the native desktop shell and messaging surfaces with a denser,

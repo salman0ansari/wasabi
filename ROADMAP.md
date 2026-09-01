@@ -29,7 +29,8 @@ wasabi is being built in public toward a dependable Linux-first replacement for 
 | Done | Render received location and contact cards in the timeline, quotes, chat-list previews, and notifications. Composer sharing and live-location tracking stay planned. |
 | Done | Paint downloaded sticker stills in the timeline. Animated stickers are labeled and show a still frame, not a playing animation. |
 | Done | Render received poll and quiz cards from stored proto fields. Voting and poll creation stay planned. |
-| In progress | Complete content projection/rendering for events, invites, voice/video notes, system, and remaining unsupported messages. |
+| In progress | Complete content projection/rendering for events, invites, video notes, system, and remaining unsupported messages. |
+| Done | Record, send, and play voice notes (16 kHz mono Opus in Ogg) from the composer and timeline. |
 | Planned | Grouped global search, in-chat next/previous, forwarding selection, receipt/reaction detail, typing transmission, and expiring presence. |
 
 ## Contacts and groups
@@ -50,7 +51,8 @@ wasabi is being built in public toward a dependable Linux-first replacement for 
 | Done | Local categorized Unicode emoji picker that inserts at the composer caret. |
 | Done | Save As and Reveal in Files for media already in the local cache. |
 | In progress | Live-account interoperability for each media class, metadata fidelity, visible thumbnail loading, and policy-driven auto-download. |
-| Planned | Group mentions, voice recording, contact/location sharing, poll/event creation, and sticker creation. |
+| Done | Voice recording from the composer, durable staging/send, and timeline playback of cached audio. |
+| Planned | Group mentions, contact/location sharing, poll/event creation, and sticker creation. |
 
 ## Settings and Linux integration
 

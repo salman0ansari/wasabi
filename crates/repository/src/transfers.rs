@@ -562,6 +562,8 @@ mod tests {
             display_name: "Holiday photo.jpg".to_string(),
             mime_type: "image/jpeg".to_string(),
             caption: Some("A real caption".to_string()),
+            voice_note: false,
+            duration_seconds: None,
         });
         save(sqlite.shared(), 7, job).await.unwrap();
         set_state(
@@ -763,6 +765,8 @@ mod tests {
             display_name: "photo.jpg".to_string(),
             mime_type: "image/jpeg".to_string(),
             caption: None,
+            voice_note: false,
+            duration_seconds: None,
         };
         job.payload = Some(payload.clone());
         save(sqlite.shared(), 4, job).await.unwrap();

@@ -25,6 +25,24 @@ enum EnterBehavior {
     AlreadyHandled,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ComposerTrailingAction {
+    Record,
+    Send,
+}
+
+pub(crate) fn composer_trailing_action(
+    text_empty: bool,
+    has_attachment: bool,
+    editing: bool,
+) -> ComposerTrailingAction {
+    if text_empty && !has_attachment && !editing {
+        ComposerTrailingAction::Record
+    } else {
+        ComposerTrailingAction::Send
+    }
+}
+
 fn enter_behavior(secondary: bool, shift: bool, enter_to_send: bool) -> EnterBehavior {
     if secondary || shift {
         EnterBehavior::AlreadyHandled
@@ -141,11 +159,17 @@ pub fn composer_bar(
                     .contains(&(chat.clone(), message.as_str().to_string()))
             })
     });
-    let can_compose =
-        session_can_send && selected.is_some() && !staging && !sending && !editing_in_flight;
-    let has_payload =
-        !this.composer_input.read(cx).value().trim().is_empty() || attachment.is_some();
+    let recording = this.voice_recording.as_ref();
+    let can_compose = session_can_send
+        && selected.is_some()
+        && !staging
+        && !sending
+        && !editing_in_flight
+        && recording.is_none();
+    let text_empty = this.composer_input.read(cx).value().trim().is_empty();
+    let has_payload = !text_empty || attachment.is_some();
     let can_submit = can_compose && has_payload;
+    let trailing = composer_trailing_action(text_empty, attachment.is_some(), editing.is_some());
     let send_label = if sending {
         "Sending…"
     } else if editing_in_flight {
@@ -181,14 +205,14 @@ pub fn composer_bar(
 
     let send = {
         let busy = sending || editing_in_flight;
-        let show_action = has_payload || busy;
+        let show_send = trailing == ComposerTrailingAction::Send || busy;
         let actionable = can_submit && !busy;
         let (bg, fg) = if actionable || busy {
             (theme::action_surface(), theme::action_content())
         } else {
             (theme::chip_idle(), theme::text_secondary())
         };
-        if show_action {
+        if show_send {
             let mut button = Button::new("send-button")
                 .icon(IconName::ArrowUp)
                 .ghost()
@@ -207,12 +231,7 @@ pub fn composer_bar(
             }
             button.into_any_element()
         } else {
-            // Voice notes are not implemented yet. Reserve the measured trailing
-            // action slot without advertising a control that cannot work.
-            gpui::div()
-                .size(px(theme::ACTION_SIZE))
-                .flex_shrink_0()
-                .into_any_element()
+            record_button(can_compose, session_can_send, selected.is_some(), cx)
         }
     };
 
@@ -263,41 +282,45 @@ pub fn composer_bar(
         ));
     }
 
-    pill = pill.child(
-        gpui::div()
-            .flex()
-            .items_end()
-            .gap(px(4.0))
-            .min_h(px(COMPOSER_INPUT_ROW_H))
-            .child(attach)
-            .child(
-                gpui::div()
-                    .size(px(theme::ACTION_SIZE))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(super::emoji::picker_button(this, can_compose, window, cx)),
-            )
-            .child(
-                Input::new(&this.composer_input)
-                    .cleanable(false)
-                    .disabled(!can_compose)
-                    .appearance(false)
-                    .bordered(false)
-                    .focus_bordered(false)
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .min_h(px(COMPOSER_INPUT_ROW_H))
-                    .px(px(6.0))
-                    .py(px(10.0))
-                    .text_size(px(theme::scaled_text(
-                        theme::TEXT_COMPOSER,
-                        this.settings.text_scale,
-                    ))),
-            )
-            .child(send),
-    );
+    if let Some(recording) = this.voice_recording.as_ref() {
+        pill = pill.child(recording_row(recording.elapsed_seconds(), cx));
+    } else {
+        pill = pill.child(
+            gpui::div()
+                .flex()
+                .items_end()
+                .gap(px(4.0))
+                .min_h(px(COMPOSER_INPUT_ROW_H))
+                .child(attach)
+                .child(
+                    gpui::div()
+                        .size(px(theme::ACTION_SIZE))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(super::emoji::picker_button(this, can_compose, window, cx)),
+                )
+                .child(
+                    Input::new(&this.composer_input)
+                        .cleanable(false)
+                        .disabled(!can_compose)
+                        .appearance(false)
+                        .bordered(false)
+                        .focus_bordered(false)
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .min_h(px(COMPOSER_INPUT_ROW_H))
+                        .px(px(6.0))
+                        .py(px(10.0))
+                        .text_size(px(theme::scaled_text(
+                            theme::TEXT_COMPOSER,
+                            this.settings.text_scale,
+                        ))),
+                )
+                .child(send),
+        );
+    }
 
     if let Some(err) = this.send_error.clone() {
         pill = pill.child(
@@ -310,6 +333,93 @@ pub fn composer_bar(
         );
     }
     bar.child(pill)
+}
+
+fn record_button(
+    can_compose: bool,
+    session_can_send: bool,
+    chat_selected: bool,
+    cx: &mut Context<MainWindow>,
+) -> gpui::AnyElement {
+    let tooltip = if can_compose {
+        "Record voice message"
+    } else if !session_can_send {
+        "Connect to record"
+    } else if !chat_selected {
+        "Select a chat"
+    } else {
+        "Cannot record right now"
+    };
+    let mut button = Button::new("record-voice")
+        .label("🎙")
+        .ghost()
+        .tooltip(tooltip)
+        .disabled(!can_compose)
+        .size(px(theme::ACTION_SIZE))
+        .rounded_full()
+        .text_color(theme::text_secondary())
+        .when(!can_compose, |button| button.opacity(0.4));
+    if can_compose {
+        button = button.on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+            this.toggle_voice_recording(cx);
+        }));
+    }
+    button.into_any_element()
+}
+
+fn recording_row(elapsed_seconds: u32, cx: &mut Context<MainWindow>) -> gpui::Div {
+    gpui::div()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .min_h(px(COMPOSER_INPUT_ROW_H))
+        .child(
+            gpui::div()
+                .id("cancel-voice-recording")
+                .cursor_pointer()
+                .rounded_full()
+                .px(px(10.0))
+                .py(px(6.0))
+                .text_size(px(theme::TEXT_SIZE_SM))
+                .text_color(theme::danger())
+                .hover(|style| style.bg(theme::surface()))
+                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                    this.discard_voice_recording("Recording discarded.", cx);
+                }))
+                .child("Cancel"),
+        )
+        .child(
+            gpui::div()
+                .size(px(8.0))
+                .rounded_full()
+                .bg(theme::danger())
+                .flex_shrink_0(),
+        )
+        .child(
+            gpui::div()
+                .flex_1()
+                .min_w(px(0.0))
+                .text_size(px(theme::TEXT_COMPOSER))
+                .text_color(theme::text_primary())
+                .child(format!(
+                    "Recording {}",
+                    crate::audio::format_clock(elapsed_seconds)
+                )),
+        )
+        .child({
+            let mut button = Button::new("send-voice-recording")
+                .icon(IconName::ArrowUp)
+                .ghost()
+                .tooltip("Send voice message")
+                .size(px(theme::ACTION_SIZE))
+                .rounded_full()
+                .bg(theme::action_surface())
+                .text_color(theme::action_content());
+            button = button.on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                this.stop_and_send_voice_recording(cx);
+            }));
+            button
+        })
 }
 
 fn edit_preview(preview: String, cx: &mut Context<MainWindow>) -> gpui::Div {
@@ -540,5 +650,25 @@ mod tests {
         assert_eq!(end_position("hello"), Position::new(0, 5));
         assert_eq!(end_position("hello\n界🎉"), Position::new(1, 2));
         assert_eq!(end_position("trailing\n"), Position::new(1, 0));
+    }
+
+    #[test]
+    fn empty_draft_shows_record_and_payload_shows_send() {
+        assert_eq!(
+            composer_trailing_action(true, false, false),
+            ComposerTrailingAction::Record
+        );
+        assert_eq!(
+            composer_trailing_action(false, false, false),
+            ComposerTrailingAction::Send
+        );
+        assert_eq!(
+            composer_trailing_action(true, true, false),
+            ComposerTrailingAction::Send
+        );
+        assert_eq!(
+            composer_trailing_action(true, false, true),
+            ComposerTrailingAction::Send
+        );
     }
 }

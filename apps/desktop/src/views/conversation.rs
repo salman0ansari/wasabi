@@ -353,6 +353,7 @@ fn timeline_row(
                 let retrying = this
                     .retrying_messages
                     .contains(&(row.chat.as_str().to_string(), row.id.as_str().to_string()));
+                let audio_playback = audio_playback_view(this, row);
                 bubble(
                     row.clone(),
                     *row_ix,
@@ -363,6 +364,7 @@ fn timeline_row(
                         media_state,
                         thumb_state,
                         retrying,
+                        audio_playback,
                     },
                     cx,
                 )
@@ -380,6 +382,7 @@ struct BubbleRenderState {
     media_state: Option<crate::views::root::MediaDownloadUi>,
     thumb_state: Option<crate::views::root::MediaThumbUi>,
     retrying: bool,
+    audio_playback: Option<super::voice::PlaybackView>,
 }
 
 fn bubble(
@@ -397,6 +400,7 @@ fn bubble(
         media_state,
         thumb_state,
         retrying,
+        audio_playback,
     } = state;
 
     let outgoing = row.direction == MessageDirection::Outgoing;
@@ -474,7 +478,9 @@ fn bubble(
                         .child(messages::body_text(&row)),
                 ),
         );
-    } else if let Some(media) = media_content(&row, text_scale, media_state, thumb_state, cx) {
+    } else if let Some(media) =
+        media_content(&row, text_scale, media_state, thumb_state, audio_playback, cx)
+    {
         content = content.child(media);
     } else if let Some(card) = location_contact_card(&row, row_index, text_scale, cx) {
         content = content.child(card);
@@ -736,11 +742,31 @@ fn quoted_message(
         )
 }
 
+fn audio_playback_view(
+    this: &MainWindow,
+    row: &wasabi_domain::MessageRow,
+) -> Option<super::voice::PlaybackView> {
+    let wasabi_domain::MessageKind::Audio { media, .. } = &row.kind else {
+        return None;
+    };
+    Some(
+        this.voice_playback
+            .view(&row.chat, &media.id)
+            .unwrap_or_else(|| super::voice::PlaybackView {
+                playing: false,
+                progress: 0.0,
+                position_seconds: 0,
+                duration_seconds: media.duration_seconds.unwrap_or(0),
+            }),
+    )
+}
+
 fn media_content(
     row: &wasabi_domain::MessageRow,
     text_scale: u16,
     download_state: Option<crate::views::root::MediaDownloadUi>,
     thumb_state: Option<crate::views::root::MediaThumbUi>,
+    audio_playback: Option<super::voice::PlaybackView>,
     cx: &mut Context<MainWindow>,
 ) -> Option<gpui::AnyElement> {
     use wasabi_domain::{MediaAvailability, MessageKind};
@@ -807,6 +833,7 @@ fn media_content(
 
     let metadata = media_metadata(descriptor);
     let unavailable = descriptor.availability == MediaAvailability::Unavailable;
+    let is_audio = matches!(row.kind, MessageKind::Audio { .. });
     let (transfer_label, can_download, cached_path) = if unavailable {
         ("Media unavailable", false, None)
     } else {
@@ -821,6 +848,29 @@ fn media_content(
             None => ("Click to download", true, None),
         }
     };
+    if is_audio
+        && let Some(path) = cached_path.as_ref()
+        && classify_cached_media(path) == CachedMediaAccess::Available
+        && let Some(playback) = audio_playback
+    {
+        return Some(
+            gpui::div()
+                .id(("media-card", row.seq.0 as usize))
+                .rounded(px(theme::RADIUS_SM))
+                .flex()
+                .flex_col()
+                .gap(px(5.0))
+                .child(super::voice::player(
+                    row,
+                    path.clone(),
+                    playback,
+                    text_scale,
+                    cx,
+                ))
+                .child(cached_media_actions(row, path.clone(), text_scale, cx))
+                .into_any_element(),
+        );
+    }
     let thumb_path = match (
         paints_downloaded_image_thumbnail(&row.kind),
         download_state.as_ref(),
