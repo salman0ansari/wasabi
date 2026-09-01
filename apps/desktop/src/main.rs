@@ -85,12 +85,19 @@ fn main() -> anyhow::Result<()> {
                     Cow::Borrowed(INTER_ITALIC),
                 ])
                 .expect("load bundled Inter fonts");
-            let preference = if cfg!(debug_assertions)
-                && matches!(
-                    std::env::var("WASABI_UI_PREVIEW").as_deref(),
-                    Ok("settings-dark")
-                ) {
-                ThemePreference::Dark
+            let preference = if cfg!(debug_assertions) {
+                match std::env::var("WASABI_UI_THEME").as_deref() {
+                    Ok("light") => ThemePreference::Light,
+                    Ok("dark") => ThemePreference::Dark,
+                    _ if matches!(
+                        std::env::var("WASABI_UI_PREVIEW").as_deref(),
+                        Ok("settings-dark")
+                    ) =>
+                    {
+                        ThemePreference::Dark
+                    }
+                    _ => DeviceSettings::load().theme,
+                }
             } else {
                 DeviceSettings::load().theme
             };

@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    Animation, AnimationExt, Context, ListSizingBehavior, ObjectFit, StyledImage, ease_out_quint,
-    list, px,
+    Animation, AnimationExt, Context, ListSizingBehavior, ObjectFit, Role, StyledImage,
+    ease_out_quint, list, px,
 };
 use gpui_component::input::Input;
 use gpui_component::{Icon, IconName};
@@ -481,28 +481,30 @@ fn bubble(
     } else if let Some(card) = poll_card(&row, text_scale) {
         content = content.child(card);
     } else if inline_meta {
+        let meta_reserve = if outgoing { 58.0 } else { 42.0 }
+            + if row.edited_at_ms.is_some() {
+                34.0
+            } else {
+                0.0
+            };
         content = content.child(
             gpui::div()
+                .relative()
                 .min_w(px(0.0))
-                .flex()
-                .items_end()
-                .gap(px(8.0))
                 .child(
                     gpui::div()
                         .min_w(px(0.0))
-                        .flex_1()
+                        .pr(px(meta_reserve))
                         .text_size(px(theme::scaled_text(theme::TEXT_SIZE, text_scale)))
                         .text_color(text_color)
                         .child(messages::body_text(&row)),
                 )
-                .child(message_meta(
-                    &row,
-                    row_index,
-                    text_scale,
-                    retrying,
-                    meta_time.clone(),
-                    cx,
-                )),
+                .child(
+                    message_meta(&row, row_index, text_scale, retrying, meta_time.clone(), cx)
+                        .absolute()
+                        .right(px(0.0))
+                        .bottom(px(0.0)),
+                ),
         );
     } else {
         content = content.child(
@@ -524,8 +526,10 @@ fn bubble(
         gpui::div().flex().justify_start()
     };
 
+    let bubble_group = format!("message-bubble-{row_index}");
     let bubble = gpui::div()
-        .group("message-bubble")
+        .group(bubble_group.clone())
+        .relative()
         .min_w(px(0.0))
         .max_w(px(theme::BUBBLE_MAX_W))
         .rounded(px(theme::RADIUS_SM))
@@ -539,7 +543,8 @@ fn bubble(
             el.border_1().border_color(theme::accent())
         })
         .bg(bubble_bg)
-        .child(content);
+        .child(content)
+        .child(message_actions_button(&row, row_index, bubble_group, cx));
 
     alignment
         .w_full()
@@ -615,7 +620,6 @@ fn message_meta(
                     .child(messages::status_glyph(status)),
             )
         })
-        .child(message_actions_button(row, row_index, cx))
 }
 
 fn messages_share_visual_group(
@@ -1394,23 +1398,42 @@ fn format_bytes(bytes: u64) -> String {
 fn message_actions_button(
     row: &wasabi_domain::MessageRow,
     row_index: usize,
+    bubble_group: String,
     cx: &mut Context<MainWindow>,
 ) -> gpui::Stateful<gpui::Div> {
     let message = row.id.clone();
     gpui::div()
         .id(("message-actions", row_index))
-        .ml(px(3.0))
+        .focusable()
+        .tab_stop(true)
+        .role(Role::Button)
+        .aria_label("Message actions and reactions")
+        .absolute()
+        .top(px(2.0))
+        .right(px(2.0))
+        .size(px(24.0))
+        .rounded_full()
+        .bg(theme::surface())
         .invisible()
-        .group_hover("message-bubble", |style| style.visible())
+        .group_hover(bubble_group, |style| style.visible())
+        .flex()
+        .items_center()
+        .justify_center()
         .cursor_pointer()
-        .px(px(2.0))
         .text_color(theme::text_secondary())
-        .hover(|style| style.text_color(theme::accent_text()))
+        .focus_visible(|style| {
+            style
+                .visible()
+                .bg(theme::row_hover())
+                .border_1()
+                .border_color(theme::accent())
+        })
         .on_click(cx.listener(move |this, _, _, cx| this.open_message_actions(message.clone(), cx)))
-        .child("⋯")
+        .child(Icon::new(IconName::Ellipsis).size(px(16.0)))
 }
 
 pub fn message_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::Div {
+    let reduce_motion = this.settings.reduce_motion;
     let Some(overlay) = this.message_overlay.clone() else {
         return gpui::div();
     };
@@ -1446,6 +1469,17 @@ pub fn message_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> g
             contact_action_confirmation(this, action, cx)
         }
     };
+    let card = if reduce_motion {
+        card.into_any_element()
+    } else {
+        card.with_animation(
+            "message-overlay-entrance",
+            Animation::new(Duration::from_millis(theme::MOTION_OVERLAY_MS))
+                .with_easing(ease_out_quint()),
+            |card, progress| card.opacity(0.72 + 0.28 * progress),
+        )
+        .into_any_element()
+    };
     gpui::div()
         .absolute()
         .size_full()
@@ -1453,14 +1487,7 @@ pub fn message_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> g
         .items_center()
         .justify_center()
         .bg(theme::scrim())
-        .child(
-            card.with_animation(
-                "message-overlay-entrance",
-                Animation::new(Duration::from_millis(theme::MOTION_OVERLAY_MS))
-                    .with_easing(ease_out_quint()),
-                |card, progress| card.opacity(0.72 + 0.28 * progress),
-            ),
-        )
+        .child(card)
 }
 
 fn leave_group_confirmation(

@@ -39,6 +39,7 @@ pub struct DeviceSettings {
     pub launch_at_startup: bool,
     pub theme: ThemePreference,
     pub text_scale: u16,
+    pub reduce_motion: bool,
     pub enter_to_send: bool,
     pub desktop_notifications: bool,
     pub notification_sound: bool,
@@ -60,6 +61,7 @@ impl Default for DeviceSettings {
             launch_at_startup: false,
             theme: ThemePreference::System,
             text_scale: 100,
+            reduce_motion: false,
             enter_to_send: true,
             desktop_notifications: true,
             notification_sound: true,
@@ -194,6 +196,7 @@ mod tests {
         let parsed: DeviceSettings = serde_json::from_str(r#"{"enter_to_send":false}"#).unwrap();
         assert!(!parsed.enter_to_send);
         assert_eq!(parsed.text_scale, 100);
+        assert!(!parsed.reduce_motion);
         assert!(parsed.desktop_notifications);
     }
 

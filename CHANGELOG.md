@@ -10,7 +10,8 @@ All notable user-visible changes to wasabi are recorded here. The format follows
   WhatsApp-inspired interaction system: neutral light/dark layers, 64 px pane
   rhythm, inset chat rows, grouped directional message bubbles, compact inline
   delivery metadata, a unified composer, elevated emoji tray and dialogs, and
-  medium-width contact-info takeover behavior. Wasabi branding and existing
+  medium-width contact-info takeover behavior. A new Reduce motion preference
+  disables tray and dialog entrance effects. Wasabi branding and existing
   messaging behavior remain unchanged.
 
 ## [0.3.6] - 2026-08-31

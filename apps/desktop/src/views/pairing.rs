@@ -363,6 +363,75 @@ fn link_button(text: &'static str) -> gpui::Stateful<gpui::Div> {
         .child(text)
 }
 
+fn qr_status(text: &'static str) -> gpui::Div {
+    gpui::div()
+        .size(px(QR_FRAME_SIZE))
+        .rounded(px(theme::RADIUS_MD))
+        .border_1()
+        .border_dashed()
+        .border_color(theme::border())
+        .bg(theme::surface())
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(theme::TEXT_SIZE_SM))
+        .text_color(theme::text_secondary())
+        .child(text)
+}
+
+fn qr_code_view(code: qrcode::QrCode) -> gpui::Div {
+    let module_count = code.width();
+    let matrix = code
+        .to_colors()
+        .into_iter()
+        .map(|color| color == qrcode::Color::Dark)
+        .collect::<Vec<_>>();
+    let total_modules = module_count + QR_QUIET_ZONE * 2;
+
+    gpui::div()
+        .size(px(QR_FRAME_SIZE))
+        .rounded(px(theme::RADIUS_MD))
+        .border_1()
+        .border_color(theme::border())
+        .bg(theme::surface())
+        .overflow_hidden()
+        .child(
+            gpui::canvas(
+                |_bounds, _window, _cx| (),
+                move |bounds, (), window, _cx| {
+                    let frame_size = bounds.size.width.min(bounds.size.height);
+                    let module_size = px((frame_size / px(total_modules as f32)).floor().max(1.0));
+                    let code_size = module_size * total_modules;
+                    let origin = bounds.origin
+                        + gpui::point(
+                            (bounds.size.width - code_size) * 0.5,
+                            (bounds.size.height - code_size) * 0.5,
+                        );
+
+                    window.paint_quad(gpui::fill(bounds, theme::surface()));
+
+                    for y in 0..module_count {
+                        for x in 0..module_count {
+                            if !matrix[y * module_count + x] {
+                                continue;
+                            }
+
+                            let module_origin = origin
+                                + gpui::point(
+                                    module_size * (QR_QUIET_ZONE + x),
+                                    module_size * (QR_QUIET_ZONE + y),
+                                );
+                            let module_bounds =
+                                gpui::bounds(module_origin, gpui::size(module_size, module_size));
+                            window.paint_quad(gpui::fill(module_bounds, theme::text_primary()));
+                        }
+                    }
+                },
+            )
+            .size_full(),
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -442,73 +511,4 @@ mod tests {
             assert!(!line.contains('@'));
         }
     }
-}
-
-fn qr_status(text: &'static str) -> gpui::Div {
-    gpui::div()
-        .size(px(QR_FRAME_SIZE))
-        .rounded(px(theme::RADIUS_MD))
-        .border_1()
-        .border_dashed()
-        .border_color(theme::border())
-        .bg(theme::surface())
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(px(theme::TEXT_SIZE_SM))
-        .text_color(theme::text_secondary())
-        .child(text)
-}
-
-fn qr_code_view(code: qrcode::QrCode) -> gpui::Div {
-    let module_count = code.width();
-    let matrix = code
-        .to_colors()
-        .into_iter()
-        .map(|color| color == qrcode::Color::Dark)
-        .collect::<Vec<_>>();
-    let total_modules = module_count + QR_QUIET_ZONE * 2;
-
-    gpui::div()
-        .size(px(QR_FRAME_SIZE))
-        .rounded(px(theme::RADIUS_MD))
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::surface())
-        .overflow_hidden()
-        .child(
-            gpui::canvas(
-                |_bounds, _window, _cx| (),
-                move |bounds, (), window, _cx| {
-                    let frame_size = bounds.size.width.min(bounds.size.height);
-                    let module_size = px((frame_size / px(total_modules as f32)).floor().max(1.0));
-                    let code_size = module_size * total_modules;
-                    let origin = bounds.origin
-                        + gpui::point(
-                            (bounds.size.width - code_size) * 0.5,
-                            (bounds.size.height - code_size) * 0.5,
-                        );
-
-                    window.paint_quad(gpui::fill(bounds, theme::surface()));
-
-                    for y in 0..module_count {
-                        for x in 0..module_count {
-                            if !matrix[y * module_count + x] {
-                                continue;
-                            }
-
-                            let module_origin = origin
-                                + gpui::point(
-                                    module_size * (QR_QUIET_ZONE + x),
-                                    module_size * (QR_QUIET_ZONE + y),
-                                );
-                            let module_bounds =
-                                gpui::bounds(module_origin, gpui::size(module_size, module_size));
-                            window.paint_quad(gpui::fill(module_bounds, theme::text_primary()));
-                        }
-                    }
-                },
-            )
-            .size_full(),
-        )
 }

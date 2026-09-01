@@ -483,6 +483,14 @@ fn chats(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> gpui::AnyElemen
         .child(value_row("Wallpaper", "wasabi line pattern"))
         .child(text_size_picker)
         .child(toggle_row(
+            "setting-reduce-motion",
+            "Reduce motion",
+            "Keep state feedback while removing overlay and tray entrance motion.",
+            this.settings.reduce_motion,
+            cx,
+            |this| this.settings.reduce_motion = !this.settings.reduce_motion,
+        ))
+        .child(toggle_row(
             "setting-enter-send",
             "Enter sends a message",
             "Use Shift+Enter for a new line.",

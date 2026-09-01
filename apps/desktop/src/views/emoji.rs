@@ -239,9 +239,9 @@ pub fn picker_button(
     picker.into_any_element()
 }
 
-fn picker_panel(this: &MainWindow, cx: &mut gpui::Context<MainWindow>) -> impl IntoElement {
+fn picker_panel(this: &MainWindow, cx: &mut gpui::Context<MainWindow>) -> gpui::AnyElement {
     let active = this.emoji_category;
-    gpui::div()
+    let panel = gpui::div()
         .id("emoji-picker")
         .occlude()
         .w(px(PICKER_W))
@@ -277,13 +277,19 @@ fn picker_panel(this: &MainWindow, cx: &mut gpui::Context<MainWindow>) -> impl I
                 .px(px(8.0))
                 .pb(px(8.0))
                 .child(emoji_grid(active, cx)),
-        )
-        .with_animation(
-            "emoji-picker-entrance",
-            Animation::new(Duration::from_millis(theme::MOTION_STANDARD_MS))
-                .with_easing(ease_out_quint()),
-            |panel, progress| panel.opacity(0.55 + 0.45 * progress),
-        )
+        );
+    if this.settings.reduce_motion {
+        panel.into_any_element()
+    } else {
+        panel
+            .with_animation(
+                "emoji-picker-entrance",
+                Animation::new(Duration::from_millis(theme::MOTION_STANDARD_MS))
+                    .with_easing(ease_out_quint()),
+                |panel, progress| panel.opacity(0.55 + 0.45 * progress),
+            )
+            .into_any_element()
+    }
 }
 
 fn category_tabs(active: EmojiCategory, cx: &mut gpui::Context<MainWindow>) -> gpui::Div {

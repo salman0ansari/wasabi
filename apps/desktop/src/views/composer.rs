@@ -170,9 +170,6 @@ pub fn composer_bar(
             .size(px(theme::ACTION_SIZE))
             .rounded_full()
             .text_color(theme::text_secondary())
-            .when(enabled, |button| {
-                button.hover(|style| style.bg(theme::row_hover()))
-            })
             .when(!enabled, |button| button.opacity(0.4));
         if enabled {
             button = button.on_click(
@@ -201,9 +198,6 @@ pub fn composer_bar(
                 .rounded_full()
                 .bg(bg)
                 .text_color(fg)
-                .when(actionable, |button| {
-                    button.hover(|style| style.opacity(0.88))
-                })
                 .when(busy, |button| button.opacity(0.68))
                 .when(!actionable && !busy, |button| button.opacity(0.45));
             if actionable {

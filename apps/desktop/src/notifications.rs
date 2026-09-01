@@ -109,8 +109,10 @@ mod tests {
 
     #[test]
     fn hidden_previews_never_return_message_text() {
-        let mut settings = DeviceSettings::default();
-        settings.notification_previews = false;
+        let settings = DeviceSettings {
+            notification_previews: false,
+            ..DeviceSettings::default()
+        };
         let body = notification_body(&candidate(), &settings);
         assert_eq!(body, "New message");
         assert!(!body.contains("private body"));
