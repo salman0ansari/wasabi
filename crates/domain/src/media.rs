@@ -67,6 +67,7 @@ pub enum AttachmentKind {
     Video,
     Audio,
     Document,
+    Sticker,
 }
 
 /// Durable metadata needed to reconstruct an outgoing attachment after a

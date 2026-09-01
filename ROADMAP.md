@@ -27,7 +27,7 @@ wasabi is being built in public toward a dependable Linux-first replacement for 
 | Done | Active/archived pagination, filters, pin/mute/archive/read actions, drafts/favorites, FTS search, anchored navigation, and measured rows. |
 | Done | Viewport-preserving prepends, non-jumping incoming messages, reply navigation, reactions, edits, starring, deletes, revoke, and clear. |
 | Done | Render received location and contact cards in the timeline, quotes, chat-list previews, and notifications. Composer sharing and live-location tracking stay planned. |
-| Done | Paint downloaded sticker stills in the timeline. Animated stickers are labeled and show a still frame, not a playing animation. |
+| Done | Paint downloaded sticker stills in the timeline. Animated stickers play unless Reduce motion is on. |
 | Done | Render received poll and quiz cards from stored proto fields. Voting and poll creation stay planned. |
 | In progress | Complete content projection/rendering for events, invites, voice/video notes, system, and remaining unsupported messages. |
 | Planned | Grouped global search, in-chat next/previous, forwarding selection, receipt/reaction detail, typing transmission, and expiring presence. |
@@ -49,8 +49,10 @@ wasabi is being built in public toward a dependable Linux-first replacement for 
 | Done | Multiline text, per-chat drafts, reply/edit context, Enter-to-send, durable staging, multi-kind outbox, progress/cancel/retry, and verified cache. |
 | Done | Local categorized Unicode emoji picker that inserts at the composer caret. |
 | Done | Save As and Reveal in Files for media already in the local cache. |
+| Done | Lightbox for downloaded photos, stickers, and video stills; videos open in the system player. |
+| Done | Send a downloaded image to the current chat as a sticker. |
 | In progress | Live-account interoperability for each media class, metadata fidelity, visible thumbnail loading, and policy-driven auto-download. |
-| Planned | Group mentions, voice recording, contact/location sharing, poll/event creation, and sticker creation. |
+| Planned | Group mentions, voice recording, contact/location sharing, and poll/event creation. |
 
 ## Settings and Linux integration
 

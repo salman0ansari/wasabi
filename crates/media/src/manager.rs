@@ -311,6 +311,56 @@ impl MediaManager {
         })
     }
 
+    /// Convert a cached image into a WhatsApp sticker and stage it for upload.
+    pub async fn stage_sticker_from_image(
+        &self,
+        source: PathBuf,
+        transfer: wasabi_domain::TransferId,
+        cancel: CancellationToken,
+    ) -> Result<StagedUpload, MediaError> {
+        if transfer.as_str().is_empty() {
+            return Err(MediaError::InvalidInput(
+                "transfer identity is empty".to_string(),
+            ));
+        }
+        let key = to_hex(&Sha256::digest(transfer.as_str().as_bytes()));
+        let durable_path = self.cache.root().join(format!("outgoing-{key}.stage"));
+        if tokio::fs::try_exists(&durable_path).await? {
+            return Err(MediaError::InvalidInput(
+                "transfer identity already has a staged file".to_string(),
+            ));
+        }
+        let destination = durable_path.clone();
+        let worker_cancel = cancel.clone();
+        let convert = tokio::task::spawn_blocking(move || {
+            if worker_cancel.is_cancelled() {
+                return Err(MediaError::Cancelled);
+            }
+            crate::sticker::convert_image_to_sticker_file(&source, &destination)
+        });
+        let bytes_total = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(MediaError::Cancelled),
+            result = convert => result.map_err(|error| MediaError::Io(std::io::Error::other(error.to_string())))??,
+        };
+        Ok(StagedUpload {
+            attachment: wasabi_domain::StagedAttachment {
+                transfer,
+                kind: wasabi_domain::AttachmentKind::Sticker,
+                display_name: "sticker.webp".to_string(),
+                mime_type: "image/webp".to_string(),
+                bytes_total,
+            },
+            durable_path,
+            payload: wasabi_domain::TransferPayload {
+                kind: wasabi_domain::AttachmentKind::Sticker,
+                display_name: "sticker.webp".to_string(),
+                mime_type: "image/webp".to_string(),
+                caption: None,
+            },
+        })
+    }
+
     /// Remove only a Wasabi-owned outgoing stage; arbitrary paths are refused.
     pub async fn discard_staged_upload(&self, path: PathBuf) -> Result<(), MediaError> {
         let owned = path.parent() == Some(self.cache.root())
@@ -627,6 +677,7 @@ fn attachment_media_type(kind: wasabi_domain::AttachmentKind) -> MediaType {
         wasabi_domain::AttachmentKind::Video => MediaType::Video,
         wasabi_domain::AttachmentKind::Audio => MediaType::Audio,
         wasabi_domain::AttachmentKind::Document => MediaType::Document,
+        wasabi_domain::AttachmentKind::Sticker => MediaType::Sticker,
     }
 }
 
@@ -950,6 +1001,10 @@ mod tests {
         assert_eq!(
             attachment_media_type(wasabi_domain::AttachmentKind::Document),
             MediaType::Document
+        );
+        assert_eq!(
+            attachment_media_type(wasabi_domain::AttachmentKind::Sticker),
+            MediaType::Sticker
         );
     }
 

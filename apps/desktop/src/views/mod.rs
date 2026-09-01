@@ -6,6 +6,7 @@ mod chat_list;
 mod composer;
 mod conversation;
 mod emoji;
+mod media_viewer;
 mod new_chat;
 mod new_group;
 mod pairing;

@@ -350,6 +350,24 @@ fn timeline_row(
                         .get(&(row.chat.clone(), media.id.clone()))
                         .cloned()
                 });
+                let anim_state = media_descriptor(&row.kind).and_then(|media| {
+                    this.sticker_anims
+                        .get(&(row.chat.clone(), media.id.clone()))
+                        .cloned()
+                });
+                if let (
+                    wasabi_domain::MessageKind::Sticker { animated: true, .. },
+                    Some(crate::views::root::MediaDownloadUi::Ready(path)),
+                    Some(media),
+                ) = (&row.kind, media_state.as_ref(), media_descriptor(&row.kind))
+                    && wasabi_media::play_animated_sticker(true, true, this.settings.reduce_motion)
+                {
+                    this.request_sticker_animation(
+                        (row.chat.clone(), media.id.clone()),
+                        path.clone(),
+                        cx,
+                    );
+                }
                 let retrying = this
                     .retrying_messages
                     .contains(&(row.chat.as_str().to_string(), row.id.as_str().to_string()));
@@ -362,6 +380,8 @@ fn timeline_row(
                         highlighted,
                         media_state,
                         thumb_state,
+                        anim_state,
+                        reduce_motion: this.settings.reduce_motion,
                         retrying,
                     },
                     cx,
@@ -379,6 +399,8 @@ struct BubbleRenderState {
     highlighted: bool,
     media_state: Option<crate::views::root::MediaDownloadUi>,
     thumb_state: Option<crate::views::root::MediaThumbUi>,
+    anim_state: Option<crate::views::root::StickerAnimUi>,
+    reduce_motion: bool,
     retrying: bool,
 }
 
@@ -396,6 +418,8 @@ fn bubble(
         highlighted,
         media_state,
         thumb_state,
+        anim_state,
+        reduce_motion,
         retrying,
     } = state;
 
@@ -474,7 +498,15 @@ fn bubble(
                         .child(messages::body_text(&row)),
                 ),
         );
-    } else if let Some(media) = media_content(&row, text_scale, media_state, thumb_state, cx) {
+    } else if let Some(media) = media_content(
+        &row,
+        text_scale,
+        media_state,
+        thumb_state,
+        anim_state,
+        reduce_motion,
+        cx,
+    ) {
         content = content.child(media);
     } else if let Some(card) = location_contact_card(&row, row_index, text_scale, cx) {
         content = content.child(card);
@@ -741,6 +773,8 @@ fn media_content(
     text_scale: u16,
     download_state: Option<crate::views::root::MediaDownloadUi>,
     thumb_state: Option<crate::views::root::MediaThumbUi>,
+    anim_state: Option<crate::views::root::StickerAnimUi>,
+    reduce_motion: bool,
     cx: &mut Context<MainWindow>,
 ) -> Option<gpui::AnyElement> {
     use wasabi_domain::{MediaAvailability, MessageKind};
@@ -821,6 +855,20 @@ fn media_content(
             None => ("Click to download", true, None),
         }
     };
+    let cached_ready = cached_path.is_some();
+    let play_animation = matches!(&row.kind, MessageKind::Sticker { animated: true, .. })
+        && wasabi_media::play_animated_sticker(true, cached_ready, reduce_motion);
+    let animation_frame = if play_animation {
+        match anim_state.as_ref() {
+            Some(crate::views::root::StickerAnimUi::Ready { frames, started }) => {
+                Some(current_sticker_frame(frames, *started))
+            }
+            Some(crate::views::root::StickerAnimUi::Failed) => None,
+            _ => None,
+        }
+    } else {
+        None
+    };
     let thumb_path = match (
         paints_downloaded_image_thumbnail(&row.kind),
         download_state.as_ref(),
@@ -833,7 +881,22 @@ fn media_content(
         ) => Some(path.clone()),
         _ => None,
     };
-    let body = if let Some(path) = thumb_path {
+    let body = if let Some(image) = animation_frame {
+        gpui::div()
+            .h(px(150.0))
+            .w_full()
+            .min_w(px(240.0))
+            .rounded(px(theme::RADIUS_SM))
+            .overflow_hidden()
+            .bg(theme::canvas())
+            .child(
+                gpui::img(image)
+                    .id(("animated-sticker", row.seq.0 as usize))
+                    .h(px(150.0))
+                    .w_full()
+                    .object_fit(ObjectFit::Contain),
+            )
+    } else if let Some(path) = thumb_path {
         let fallback_title = title.clone();
         let fallback_label = transfer_label.to_string();
         gpui::div()
@@ -956,6 +1019,8 @@ fn media_content(
     let chat = row.chat.clone();
     let media = descriptor.id.clone();
     let paint_thumb = paints_downloaded_image_thumbnail(&row.kind);
+    let open_viewer = cached_ready && crate::views::media_viewer::is_lightbox_kind(&row.kind);
+    let open_id = row.id.clone();
     let mut interactive = gpui::div()
         .id(("media-card", row.seq.0 as usize))
         .rounded(px(theme::RADIUS_SM))
@@ -967,8 +1032,34 @@ fn media_content(
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.download_media(chat.clone(), media.clone(), paint_thumb, cx)
             }));
+    } else if open_viewer {
+        interactive = interactive
+            .cursor_pointer()
+            .hover(|style| style.bg(theme::row_hover()))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.open_media_viewer(open_id.clone(), window, cx)
+            }));
     }
     Some(interactive.into_any_element())
+}
+
+fn current_sticker_frame(
+    frames: &[(std::sync::Arc<gpui::Image>, std::time::Duration)],
+    started: std::time::Instant,
+) -> std::sync::Arc<gpui::Image> {
+    let total: u128 = frames.iter().map(|(_, delay)| delay.as_millis()).sum();
+    if total == 0 {
+        return std::sync::Arc::clone(&frames[0].0);
+    }
+    let mut remain = started.elapsed().as_millis() % total;
+    for (image, delay) in frames {
+        let ms = delay.as_millis();
+        if remain < ms {
+            return std::sync::Arc::clone(image);
+        }
+        remain -= ms;
+    }
+    std::sync::Arc::clone(&frames[0].0)
 }
 
 fn paints_downloaded_image_thumbnail(kind: &wasabi_domain::MessageKind) -> bool {
@@ -1354,7 +1445,9 @@ fn maps_url(latitude: Option<&str>, longitude: Option<&str>) -> Option<String> {
     Some(format!("https://maps.google.com/?q={latitude},{longitude}"))
 }
 
-fn media_descriptor(kind: &wasabi_domain::MessageKind) -> Option<&wasabi_domain::MediaDescriptor> {
+pub(crate) fn media_descriptor(
+    kind: &wasabi_domain::MessageKind,
+) -> Option<&wasabi_domain::MediaDescriptor> {
     match kind {
         wasabi_domain::MessageKind::Image { media, .. }
         | wasabi_domain::MessageKind::Video { media, .. }
@@ -1437,6 +1530,9 @@ pub fn message_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> g
     let Some(overlay) = this.message_overlay.clone() else {
         return gpui::div();
     };
+    if let crate::views::root::MessageOverlay::MediaViewer(message) = overlay {
+        return crate::views::media_viewer::overlay(this, message, cx);
+    }
     let card = match overlay {
         crate::views::root::MessageOverlay::Actions(message) => {
             message_action_sheet(this, message, cx)
@@ -1468,6 +1564,7 @@ pub fn message_overlay(this: &mut MainWindow, cx: &mut Context<MainWindow>) -> g
         crate::views::root::MessageOverlay::ConfirmContact(action) => {
             contact_action_confirmation(this, action, cx)
         }
+        crate::views::root::MessageOverlay::MediaViewer(_) => unreachable!("handled above"),
     };
     let card = if reduce_motion {
         card.into_any_element()
@@ -1915,6 +2012,8 @@ fn message_action_sheet(
             _ => None,
         }
     });
+    let send_as_sticker = matches!(row.kind, wasabi_domain::MessageKind::Image { .. })
+        && ready_cached_media.is_some();
 
     action_card()
         .child(
@@ -1993,6 +2092,19 @@ fn message_action_sheet(
                 sheet_button("reveal-in-files", "Reveal in Files", false).on_click(cx.listener(
                     move |this, _, _, cx| {
                         this.reveal_downloaded_media(reveal_chat.clone(), media.clone(), cx)
+                    },
+                )),
+            )
+        })
+        .when(send_as_sticker, |card| {
+            let chat = row.chat.clone();
+            let media = media_descriptor(&row.kind)
+                .map(|media| media.id.clone())
+                .expect("image media");
+            card.child(
+                sheet_button("send-as-sticker", "Send as sticker", false).on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.send_image_as_sticker(chat.clone(), media.clone(), cx)
                     },
                 )),
             )
@@ -2538,6 +2650,25 @@ mod tests {
         assert!(!paints_downloaded_image_thumbnail(&MessageKind::Document {
             media: media.clone(),
         }));
+        assert!(!paints_downloaded_image_thumbnail(&MessageKind::Location {
+            name: None,
+            address: None,
+            latitude: Some("1.0".to_string()),
+            longitude: Some("2.0".to_string()),
+            live: false,
+        }));
+        assert!(!paints_downloaded_image_thumbnail(&MessageKind::Contact {
+            display_name: "Jordan Blake".to_string(),
+            contacts: 1,
+        }));
+    }
+
+    #[test]
+    fn reduce_motion_keeps_animated_stickers_still() {
+        assert!(wasabi_media::play_animated_sticker(true, true, false));
+        assert!(!wasabi_media::play_animated_sticker(true, true, true));
+        assert!(!wasabi_media::play_animated_sticker(true, false, false));
+        assert!(!wasabi_media::play_animated_sticker(false, true, false));
         assert!(!paints_downloaded_image_thumbnail(&MessageKind::Location {
             name: None,
             address: None,

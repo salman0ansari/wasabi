@@ -114,6 +114,25 @@ impl ThumbnailService {
         Ok(rendered)
     }
 
+    /// Decode an animated WebP on the same CPU-bounded worker pool as still
+    /// thumbnails. Failure leaves the caller on the still-image path.
+    pub async fn animated_webp(
+        &self,
+        path: &Path,
+    ) -> Result<Arc<crate::animation::DecodedAnimation>, MediaError> {
+        let _slot = self
+            .decode_slots
+            .acquire()
+            .await
+            .map_err(|_| MediaError::Unavailable)?;
+        let path = path.to_owned();
+        let decoded =
+            tokio::task::spawn_blocking(move || crate::animation::decode_webp_animation(&path))
+                .await
+                .map_err(|error| MediaError::Decode(error.to_string()))??;
+        Ok(Arc::new(decoded))
+    }
+
     fn lookup(&self, key: &str) -> Option<Arc<Vec<u8>>> {
         let mut state = lock(&self.inner);
         // Bump the clock before taking the map borrow; recency is what

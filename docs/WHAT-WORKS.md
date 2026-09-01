@@ -55,8 +55,10 @@ This page describes the shipped behavior in wasabi `0.3.6`. It is a capability i
 | Done | Stage outgoing files durably, recover interrupted attachments after restart, and cancel safely. |
 | Done | Stream encryption and upload without buffering an entire file in memory. |
 | Done | Download received media into a bounded, content-addressed, SHA-256-verified cache. |
-| Done | Paint a still-image thumbnail for downloaded photos and stickers in the timeline; animated stickers stay labeled and show a still frame. Video, audio, and documents keep their existing cards. |
+| Done | Paint a still-image thumbnail for downloaded photos and stickers in the timeline. Animated stickers play from the verified cache unless Reduce motion is on; decode failures keep the still frame and label. Video, audio, and documents keep their existing cards. |
+| Done | Open a downloaded photo, sticker, or video in a lightbox. Navigation stays inside the current cached timeline window. Videos are opened with the system player rather than a fake in-app decoder. |
 | Done | Save a cached download to a chosen path and reveal it in the file manager. A missing cache file drops back to download instead of claiming the file is still present. |
+| Done | Convert a downloaded image into a WebP sticker (max 512×512) and send it to the current chat through the durable outbox while connected. |
 | Done | Configure the download location and actively enforced cache quota. |
 | Done | Inspect cache usage and clear downloaded media through an explicit confirmation flow. |
 

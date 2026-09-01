@@ -4,6 +4,16 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Downloaded photos, stickers, and videos open in a lightbox. Escape closes;
+  Left/Right move among cached visual messages in the current timeline window.
+  Videos show a still when one exists and open in the system player.
+- Downloaded animated stickers play in the timeline unless Reduce motion is on.
+  Decode failures keep the still frame and Animated sticker label.
+- A downloaded image can be sent to the current chat as a WebP sticker (max
+  512×512, alpha preserved, no caption) while connected.
+
 ### Changed
 
 - Refined the native desktop shell and messaging surfaces with a denser,

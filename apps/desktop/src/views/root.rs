@@ -32,7 +32,16 @@ use wasabi_domain::{
     ChatKind, ChatScope, ConversationDetails, PendingMembershipRequest, SharedGroup,
 };
 
-gpui::actions!(wasabi_desktop, [FocusSearch, OpenSettings, CloseInfo]);
+gpui::actions!(
+    wasabi_desktop,
+    [
+        FocusSearch,
+        OpenSettings,
+        CloseInfo,
+        MediaViewerPrev,
+        MediaViewerNext
+    ]
+);
 
 pub const MAIN_KEY_CONTEXT: &str = "Main";
 const CHAT_PAGE_LIMIT: usize = 100;
@@ -65,6 +74,7 @@ pub(crate) enum MessageOverlay {
     ConfirmJoinRequest(JoinRequestAction),
     ConfirmResetInviteLink(InviteLinkResetTarget),
     ConfirmContact(wasabi_domain::ContactAction),
+    MediaViewer(wasabi_domain::MessageId),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -153,6 +163,16 @@ pub(crate) enum MediaThumbUi {
 }
 
 #[derive(Clone)]
+pub(crate) enum StickerAnimUi {
+    Loading,
+    Ready {
+        frames: std::sync::Arc<Vec<(std::sync::Arc<gpui::Image>, std::time::Duration)>>,
+        started: std::time::Instant,
+    },
+    Failed,
+}
+
+#[derive(Clone)]
 pub(crate) enum AvatarUi {
     Loading,
     Ready(std::path::PathBuf),
@@ -229,6 +249,7 @@ impl Global for BridgeGlobal {}
 pub struct MainWindow {
     pub(crate) bridge: Arc<dyn DesktopBackend>,
     focus: FocusHandle,
+    pub(crate) media_viewer_focus: FocusHandle,
     pub(crate) chats: ChatListModel,
     pub(crate) messages: MessageWindowModel,
     pub(crate) session: SessionMirror,
@@ -266,6 +287,9 @@ pub struct MainWindow {
     pub(crate) media_downloads:
         HashMap<(wasabi_domain::ChatId, wasabi_domain::MediaId), MediaDownloadUi>,
     pub(crate) media_thumbs: HashMap<(wasabi_domain::ChatId, wasabi_domain::MediaId), MediaThumbUi>,
+    pub(crate) sticker_anims:
+        HashMap<(wasabi_domain::ChatId, wasabi_domain::MediaId), StickerAnimUi>,
+    sticker_ticker_gen: AtomicU64,
     pub(crate) avatars: HashMap<String, AvatarUi>,
     avatar_gens: HashMap<String, u64>,
     pub(crate) staged_attachments: HashMap<String, wasabi_domain::StagedAttachment>,
@@ -338,7 +362,19 @@ impl Focusable for MainWindow {
 pub fn key_bindings() -> Vec<KeyBinding> {
     // One binding per platform prefix: the keystroke parser at this rev
     // rejects the "cmd-k|ctrl-k" compound form.
-    let mut bindings = vec![KeyBinding::new("escape", CloseInfo, Some(MAIN_KEY_CONTEXT))];
+    let mut bindings = vec![
+        KeyBinding::new("escape", CloseInfo, Some(MAIN_KEY_CONTEXT)),
+        KeyBinding::new(
+            "left",
+            MediaViewerPrev,
+            Some(crate::views::media_viewer::KEY_CONTEXT),
+        ),
+        KeyBinding::new(
+            "right",
+            MediaViewerNext,
+            Some(crate::views::media_viewer::KEY_CONTEXT),
+        ),
+    ];
     if cfg!(target_os = "macos") {
         bindings.push(KeyBinding::new(
             "cmd-k",
@@ -395,6 +431,7 @@ impl MainWindow {
         let mut this = Self {
             bridge,
             focus: cx.focus_handle(),
+            media_viewer_focus: cx.focus_handle(),
             chats: ChatListModel::new(),
             messages: MessageWindowModel::new(),
             session: SessionMirror::new(),
@@ -431,6 +468,8 @@ impl MainWindow {
             message_overlay: None,
             media_downloads: HashMap::new(),
             media_thumbs: HashMap::new(),
+            sticker_anims: HashMap::new(),
+            sticker_ticker_gen: AtomicU64::new(0),
             avatars: HashMap::new(),
             avatar_gens: HashMap::new(),
             staged_attachments: HashMap::new(),
@@ -1880,8 +1919,11 @@ impl MainWindow {
                 )
             },
             |attachment| {
-                let caption =
-                    (attachment.kind != wasabi_domain::AttachmentKind::Audio).then(|| text.clone());
+                let caption = (!matches!(
+                    attachment.kind,
+                    wasabi_domain::AttachmentKind::Audio | wasabi_domain::AttachmentKind::Sticker
+                ))
+                .then(|| text.clone());
                 reply_to.clone().map_or_else(
                     || {
                         wasabi_domain::SendRequest::attachment(
@@ -2156,6 +2198,157 @@ impl MainWindow {
         cx.notify();
     }
 
+    pub(crate) fn open_cached_media_in_player(
+        &mut self,
+        chat: wasabi_domain::ChatId,
+        media: wasabi_domain::MediaId,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (chat, media);
+        let Some(MediaDownloadUi::Ready(path)) = self.media_downloads.get(&key).cloned() else {
+            return;
+        };
+        if conversation::classify_cached_media(&path) == conversation::CachedMediaAccess::Missing {
+            self.recover_missing_cached_media(key, cx);
+            return;
+        }
+        match std::process::Command::new("xdg-open")
+            .arg(&path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(_) => self.send_error = None,
+            Err(_) => {
+                self.send_error = Some("Could not open the system player".to_string());
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn open_media_viewer(
+        &mut self,
+        message: wasabi_domain::MessageId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(row) = self.messages.rows.iter().find(|row| row.id == message) else {
+            return;
+        };
+        if !crate::views::media_viewer::is_lightbox_kind(&row.kind) {
+            return;
+        }
+        let Some(media) = conversation::media_descriptor(&row.kind) else {
+            return;
+        };
+        let key = (row.chat.clone(), media.id.clone());
+        let Some(MediaDownloadUi::Ready(path)) = self.media_downloads.get(&key).cloned() else {
+            return;
+        };
+        if conversation::classify_cached_media(&path) == conversation::CachedMediaAccess::Missing {
+            self.recover_missing_cached_media(key, cx);
+            return;
+        }
+        if !crate::views::media_viewer::viewer_uses_original(media, &path)
+            && !matches!(self.media_thumbs.get(&key), Some(MediaThumbUi::Ready(_)))
+        {
+            self.request_image_thumb(key, path, cx);
+        }
+        self.message_overlay = Some(MessageOverlay::MediaViewer(message));
+        self.emoji_picker_open = false;
+        self.media_viewer_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn media_viewer_step(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let Some(MessageOverlay::MediaViewer(current)) = self.message_overlay.clone() else {
+            return;
+        };
+        let targets = crate::views::media_viewer::media_viewer_targets(
+            &self.messages.rows,
+            &self.media_downloads,
+        );
+        let Some(next) =
+            crate::views::media_viewer::media_viewer_neighbor(&targets, &current, delta)
+        else {
+            return;
+        };
+        self.message_overlay = Some(MessageOverlay::MediaViewer(next));
+        cx.notify();
+    }
+
+    pub(crate) fn send_image_as_sticker(
+        &mut self,
+        chat: wasabi_domain::ChatId,
+        media: wasabi_domain::MediaId,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.session.state.is_connected() {
+            self.send_error = Some("Connect to send a sticker".to_string());
+            cx.notify();
+            return;
+        }
+        let key = (chat.clone(), media);
+        let Some(MediaDownloadUi::Ready(path)) = self.media_downloads.get(&key).cloned() else {
+            return;
+        };
+        if conversation::classify_cached_media(&path) == conversation::CachedMediaAccess::Missing {
+            self.recover_missing_cached_media(key, cx);
+            return;
+        }
+        let chat_key = chat.as_str().to_string();
+        if !self.attachment_sending.insert(chat_key.clone()) {
+            return;
+        }
+        self.message_overlay = None;
+        self.send_error = None;
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let staged = bridge.stage_sticker(chat.clone(), path).await;
+            let result = match staged {
+                Ok(attachment) => {
+                    bridge
+                        .send(wasabi_domain::SendRequest::attachment(
+                            chat.clone(),
+                            attachment.transfer,
+                            None,
+                        ))
+                        .await
+                }
+                Err(error) => Err(error),
+            };
+            this.update(cx, |this, cx| {
+                this.attachment_sending.remove(&chat_key);
+                match result {
+                    Ok(_) => this.send_error = None,
+                    Err(error) if error.kind == wasabi_domain::ErrorKind::NotConnected => {
+                        this.send_error = Some("Connect to send a sticker".to_string());
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind,
+                            wasabi_domain::ErrorKind::InvalidRequest
+                                | wasabi_domain::ErrorKind::MediaUnavailable
+                                | wasabi_domain::ErrorKind::Internal
+                        ) =>
+                    {
+                        tracing::warn!(kind = %error.kind, "send as sticker failed");
+                        this.send_error =
+                            Some("Could not convert this image into a sticker".to_string());
+                    }
+                    Err(error) => {
+                        tracing::warn!(kind = %error.kind, "send as sticker failed");
+                        this.send_error = Some(error.ui_message().to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
     fn recover_missing_cached_media(
         &mut self,
         key: (wasabi_domain::ChatId, wasabi_domain::MediaId),
@@ -2194,6 +2387,91 @@ impl MainWindow {
                 cx.notify();
             })
             .ok();
+        });
+    }
+
+    pub(crate) fn request_sticker_animation(
+        &mut self,
+        key: (wasabi_domain::ChatId, wasabi_domain::MediaId),
+        source: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings.reduce_motion {
+            return;
+        }
+        if matches!(
+            self.sticker_anims.get(&key),
+            Some(StickerAnimUi::Loading | StickerAnimUi::Ready { .. } | StickerAnimUi::Failed)
+        ) {
+            return;
+        }
+        self.sticker_anims
+            .insert(key.clone(), StickerAnimUi::Loading);
+        let bridge = Arc::clone(&self.bridge);
+        spawn_main(cx, async move |this, cx| {
+            let result = bridge.decode_animated_webp(source).await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(decoded) if decoded.frames.len() >= 2 => {
+                        let frames = decoded
+                            .frames
+                            .iter()
+                            .map(|frame| {
+                                (
+                                    std::sync::Arc::new(gpui::Image::from_bytes(
+                                        gpui::ImageFormat::Png,
+                                        frame.png.as_ref().clone(),
+                                    )),
+                                    frame.delay,
+                                )
+                            })
+                            .collect();
+                        this.sticker_anims.insert(
+                            key,
+                            StickerAnimUi::Ready {
+                                frames: std::sync::Arc::new(frames),
+                                started: std::time::Instant::now(),
+                            },
+                        );
+                        this.ensure_sticker_ticker(cx);
+                    }
+                    Ok(_) | Err(_) => {
+                        this.sticker_anims.insert(key, StickerAnimUi::Failed);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+    }
+
+    fn ensure_sticker_ticker(&mut self, cx: &mut Context<Self>) {
+        let generation = self.sticker_ticker_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        spawn_main(cx, async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(33))
+                    .await;
+                let alive = this
+                    .update(cx, |this, cx| {
+                        if this.sticker_ticker_gen.load(Ordering::Acquire) != generation {
+                            return false;
+                        }
+                        let playing = this
+                            .sticker_anims
+                            .values()
+                            .any(|state| matches!(state, StickerAnimUi::Ready { .. }))
+                            && !this.settings.reduce_motion;
+                        if playing {
+                            cx.notify();
+                        }
+                        playing
+                    })
+                    .unwrap_or(false);
+                if !alive {
+                    break;
+                }
+            }
         });
     }
 
@@ -4641,6 +4919,12 @@ impl Render for MainWindow {
             }))
             .on_action(cx.listener(|this, _: &CloseInfo, _, cx| {
                 this.dismiss_overlay_or_drawer(cx);
+            }))
+            .on_action(cx.listener(|this, _: &MediaViewerPrev, _, cx| {
+                this.media_viewer_step(-1, cx);
+            }))
+            .on_action(cx.listener(|this, _: &MediaViewerNext, _, cx| {
+                this.media_viewer_step(1, cx);
             }))
             .child(main_content(self, window, cx, pairing_active));
         if self.new_chat_open {

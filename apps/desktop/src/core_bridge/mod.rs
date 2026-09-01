@@ -126,6 +126,10 @@ pub trait DesktopBackend: Send + Sync {
         key: String,
         source: PathBuf,
     ) -> Result<PathBuf, ServiceError>;
+    async fn decode_animated_webp(
+        &self,
+        source: PathBuf,
+    ) -> Result<wasabi_media::DecodedAnimation, ServiceError>;
     async fn copy_cached_media(&self, source: PathBuf, dest: PathBuf) -> Result<(), ServiceError>;
     async fn profile_picture(
         &self,
@@ -136,6 +140,11 @@ pub trait DesktopBackend: Send + Sync {
     // service itself is complete and testable without exposing an inert icon.
     #[allow(dead_code)]
     async fn stage_attachment(
+        &self,
+        chat: ChatId,
+        source: PathBuf,
+    ) -> Result<StagedAttachment, ServiceError>;
+    async fn stage_sticker(
         &self,
         chat: ChatId,
         source: PathBuf,
@@ -1224,6 +1233,21 @@ impl CoreBridge {
         .await
     }
 
+    pub async fn decode_animated_webp(
+        &self,
+        source: PathBuf,
+    ) -> Result<wasabi_media::DecodedAnimation, ServiceError> {
+        let thumbs = self.thumbs.clone();
+        self.run_on_core_service(async move {
+            thumbs
+                .animated_webp(&source)
+                .await
+                .map(|decoded| (*decoded).clone())
+                .map_err(map_media_error)
+        })
+        .await
+    }
+
     pub async fn copy_cached_media(
         &self,
         source: PathBuf,
@@ -1404,6 +1428,47 @@ impl CoreBridge {
             if let Err(error) = store.save_transfer_job(job).await {
                 // The database row is the owner record. If it cannot commit,
                 // remove the otherwise orphaned plaintext immediately.
+                let _ = manager.discard_staged_upload(staged.durable_path).await;
+                return Err(error);
+            }
+            Ok(staged.attachment)
+        })
+        .await
+    }
+
+    pub async fn stage_sticker(
+        &self,
+        chat: ChatId,
+        source: PathBuf,
+    ) -> Result<StagedAttachment, ServiceError> {
+        if !self.commands_accepted() {
+            return Err(ServiceError::new(ErrorKind::Cancelled, "shutting down"));
+        }
+        let store = self
+            .store_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
+        let manager = self
+            .media_snapshot()
+            .map_err(|detail| ServiceError::new(ErrorKind::Internal, detail))?;
+        let cancel = self
+            .root_token
+            .get()
+            .map(CancellationToken::child_token)
+            .ok_or_else(|| ServiceError::new(ErrorKind::Internal, "no cancellation root"))?;
+        let transfer = next_transfer_id();
+        self.run_on_core_service(async move {
+            let staged = manager
+                .stage_sticker_from_image(source, transfer.clone(), cancel)
+                .await
+                .map_err(map_media_error)?;
+            let mut job = TransferJob::staged_upload(
+                transfer,
+                chat,
+                staged.durable_path.clone(),
+                staged.attachment.bytes_total,
+            );
+            job.payload = Some(staged.payload);
+            if let Err(error) = store.save_transfer_job(job).await {
                 let _ = manager.discard_staged_upload(staged.durable_path).await;
                 return Err(error);
             }
@@ -1640,12 +1705,15 @@ impl CoreBridge {
                         )
                     })?;
                     payload.caption = normalized_caption(caption)?;
-                    if payload.kind == wasabi_domain::AttachmentKind::Audio
-                        && payload.caption.is_some()
+                    if matches!(
+                        payload.kind,
+                        wasabi_domain::AttachmentKind::Audio
+                            | wasabi_domain::AttachmentKind::Sticker
+                    ) && payload.caption.is_some()
                     {
                         return Err(ServiceError::new(
                             ErrorKind::InvalidRequest,
-                            "audio attachments do not support captions",
+                            "this attachment does not support captions",
                         ));
                     }
                     if !store
@@ -2280,6 +2348,36 @@ fn attachment_message(
                 ..Default::default()
             },
         ),
+        AttachmentKind::Sticker => sticker_message(upload, payload),
+    }
+}
+
+fn sticker_message(
+    upload: wasabi_media::UploadResponse,
+    payload: &wasabi_domain::TransferPayload,
+) -> whatsapp_rust::waproto::whatsapp::Message {
+    use whatsapp_rust::waproto::buffa::MessageField;
+
+    whatsapp_rust::waproto::whatsapp::Message {
+        sticker_message: MessageField::some(
+            whatsapp_rust::waproto::whatsapp::message::StickerMessage {
+                url: Some(upload.url),
+                direct_path: Some(upload.direct_path),
+                media_key: Some(upload.media_key.to_vec()),
+                file_sha256: Some(upload.file_sha256.to_vec()),
+                file_enc_sha256: Some(upload.file_enc_sha256.to_vec()),
+                file_length: Some(upload.file_length),
+                media_key_timestamp: Some(upload.media_key_timestamp),
+                mimetype: Some(if payload.mime_type.is_empty() {
+                    "image/webp".to_string()
+                } else {
+                    payload.mime_type.clone()
+                }),
+                is_animated: Some(false),
+                ..Default::default()
+            },
+        ),
+        ..Default::default()
     }
 }
 
@@ -2889,6 +2987,13 @@ impl DesktopBackend for CoreBridge {
         CoreBridge::cache_thumb_bytes(self, key, source).await
     }
 
+    async fn decode_animated_webp(
+        &self,
+        source: PathBuf,
+    ) -> Result<wasabi_media::DecodedAnimation, ServiceError> {
+        CoreBridge::decode_animated_webp(self, source).await
+    }
+
     async fn copy_cached_media(&self, source: PathBuf, dest: PathBuf) -> Result<(), ServiceError> {
         CoreBridge::copy_cached_media(self, source, dest).await
     }
@@ -2910,6 +3015,14 @@ impl DesktopBackend for CoreBridge {
         source: PathBuf,
     ) -> Result<StagedAttachment, ServiceError> {
         CoreBridge::stage_attachment(self, chat, source).await
+    }
+
+    async fn stage_sticker(
+        &self,
+        chat: ChatId,
+        source: PathBuf,
+    ) -> Result<StagedAttachment, ServiceError> {
+        CoreBridge::stage_sticker(self, chat, source).await
     }
 
     async fn cancel_transfer(&self, transfer: TransferId) -> Result<(), ServiceError> {
@@ -3201,5 +3314,31 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert!(participant_jids(&[ChatId::new("120363000000000001@g.us")]).is_err());
         assert_eq!(participant_result_counts(&[]), (0, 0, false));
+    }
+
+    #[test]
+    fn sticker_attachment_builds_a_sticker_message_without_caption() {
+        let upload = wasabi_media::UploadResponse {
+            url: "https://cdn/u".into(),
+            direct_path: "/d".into(),
+            media_key: [1u8; 32],
+            file_enc_sha256: [2u8; 32],
+            file_sha256: [3u8; 32],
+            file_length: 2048,
+            media_key_timestamp: 1_700_000_000,
+            streaming_sidecar: None,
+        };
+        let payload = wasabi_domain::TransferPayload {
+            kind: wasabi_domain::AttachmentKind::Sticker,
+            display_name: "sticker.webp".to_string(),
+            mime_type: "image/webp".to_string(),
+            caption: None,
+        };
+        let message = attachment_message(upload, &payload);
+        let sticker = message.sticker_message.as_option().expect("sticker");
+        assert_eq!(sticker.mimetype.as_deref(), Some("image/webp"));
+        assert_eq!(sticker.is_animated, Some(false));
+        assert_eq!(sticker.file_length, Some(2048));
+        assert!(message.image_message.as_option().is_none());
     }
 }
