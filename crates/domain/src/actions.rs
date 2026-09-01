@@ -51,6 +51,10 @@ pub enum MessageAction {
     RevokeForEveryone {
         target: MessageActionTarget,
     },
+    Forward {
+        target: MessageActionTarget,
+        destinations: Vec<ChatId>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,7 +126,8 @@ impl MessageAction {
             | Self::React { target, .. }
             | Self::Edit { target, .. }
             | Self::DeleteForMe { target, .. }
-            | Self::RevokeForEveryone { target } => target,
+            | Self::RevokeForEveryone { target }
+            | Self::Forward { target, .. } => target,
         }
     }
 }
@@ -254,6 +259,35 @@ mod tests {
         assert!(matches!(
             action,
             MessageAction::Edit { body, .. } if body == "corrected text"
+        ));
+    }
+
+    #[test]
+    fn forward_captures_destinations_and_original_target() {
+        let action = MessageAction::Forward {
+            target: MessageActionTarget {
+                chat: ChatId::new("chat-a@s.whatsapp.net"),
+                message: MessageId::new("message-a"),
+                sender: "me@s.whatsapp.net".to_string(),
+                from_me: true,
+                timestamp_ms: 42,
+            },
+            destinations: vec![
+                ChatId::new("chat-b@s.whatsapp.net"),
+                ChatId::new("120363000000000001@g.us"),
+            ],
+        };
+
+        assert_eq!(action.target().chat.as_str(), "chat-a@s.whatsapp.net");
+        assert_eq!(action.target().message.as_str(), "message-a");
+        assert!(matches!(
+            action,
+            MessageAction::Forward { destinations, .. }
+                if destinations
+                    == [
+                        ChatId::new("chat-b@s.whatsapp.net"),
+                        ChatId::new("120363000000000001@g.us")
+                    ]
         ));
     }
 }

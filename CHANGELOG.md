@@ -9,6 +9,11 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 - Starred messages can be browsed from the chat list header, opened in their
   original conversation, and unstarred from that viewer. The list reads
   durable starred rows, newest first, and hides revoked messages.
+- Forward eligible text and media messages to cached conversations from the
+  message action sheet. The picker lists real chats and matching address-book
+  contacts, requires a live connection to send, and leaves view-once,
+  unavailable, revoked, and system messages ineligible. Closing the picker
+  sends nothing; a partial send keeps successful copies and reports the rest.
 
 ### Changed
 
