@@ -4,6 +4,14 @@ All notable user-visible changes to wasabi are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Clicking a reaction chip lists the people who used that emoji. Counts stay
+  aggregated on the chip; two people with the same emoji are two names.
+- Clicking delivery ticks on an outgoing message lists who delivered or read
+  it when the store has per-user receipts. Incoming ticks stay non-interactive,
+  and an empty list is shown as unavailable rather than inventing readers.
+
 ### Changed
 
 - Refined the native desktop shell and messaging surfaces with a denser,

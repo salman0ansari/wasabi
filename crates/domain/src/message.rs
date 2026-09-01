@@ -92,6 +92,26 @@ pub struct ReactionSummary {
     pub reacted_by_me: bool,
 }
 
+/// One person who reacted, already resolved to a display label.
+/// Raw JIDs stay behind the repository; missing names use the same short
+/// identity the timeline already shows for senders.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReactionActor {
+    pub display_name: String,
+    pub emoji: String,
+    pub is_self: bool,
+}
+
+/// One per-user delivery or read receipt, already resolved to a display label.
+/// Incoming messages never produce these; an empty list means the store had
+/// no rows, not that readers were invented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReceiptActor {
+    pub display_name: String,
+    pub status: MessageStatus,
+    pub timestamp_ms: i64,
+}
+
 /// Conservative WhatsApp Web edit entry-point window. The server remains
 /// authoritative and may reject an edit sooner for account-specific policy.
 pub const MESSAGE_EDIT_WINDOW_MS: i64 = 20 * 60 * 1_000;
